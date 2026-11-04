@@ -1,0 +1,12 @@
+{
+  "display_name": "持续记忆 (Persistent Memory)",
+  "loading_order": 50,
+  "requires": [],
+  "optional": [],
+  "js": "index.js",
+  "css": "style.css",
+  "author": "Persistent Agent System",
+  "version": "0.1.0",
+  "auto_update": false,
+  "description": "基于现场快照（L0 Resume）、触发式记忆路由与角色在场状态机的持续性记忆系统。"
+}
