@@ -68,7 +68,7 @@ export function updateSettings(patch) {
  */
 export function loadCurrentState() {
     const c = getContext();
-    const metadata = c?.chat_metadata;
+    const metadata = c?.chatMetadata ?? c?.chat_metadata;
 
     if (!metadata) {
         stateCache = JSON.parse(JSON.stringify(DEFAULT_STATE));
@@ -137,13 +137,21 @@ export function saveCurrentState() {
         return; // 事务进行中，由 batchUpdate 统一在结尾原子落盘
     }
     const c = getContext();
-    if (!c?.chat_metadata || !stateCache) return;
+    const metadata = c?.chatMetadata ?? c?.chat_metadata;
+    if (!stateCache) return;
 
     // 每次实际落盘增加修订版本号
     stateCache.state_revision = (stateCache.state_revision || 0) + 1;
 
-    c.chat_metadata[MODULE_NAME] = stateCache;
-    c.saveMetadata?.();
+    if (metadata) {
+        metadata[MODULE_NAME] = stateCache;
+        if (typeof c?.saveMetadataDebounced === 'function') {
+            c.saveMetadataDebounced();
+        } else if (typeof c?.saveMetadata === 'function') {
+            c.saveMetadata();
+        }
+    }
+
     notifyChange();
 }
 

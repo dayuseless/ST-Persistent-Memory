@@ -263,8 +263,16 @@ function renderNativeDrawerContent() {
     content.querySelector('#pm-native-digest-btn')?.addEventListener('click', async () => {
         const btn = content.querySelector('#pm-native-digest-btn');
         btn.innerHTML = '<i class="fa-solid fa-spinner fa-spin"></i> 提炼中...';
-        await triggerAsyncDigest(true);
+        window.toastr?.info?.('后台提炼任务已触发...', '持续记忆');
+        const res = await triggerAsyncDigest(true);
         btn.innerHTML = '<i class="fa-solid fa-bolt"></i> 立即执行后台提炼';
+        renderNativeDrawerContent();
+        renderPanelContent();
+        if (res?.success) {
+            window.toastr?.success?.(res.summary || '提炼完成', '持续记忆');
+        } else {
+            window.toastr?.warning?.(res?.error || '提炼未产生有效更新', '持续记忆');
+        }
     });
 }
 
@@ -299,8 +307,19 @@ function createPanelDOM() {
     panelEl.querySelector('#pm-manual-digest-btn')?.addEventListener('click', async () => {
         const btn = panelEl.querySelector('#pm-manual-digest-btn');
         btn.classList.add('pm-spinning');
-        await triggerAsyncDigest(true);
-        btn.classList.remove('pm-spinning');
+        window.toastr?.info?.('后台提炼任务已启动...', '持续记忆');
+        try {
+            const res = await triggerAsyncDigest(true);
+            renderPanelContent();
+            renderNativeDrawerContent();
+            if (res?.success) {
+                window.toastr?.success?.(res.summary || '提炼完成', '持续记忆');
+            } else {
+                window.toastr?.warning?.(res?.error || '提炼未产生有效更新', '持续记忆');
+            }
+        } finally {
+            btn.classList.remove('pm-spinning');
+        }
     });
 }
 

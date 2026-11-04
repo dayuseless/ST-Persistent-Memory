@@ -55,16 +55,20 @@ export function cleanAndParseJson(raw) {
 
     let text = raw.trim();
 
-    // 1. 剥离思考链标签 (如 DeepSeek R1 / Claude thinking)
-    text = text.replace(/<think>[\s\S]*?<\/think>/gi, '').trim();
+    // 1. 剥离思考链标签 (如 DeepSeek R1 / Claude thinking，兼容未闭合的 <think>)
+    text = text.replace(/<think>[\s\S]*?(?:<\/think>|$)/gi, '').trim();
 
-    // 2. 剥离 Markdown 代码块标记 (```json ... ```)
-    text = text.replace(/```(?:json)?\s*([\s\S]*?)\s*```/gi, '$1').trim();
+    // 2. 优先提取 Markdown 代码块内部内容 (```json ... ```)
+    const codeBlockMatch = text.match(/```(?:json)?\s*([\s\S]*?)\s*```/i);
+    if (codeBlockMatch) {
+        text = codeBlockMatch[1].trim();
+    }
 
     // 3. 定位最外层的 JSON 对象边界
     const firstBrace = text.indexOf('{');
     const lastBrace = text.lastIndexOf('}');
     if (firstBrace === -1 || lastBrace === -1 || lastBrace <= firstBrace) {
+        console.warn(`[${MODULE_NAME}] 未能在模型回复中找到合法的 JSON 对象:`, raw.slice(0, 200));
         return null;
     }
     text = text.substring(firstBrace, lastBrace + 1);
@@ -457,7 +461,7 @@ ${conversationText}
         const response = await executeDigestRequest(c, digestPrompt, settings);
         if (!response) {
             console.warn(`[${MODULE_NAME}] [Async] 静默提炼未收到有效回复`);
-            return;
+            return { success: false, error: '模型未返回有效内容' };
         }
 
         // ══════════════════════════════════════════════════════════════════════
@@ -466,13 +470,13 @@ ${conversationText}
         const finishChatId = getChatIdentifier(c);
         if (finishChatId !== startChatId) {
             console.warn(`[${MODULE_NAME}] [会话隔离拦截] 检测到用户在提炼期间切换了会话 (${startChatId} -> ${finishChatId})，已丢弃旧结果！`);
-            return;
+            return { success: false, error: '提炼期间会话发生切换，已丢弃' };
         }
 
         const currentState = getState();
         if ((currentState.state_revision || 0) !== startRevision) {
             console.warn(`[${MODULE_NAME}] [状态版本冲突拦截] 在提炼期间，会话状态已被修改 (启动版本: rev.${startRevision} -> 当前版本: rev.${currentState.state_revision})。已丢弃旧提炼结果，保护用户最新手改与状态一致性！`);
-            return;
+            return { success: false, error: '提炼期间状态被编辑，为防冲突已放弃提交' };
         }
 
         const rawPayload = cleanAndParseJson(response);
@@ -486,11 +490,14 @@ ${conversationText}
                 currentState.last_digest_summary = summary;
             });
             console.log(`[${MODULE_NAME}] [Async] 提炼原子提交落盘 (会话: ${startChatId}, rev.${currentState.state_revision}): ${currentState.last_digest_summary}`);
+            return { success: true, summary: currentState.last_digest_summary };
         } else {
             console.warn(`[${MODULE_NAME}] [Async] 提炼内容未通过数据完整性校验，已安全丢弃`);
+            return { success: false, error: '模型返回的内容未通过 Schema 格式校验' };
         }
     } catch (e) {
         console.error(`[${MODULE_NAME}] [Async] 后台提炼异常:`, e);
+        return { success: false, error: e.message || String(e) };
     } finally {
         activeChatDigests.delete(startChatId);
     }
