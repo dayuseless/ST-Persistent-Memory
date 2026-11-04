@@ -1,5 +1,5 @@
 /**
- * SillyTavern 插件入口: 持续记忆 (Persistent Memory)
+ * SillyTavern 插件入口: 持续记忆 (Persistent Memory) v0.1.1
  * 遵循现场快照 (L0 Resume) 与事件驱动记忆架构
  */
 
@@ -54,7 +54,7 @@ function waitForAppReady(c) {
  * 主初始化函数
  */
 async function init() {
-    console.log(`[${MODULE_NAME}] 正在初始化持续记忆插件...`);
+    console.log(`[${MODULE_NAME}] 正在初始化持续记忆插件 (v0.1.1)...`);
     const c = await waitForContext();
     await waitForAppReady(c);
 
@@ -66,7 +66,7 @@ async function init() {
 
     // 3. 监听切档/切换聊天事件
     c.eventSource.on(c.event_types.CHAT_CHANGED, () => {
-        console.log(`[${MODULE_NAME}] 检测到聊天会话切换，重新加载记忆元数据`);
+        console.log(`[${MODULE_NAME}] 检测到聊天会话切换，重新对齐当前会话元数据`);
         loadCurrentState();
         buildAndInjectMemoryPrompt();
     });
@@ -78,36 +78,39 @@ async function init() {
         }
     });
 
-    // 5. 消息完成与渲染处理
-    // 针对同步模式 (Sync Tag)：在消息渲染时剥离隐藏标签
+    // 5. 消息完成与渲染处理 (P1-5: 同步/异步严格分流)
+    // 仅在明确启用同步伴随模式时才执行渲染标签截获
     c.eventSource.on(c.event_types.CHARACTER_MESSAGE_RENDERED, (mesid) => {
+        const settings = getSettings();
+        if (!settings.enabled || settings.mode !== 'sync') return;
+
         const id = Number(mesid);
         const msg = c.chat?.[id];
         if (!msg || msg.is_user) return;
 
-        // 如果开启了同步伴生模式，尝试剥离
         const cleaned = extractAndApplySyncTag(msg.mes);
         if (cleaned !== msg.mes) {
             msg.mes = cleaned;
             const el = document.querySelector(`#chat > .mes[mesid="${id}"] .mes_text`);
             if (el) {
-                // 仅更新文本容器
                 el.innerHTML = c.markdown(cleaned);
             }
         }
     });
 
-    // 针对异步模式 (Async Quiet Prompt)：在生成完成后触发后台提炼
+    // 仅在异步模式下触发后台自动提炼
     c.eventSource.on(c.event_types.MESSAGE_RECEIVED, async (mesid) => {
+        const settings = getSettings();
+        if (!settings.enabled || settings.mode !== 'async') return;
+
         const id = Number(mesid);
         const msg = c.chat?.[id];
         if (msg && !msg.is_user) {
-            // AI 回复完成后，尝试触发异步消化
             await triggerAsyncDigest(false);
         }
     });
 
-    console.log(`[${MODULE_NAME}] 持续记忆系统初始化完毕，准备接管跨会话情境连续性`);
+    console.log(`[${MODULE_NAME}] 持续记忆系统 (v0.1.1) 初始化就绪`);
 
     // 暴露全局调试接口
     window.__persistentMemory = {
