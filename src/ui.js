@@ -309,7 +309,7 @@ function renderNativeDrawerContent() {
                 <div class="pm-toggle-group">
                     <label class="pm-radio-label">
                         <input type="radio" name="pm-native-mode" value="async" ${settings.mode === 'async' ? 'checked' : ''}>
-                        <span>异步后台 (安静提炼)</span>
+                        <span>异步后台 (独立提炼)</span>
                     </label>
                     <label class="pm-radio-label">
                         <input type="radio" name="pm-native-mode" value="sync" ${settings.mode === 'sync' ? 'checked' : ''}>
@@ -384,6 +384,10 @@ function renderNativeDrawerContent() {
     content.querySelectorAll('input[name="pm-native-mode"]').forEach(radio => {
         radio.addEventListener('change', (e) => {
             updateSettings({ mode: e.target.value });
+            const hudRadios = document.querySelectorAll('input[name="pm-mode"]');
+            hudRadios.forEach(hr => {
+                if (hr.value === e.target.value) hr.checked = true;
+            });
         });
     });
 
@@ -405,7 +409,19 @@ function renderNativeDrawerContent() {
         const url = (content.querySelector('#pm-native-custom-api-url')?.value || '').trim();
         const key = (content.querySelector('#pm-native-custom-api-key')?.value || '').trim();
         const model = (content.querySelector('#pm-native-custom-api-model')?.value || 'deepseek-chat').trim();
-        updateSettings({ customApiUrl: url, customApiKey: key, customApiModel: model });
+        const mode = content.querySelector('input[name="pm-native-mode"]:checked')?.value || 'async';
+        const isEnabled = content.querySelector('#pm-setting-enabled')?.checked ?? true;
+        const bubble = content.querySelector('#pm-native-bubble-enabled')?.checked ?? true;
+        const useCustom = content.querySelector('#pm-native-custom-api-enabled')?.checked ?? false;
+        updateSettings({
+            customApiUrl: url,
+            customApiKey: key,
+            customApiModel: model,
+            mode: mode,
+            enabled: isEnabled,
+            showFloatingBubble: bubble,
+            useCustomApi: useCustom
+        });
     };
 
     ['input', 'change'].forEach(evt => {
@@ -797,7 +813,7 @@ function renderPanelContent() {
                     <div class="pm-toggle-group">
                         <label class="pm-radio-label">
                             <input type="radio" name="pm-mode" value="async" ${settings.mode === 'async' ? 'checked' : ''}>
-                            <span>异步后台 (安静提炼)</span>
+                            <span>异步后台 (独立提炼)</span>
                         </label>
                         <label class="pm-radio-label">
                             <input type="radio" name="pm-mode" value="sync" ${settings.mode === 'sync' ? 'checked' : ''}>
@@ -805,8 +821,8 @@ function renderPanelContent() {
                         </label>
                     </div>
                     <div style="font-size: 11px; color: #64748b; line-height: 1.4; margin-top: 4px;">
-                        💡 <b>异步后台</b>：主回复完成后由独立 API 自动异步安静提炼，不占正文输出；<br>
-                        💡 <b>伴随标签</b>：回复末尾自动附带隐藏状态标签由插件拦截入库，零额外请求。
+                        💡 <b>异步后台 (独立提炼)</b>：主回复完成后由独立 API 自动异步安静提炼，不占正文输出；<br>
+                        💡 <b>伴随标签 (零额外请求)</b>：回复末尾自动附带隐藏状态标签由插件拦截入库，零额外请求。
                     </div>
                 </div>
 
@@ -908,6 +924,10 @@ function bindPanelEvents(container) {
     container.querySelectorAll('input[name="pm-mode"]').forEach(radio => {
         radio.addEventListener('change', (e) => {
             updateSettings({ mode: e.target.value });
+            const nativeRadios = document.querySelectorAll('input[name="pm-native-mode"]');
+            nativeRadios.forEach(nr => {
+                if (nr.value === e.target.value) nr.checked = true;
+            });
         });
     });
 

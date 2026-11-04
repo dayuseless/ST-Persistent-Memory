@@ -46,25 +46,65 @@ export function batchUpdate(fn) {
     }
 }
 
-export function getSettings() {
+let settingsCache = null;
+
+function getExtSettingsObject() {
     const c = getContext();
-    if (!c?.extension_settings) return { ...DEFAULT_SETTINGS };
-    if (!c.extension_settings[MODULE_NAME]) {
+    return c?.extensionSettings ?? c?.extension_settings ?? window.extension_settings ?? null;
+}
+
+export function getSettings() {
+    const extSettings = getExtSettingsObject();
+
+    // 1. 优先从 SillyTavern 官方 extensionSettings 载入与维护
+    if (extSettings) {
+        if (!extSettings[MODULE_NAME]) {
+            let restored = null;
+            try {
+                const raw = localStorage.getItem('ST_PM_SETTINGS_BACKUP');
+                if (raw) restored = JSON.parse(raw);
+            } catch {}
+            extSettings[MODULE_NAME] = Object.assign({}, DEFAULT_SETTINGS, restored || {});
+        } else {
+            // 确保旧版本配置缺省的默认值被全量补齐 (如 mode)
+            for (const [key, val] of Object.entries(DEFAULT_SETTINGS)) {
+                if (extSettings[MODULE_NAME][key] === undefined) {
+                    extSettings[MODULE_NAME][key] = val;
+                }
+            }
+        }
+        settingsCache = extSettings[MODULE_NAME];
+        return settingsCache;
+    }
+
+    // 2. 运行环境尚未完全就绪时的持久化兜底
+    if (!settingsCache) {
         let restored = null;
         try {
             const raw = localStorage.getItem('ST_PM_SETTINGS_BACKUP');
             if (raw) restored = JSON.parse(raw);
         } catch {}
-        c.extension_settings[MODULE_NAME] = Object.assign({}, DEFAULT_SETTINGS, restored || {});
+        settingsCache = Object.assign({}, DEFAULT_SETTINGS, restored || {});
     }
-    return c.extension_settings[MODULE_NAME];
+    return settingsCache;
 }
 
 export function updateSettings(patch) {
     const settings = getSettings();
     Object.assign(settings, patch);
+
+    if (settingsCache && settingsCache !== settings) {
+        Object.assign(settingsCache, patch);
+    }
+
+    const extSettings = getExtSettingsObject();
+    if (extSettings) {
+        extSettings[MODULE_NAME] = settings;
+    }
+
     const c = getContext();
     c?.saveSettingsDebounced?.();
+
     try {
         localStorage.setItem('ST_PM_SETTINGS_BACKUP', JSON.stringify(settings));
     } catch {}
@@ -77,6 +117,10 @@ export function saveSettingsImmediately() {
     const c = getContext();
     const settings = getSettings();
     try {
+        const extSettings = getExtSettingsObject();
+        if (extSettings) {
+            extSettings[MODULE_NAME] = settings;
+        }
         if (typeof c?.saveSettings === 'function') {
             c.saveSettings();
         } else if (typeof c?.saveSettingsDebounced === 'function') {
