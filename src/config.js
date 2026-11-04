@@ -22,6 +22,7 @@ export const DEFAULT_SETTINGS = {
     enabled: true,
     mode: 'async',             // 'async' (后台静默) | 'sync' (伴随标签)
     asyncFrequency: 3,         // 异步模式下每几轮提炼一次
+    digestSliceCount: 6,       // 提炼时回溯的历史消息数量 (4~12)
     injectionDepth: 2,         // 注入深度 (默认 2: 紧贴最新对话上方)
     injectionPosition: 1,      // 1: IN_CHAT, 0: IN_PROMPT
     maxSceneTokens: 200,       // 现场快照最大字数估算
@@ -41,5 +42,7 @@ export const DEFAULT_STATE = {
     },
     memories: [],
     turn_count: 0,
-    last_digest_floor: 0
+    last_digest_floor: 0,
+    last_digest_time: '',
+    last_digest_summary: '尚未执行提炼'
 };

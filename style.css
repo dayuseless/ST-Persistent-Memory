@@ -58,6 +58,27 @@
     border: 1px solid rgba(255, 255, 255, 0.05);
 }
 
+/* 提炼状态展示 */
+.pm-digest-status-box {
+    background: rgba(14, 165, 233, 0.08);
+    border: 1px solid rgba(14, 165, 233, 0.2);
+    border-radius: 6px;
+    padding: 6px 10px;
+}
+
+.pm-digest-summary {
+    color: #38bdf8;
+    font-size: 11px;
+    line-height: 1.4;
+    word-break: break-word;
+}
+
+.pm-grid-2col {
+    display: grid;
+    grid-template-columns: 1fr 1fr;
+    gap: 8px;
+}
+
 /* 抽屉容器 */
 .pm-panel-container {
     position: fixed;

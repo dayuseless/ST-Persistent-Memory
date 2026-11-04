@@ -137,7 +137,6 @@ function makeDraggable(el, onClickCallback) {
     el.addEventListener('mousedown', onStart);
     el.addEventListener('touchstart', onStart, { passive: true });
 
-    // 捕获阶段拦截点击：拖动过则不触发弹窗
     el.addEventListener('click', (e) => {
         if (hasMoved) {
             e.stopImmediatePropagation();
@@ -222,6 +221,11 @@ function renderNativeDrawerContent() {
                         <span>伴随标签 (零额外请求)</span>
                     </label>
                 </div>
+            </div>
+
+            <div class="pm-input-row pm-mb-8">
+                <label>最近提炼动态：</label>
+                <div class="pm-text-preview" style="color: #38bdf8;">${escapeHtml(state.last_digest_summary || '尚未执行提炼')} ${state.last_digest_time ? `(${state.last_digest_time})` : ''}</div>
             </div>
 
             <div class="pm-input-row pm-mb-8">
@@ -347,6 +351,27 @@ function renderPanelContent() {
             </div>
         </div>
 
+        <!-- 提炼引擎动态与调参 -->
+        <div class="pm-section">
+            <div class="pm-flex-between pm-mb-8">
+                <span class="pm-section-label"><i class="fa-solid fa-microchip"></i> 提炼引擎状态</span>
+                <span class="pm-badge-pill">${state.last_digest_time ? state.last_digest_time : '就绪'}</span>
+            </div>
+            <div class="pm-digest-status-box pm-mb-8">
+                <div class="pm-digest-summary"><i class="fa-solid fa-circle-info"></i> ${escapeHtml(state.last_digest_summary || '尚未执行提炼')}</div>
+            </div>
+            <div class="pm-grid-2col">
+                <div class="pm-input-row">
+                    <label>提炼频率 (每 N 轮)</label>
+                    <input type="number" id="pm-setting-freq" class="pm-input" min="1" max="20" value="${settings.asyncFrequency || 3}">
+                </div>
+                <div class="pm-input-row">
+                    <label>回溯历史 (条数)</label>
+                    <input type="number" id="pm-setting-slice" class="pm-input" min="2" max="15" value="${settings.digestSliceCount || 6}">
+                </div>
+            </div>
+        </div>
+
         <!-- 现场快照 HUD -->
         <div class="pm-section">
             <div class="pm-flex-between pm-mb-8">
@@ -439,12 +464,25 @@ function renderMemoryCard(mem) {
 }
 
 function bindPanelEvents(container) {
+    // 切换模式
     container.querySelectorAll('input[name="pm-mode"]').forEach(radio => {
         radio.addEventListener('change', (e) => {
             updateSettings({ mode: e.target.value });
         });
     });
 
+    // 提炼参数动态调整
+    container.querySelector('#pm-setting-freq')?.addEventListener('change', (e) => {
+        const val = Math.max(1, parseInt(e.target.value) || 3);
+        updateSettings({ asyncFrequency: val });
+    });
+
+    container.querySelector('#pm-setting-slice')?.addEventListener('change', (e) => {
+        const val = Math.max(2, Math.min(15, parseInt(e.target.value) || 6));
+        updateSettings({ digestSliceCount: val });
+    });
+
+    // 保存快照
     container.querySelector('#pm-save-scene-btn')?.addEventListener('click', () => {
         const rawChars = container.querySelector('#pm-scene-characters')?.value || '';
         const chars = rawChars.split(/[,，]/).map(s => s.trim()).filter(Boolean);
@@ -463,6 +501,7 @@ function bindPanelEvents(container) {
         }
     });
 
+    // 添加记忆
     container.querySelector('#pm-add-mem-btn')?.addEventListener('click', () => {
         const contentInput = container.querySelector('#pm-new-mem-content');
         const keysInput = container.querySelector('#pm-new-mem-keys');
@@ -480,6 +519,7 @@ function bindPanelEvents(container) {
         keysInput.value = '';
     });
 
+    // 卡片动作 (点击切换状态 / 删除)
     container.querySelectorAll('.pm-card').forEach(card => {
         const id = card.getAttribute('data-id');
         card.querySelector('[data-action="cycle"]')?.addEventListener('click', () => {
