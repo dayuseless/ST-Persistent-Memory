@@ -1,5 +1,5 @@
 /**
- * 持续记忆插件配置与常量定义 (v0.1.3)
+ * 持续记忆插件配置与常量定义 (v0.1.4)
  */
 
 export const MODULE_NAME = 'st_persistent_memory';
@@ -58,7 +58,7 @@ export const DEFAULT_STATE = {
         action: '',               // 正在进行的动作或对话焦点 (可观察状态)
         tension: '',              // 即时气氛或张力
         unresolved: '',           // 当前悬念或未决问题
-        in_scene_characters: [],  // 当前活跃在场的角色名列表
+        in_scene_characters: undefined, // 当前活跃在场的角色名列表 (undefined: 初始未知/默认单聊上下文; []: 明确全员离场无人)
         updated_at: ''            // 快照最后更新时间
     },
     memories: [],

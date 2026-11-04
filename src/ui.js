@@ -1,5 +1,5 @@
 /**
- * UI 管理器：原生扩展抽屉集成、屏幕快捷悬浮按钮（支持自由拖拽与持久化）与 HUD 侧边控制台
+ * UI 管理器 (v0.1.4)：原生扩展抽屉集成、屏幕快捷悬浮按钮（支持自由拖拽与持久化）与 HUD 侧边控制台
  */
 
 import { MODULE_NAME, MEMORY_STATUS } from './config.js';

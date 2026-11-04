@@ -1,5 +1,5 @@
 /**
- * 记忆状态管理器 (v0.1.3)
+ * 记忆状态管理器 (v0.1.4)
  * 严格落实 state_revision 状态修订号、L0 三态 PATCH 语义与生命周期分流
  */
 
@@ -82,13 +82,16 @@ export function loadCurrentState() {
         version: 3,
         state_revision: Number(stored.state_revision) || 0,
         scene: {
-            scene_id: rawScene.scene_id || 'scene_init',
-            location: rawScene.location || '',
-            time: rawScene.time || '',
-            action: rawScene.action || '',
-            tension: rawScene.tension || '',
-            unresolved: rawScene.unresolved || '',
-            in_scene_characters: Array.isArray(rawScene.in_scene_characters) ? rawScene.in_scene_characters : [],
+            scene_id: typeof rawScene.scene_id === 'string' && rawScene.scene_id.trim() ? rawScene.scene_id.trim() : 'scene_init',
+            location: typeof rawScene.location === 'string' ? rawScene.location : '',
+            time: typeof rawScene.time === 'string' ? rawScene.time : '',
+            action: typeof rawScene.action === 'string' ? rawScene.action : '',
+            tension: typeof rawScene.tension === 'string' ? rawScene.tension : '',
+            unresolved: typeof rawScene.unresolved === 'string' ? rawScene.unresolved : '',
+            // P0: 严格区分三态：若提供数组 (包括 []) 精确保留，若为 undefined 或 null 严格保持 undefined 未知
+            in_scene_characters: Array.isArray(rawScene.in_scene_characters)
+                ? rawScene.in_scene_characters.filter(x => typeof x === 'string').map(x => x.trim()).filter(Boolean)
+                : undefined,
             updated_at: rawScene.updated_at || new Date().toISOString()
         },
         memories: migratedMemories,
@@ -126,8 +129,8 @@ export function getState() {
  * 
  * 1. 字段为 undefined: 未提供更新 -> 严格继承旧值 (保留)
  * 2. 字段为 null 或空字符串 "": 显式要求清空 -> 清空旧值
- * 3. 字段为非空字符串: 提供了有效新值 -> 覆盖旧值
- * 4. 角色数组: 若显式提供数组 (哪怕是 []) -> 按新数组覆盖；若为 undefined -> 保留旧在场人员
+ * 3. 字段为非空字符串: 提供了有效新值 -> 覆盖旧值 (非字符串直接拒绝，防 [object Object] 污染)
+ * 4. 角色数组: 若显式提供数组 (包括 []) -> 按新数组覆盖；若为 null -> 重置为 undefined 未知；若为 undefined -> 保留旧值
  */
 export function updateScene(scenePatch) {
     if (!scenePatch || typeof scenePatch !== 'object') return;
@@ -137,7 +140,8 @@ export function updateScene(scenePatch) {
     const resolveField = (newVal, oldVal) => {
         if (newVal === undefined) return oldVal; // 继承
         if (newVal === null || newVal === '') return ''; // 显式清空
-        return String(newVal).trim(); // 覆盖
+        if (typeof newVal !== 'string') return oldVal; // 防污染：拒绝非字符串对象
+        return newVal.trim(); // 覆盖
     };
 
     const newLocation = resolveField(scenePatch.location, cur.location);
@@ -146,12 +150,12 @@ export function updateScene(scenePatch) {
     const newTension = resolveField(scenePatch.tension, cur.tension);
     const newUnresolved = resolveField(scenePatch.unresolved, cur.unresolved);
 
-    // 角色数组显式处理
+    // 角色数组三态处理
     let newChars = cur.in_scene_characters;
     if (Array.isArray(scenePatch.in_scene_characters)) {
-        newChars = Array.from(new Set(scenePatch.in_scene_characters.map(x => String(x).trim()).filter(Boolean)));
+        newChars = Array.from(new Set(scenePatch.in_scene_characters.filter(x => typeof x === 'string').map(x => x.trim()).filter(Boolean)));
     } else if (scenePatch.in_scene_characters === null) {
-        newChars = [];
+        newChars = undefined; // 显式重置为未知
     }
 
     // scene_id 独立机制：支持显式切换，或地点迁移时自动更迭
@@ -218,24 +222,48 @@ function hasNegationWord(text) {
  * 保守去重与认知演化保护
  */
 export function addMemory(item) {
+    if (!item || typeof item !== 'object') return null;
     const s = getState();
-    const content = String(item.content || '').trim();
+    if (typeof item.content !== 'string') return null;
+    const content = item.content.trim();
     if (!content) return null;
 
-    const targetType = item.type || MEMORY_TYPES.FACT;
-    const targetScope = item.scope || (item.character ? MEMORY_SCOPE.CHARACTER : MEMORY_SCOPE.SHARED);
-    const targetChar = String(item.character || '').trim();
+    const validTypes = new Set(Object.values(MEMORY_TYPES));
+    const validScopes = new Set(Object.values(MEMORY_SCOPE));
 
-    // P0 修复：角色私知 (character) 必须具备非空角色归属，无归属一律拒绝入库 (Fail-Closed)
+    const targetType = item.type || MEMORY_TYPES.FACT;
+    if (!validTypes.has(targetType)) {
+        console.warn(`[${MODULE_NAME}] [Fail-Closed] 拦截非法记忆类型 "${targetType}"，拒绝入库`);
+        return null;
+    }
+
+    const targetScope = item.scope || (item.character ? MEMORY_SCOPE.CHARACTER : MEMORY_SCOPE.SHARED);
+    if (!validScopes.has(targetScope)) {
+        console.warn(`[${MODULE_NAME}] [Fail-Closed] 拦截非法记忆知情范围 "${targetScope}"，拒绝入库`);
+        return null;
+    }
+
+    const targetChar = typeof item.character === 'string' ? item.character.trim() : '';
+
+    // P0 Fail-Closed: 角色私知 (character) 必须具备非空角色归属
     if (targetScope === MEMORY_SCOPE.CHARACTER && !targetChar) {
         console.warn(`[${MODULE_NAME}] [Fail-Closed] 拦截角色私有记忆：缺少明确角色归属，拒绝入库`);
         return null;
     }
 
-    const newKeys = Array.isArray(item.trigger_keys) ? item.trigger_keys.map(k => String(k).trim()).filter(Boolean) : [];
+    const newKeys = Array.isArray(item.trigger_keys)
+        ? item.trigger_keys.filter(k => typeof k === 'string').map(k => k.trim()).filter(Boolean)
+        : [];
+
     const knownBy = Array.isArray(item.known_by) && item.known_by.length > 0
-        ? Array.from(new Set(item.known_by.map(k => String(k).trim()).filter(Boolean)))
+        ? Array.from(new Set(item.known_by.filter(k => typeof k === 'string').map(k => k.trim()).filter(Boolean)))
         : (targetChar ? [targetChar] : []);
+
+    // P1 Fail-Closed: 现场共知 (shared) 必须具备至少一个知情者 (known_by 或 character)，严禁作为公共记忆入库
+    if (targetScope === MEMORY_SCOPE.SHARED && knownBy.length === 0) {
+        console.warn(`[${MODULE_NAME}] [Fail-Closed] 拦截共享记忆：缺少知情者集合 (known_by / character)，拒绝入库`);
+        return null;
+    }
 
     const itemHasNegation = hasNegationWord(content);
 

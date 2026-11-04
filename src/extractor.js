@@ -1,5 +1,5 @@
 /**
- * 提炼引擎 (v0.1.3)
+ * 提炼引擎 (v0.1.4)
  * 严格落实：状态版本并发保护 (state_revision)、严格拒绝型 Schema 验证、显式生命周期流转与知情范围
  */
 
@@ -149,6 +149,12 @@ export function validateExtractedPayload(raw, currentMemories = []) {
                 continue;
             }
 
+            // P0 校验：若显式提供了未知非法的 scope，直接剔除！
+            if (item.scope && !validScopes.has(item.scope)) {
+                console.warn(`[${MODULE_NAME}] [Schema 拦截] 记忆知情范围 "${item.scope}" 未知非法，直接剔除`);
+                continue;
+            }
+
             const char = typeof item.character === 'string' ? item.character.trim().slice(0, 30) : '';
             const scope = validScopes.has(item.scope) ? item.scope : (char ? MEMORY_SCOPE.CHARACTER : MEMORY_SCOPE.SHARED);
 
@@ -167,6 +173,12 @@ export function validateExtractedPayload(raw, currentMemories = []) {
                     .filter(Boolean);
             } else if (char) {
                 knownBy = [char];
+            }
+
+            // P1 修复：Fail-Closed 校验：若 scope === shared，必须有明确知情者集合，严禁作为公共常识入库
+            if (scope === MEMORY_SCOPE.SHARED && knownBy.length === 0) {
+                console.warn(`[${MODULE_NAME}] [Schema 拦截] 记忆定义为 shared 共享记忆，但缺少知情者集合 (known_by / character)，执行 Fail-Closed 拒绝入库`);
+                continue;
             }
 
             const status = item.status === MEMORY_STATUS.PINNED ? MEMORY_STATUS.PINNED : MEMORY_STATUS.TRIGGERED;
@@ -350,6 +362,7 @@ ${conversationText}
       "trigger_keys": ["实体词1", "实体词2"],
       "character": "关联角色名或留空",
       "scope": "character 或 shared 或 world",
+      "known_by": ["知情角色A", "知情角色B"],
       "status": "triggered"
     }
   ],
