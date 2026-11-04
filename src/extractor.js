@@ -1,6 +1,6 @@
 /**
- * 提炼引擎 (v0.1.5)
- * 严格落实：状态版本并发保护 (state_revision)、严格拒绝型 Schema 验证、显式生命周期流转、知情范围隔离与提示词注入防护
+ * 提炼引擎 (v0.1.6)
+ * 严格落实：状态版本并发保护 (state_revision)、独立API/generateRaw单轮自包含请求 (根绝缺失 reasoning_content 报错)、严格拒绝型 Schema 验证、显式生命周期流转、知情范围隔离与提示词注入防护
  */
 
 import { MODULE_NAME, MEMORY_TYPES, MEMORY_STATUS, MEMORY_LIFECYCLE, MEMORY_SCOPE } from './config.js';
@@ -278,6 +278,61 @@ export function extractAndApplySyncTag(rawText) {
 }
 
 /**
+ * 执行提炼生成请求：
+ * 1. 若配置了独立 API，直接 fetch OpenAI 兼容端点 (彻底隔绝主会话上下文与历史思维链丢失问题)
+ * 2. 否则优先调用酒馆 context.generateRaw 发送单轮自包含 Prompt (不带全量聊天历史，杜绝 DeepSeek reasoning_content 错误)
+ * 3. 兜底回退至 context.generateQuietPrompt
+ */
+async function executeDigestRequest(c, digestPrompt, settings) {
+    // 方案 A: 独立 API 直连 (彻底解耦)
+    if (settings?.useCustomApi && settings?.customApiUrl) {
+        let baseUrl = settings.customApiUrl.trim().replace(/\/+$/, '');
+        const targetUrl = baseUrl.endsWith('/chat/completions') ? baseUrl : `${baseUrl}/chat/completions`;
+        const modelName = (settings.customApiModel || 'deepseek-chat').trim();
+
+        console.log(`[${MODULE_NAME}] [Async] 使用独立 API 发起提炼: ${targetUrl} (模型: ${modelName})`);
+        const headers = { 'Content-Type': 'application/json' };
+        if (settings.customApiKey) {
+            headers['Authorization'] = `Bearer ${settings.customApiKey.trim()}`;
+        }
+
+        const res = await fetch(targetUrl, {
+            method: 'POST',
+            headers: headers,
+            body: JSON.stringify({
+                model: modelName,
+                messages: [
+                    { role: 'user', content: digestPrompt }
+                ],
+                temperature: 0.1
+            })
+        });
+
+        if (!res.ok) {
+            const errBody = await res.text().catch(() => '');
+            throw new Error(`独立 API 响应异常 HTTP ${res.status}: ${errBody.slice(0, 300)}`);
+        }
+
+        const data = await res.json();
+        const content = data?.choices?.[0]?.message?.content;
+        if (!content) throw new Error('独立 API 返回内容为空');
+        return content;
+    }
+
+    // 方案 B: 优先使用 generateRaw (单轮独立 Prompt，不附带历史会话与缺失的 reasoning_content)
+    if (typeof c.generateRaw === 'function') {
+        return await c.generateRaw({ prompt: digestPrompt });
+    }
+
+    // 方案 C: 兜底调用 generateQuietPrompt
+    if (typeof c.generateQuietPrompt === 'function') {
+        return await c.generateQuietPrompt({ quietPrompt: digestPrompt });
+    }
+
+    throw new Error('当前环境未发现可用的文本生成接口 (generateRaw / generateQuietPrompt)');
+}
+
+/**
  * P0-1 核心修复：带会话身份与 state_revision 版本一致性核验的异步提炼
  */
 export async function triggerAsyncDigest(force = false) {
@@ -398,8 +453,8 @@ ${conversationText}
   ]
 }`;
 
-        // 调用后台静默接口
-        const response = await c.generateQuietPrompt(digestPrompt, false, false);
+        // 执行提炼请求 (优先独立 API，或调用 generateRaw 纯净单轮接口，绝不附带污染历史与丢失的 reasoning_content)
+        const response = await executeDigestRequest(c, digestPrompt, settings);
         if (!response) {
             console.warn(`[${MODULE_NAME}] [Async] 静默提炼未收到有效回复`);
             return;

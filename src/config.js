@@ -1,5 +1,5 @@
 /**
- * 持续记忆插件配置与常量定义 (v0.1.5)
+ * 持续记忆插件配置与常量定义 (v0.1.6)
  */
 
 export const MODULE_NAME = 'st_persistent_memory';
@@ -45,7 +45,13 @@ export const DEFAULT_SETTINGS = {
     maxTotalMemoryTokens: 450, // 注入总 Token 预算上限 (防止挤占对话窗口)
     maxPinnedCount: 5,         // 常驻记忆最大条数保护
     maxTriggeredCount: 5,      // 激活记忆最大条数保护
-    logVerbose: true           // 控制台详细调试日志
+    logVerbose: true,          // 控制台详细调试日志
+
+    // 独立提炼 API (彻底隔离主会话与历史思维链)
+    useCustomApi: false,       // 是否启用独立提取 API
+    customApiUrl: '',          // 自定义 Base URL (例如 https://api.deepseek.com/v1)
+    customApiKey: '',          // 自定义 API Key
+    customApiModel: 'deepseek-chat' // 自定义提炼模型名称
 };
 
 export const DEFAULT_STATE = {

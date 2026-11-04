@@ -380,6 +380,36 @@ function renderPanelContent() {
                     <input type="number" id="pm-setting-scene-tokens" class="pm-input" min="50" max="500" value="${settings.maxSceneTokens || 150}">
                 </div>
             </div>
+
+            <!-- 独立提炼 API (彻底解耦主会话与历史思维链) -->
+            <div class="pm-mt-8" style="background: rgba(0,0,0,0.18); border-radius: 6px; padding: 8px; border: 1px solid rgba(255,255,255,0.08);">
+                <div class="pm-flex-between pm-mb-8">
+                    <span style="font-size: 11px; font-weight: bold;"><i class="fa-solid fa-server"></i> 独立提炼 API 端点 (可选)</span>
+                    <label class="pm-radio-label" style="font-size: 11px; cursor: pointer;">
+                        <input type="checkbox" id="pm-setting-custom-api-enabled" ${settings.useCustomApi ? 'checked' : ''}>
+                        <span>启用直连</span>
+                    </label>
+                </div>
+                <div id="pm-custom-api-fields" style="${settings.useCustomApi ? '' : 'display: none;'}">
+                    <div class="pm-input-row pm-mb-4">
+                        <label>Base URL</label>
+                        <input type="text" id="pm-setting-custom-api-url" class="pm-input" value="${escapeHtml(settings.customApiUrl || '')}" placeholder="https://api.deepseek.com/v1">
+                    </div>
+                    <div class="pm-grid-2col pm-mb-4">
+                        <div class="pm-input-row">
+                            <label>API Key</label>
+                            <input type="password" id="pm-setting-custom-api-key" class="pm-input" value="${escapeHtml(settings.customApiKey || '')}" placeholder="sk-...">
+                        </div>
+                        <div class="pm-input-row">
+                            <label>提炼模型</label>
+                            <input type="text" id="pm-setting-custom-api-model" class="pm-input" value="${escapeHtml(settings.customApiModel || 'deepseek-chat')}" placeholder="deepseek-chat">
+                        </div>
+                    </div>
+                    <div style="font-size: 10px; opacity: 0.65; line-height: 1.4;">
+                        提示：启用后提炼直接向该端点请求，不使用酒馆主模型，彻底杜绝历史思维链或复杂脚本导致的报错。
+                    </div>
+                </div>
+            </div>
         </div>
 
         <!-- 现场快照 HUD -->
@@ -536,6 +566,26 @@ function bindPanelEvents(container) {
     container.querySelector('#pm-setting-scene-tokens')?.addEventListener('change', (e) => {
         const val = Math.max(50, Math.min(500, parseInt(e.target.value) || 150));
         updateSettings({ maxSceneTokens: val });
+    });
+
+    // 独立提炼 API 配置监听
+    container.querySelector('#pm-setting-custom-api-enabled')?.addEventListener('change', (e) => {
+        const isChecked = e.target.checked;
+        const fields = container.querySelector('#pm-custom-api-fields');
+        if (fields) fields.style.display = isChecked ? '' : 'none';
+        updateSettings({ useCustomApi: isChecked });
+    });
+
+    container.querySelector('#pm-setting-custom-api-url')?.addEventListener('change', (e) => {
+        updateSettings({ customApiUrl: e.target.value.trim() });
+    });
+
+    container.querySelector('#pm-setting-custom-api-key')?.addEventListener('change', (e) => {
+        updateSettings({ customApiKey: e.target.value.trim() });
+    });
+
+    container.querySelector('#pm-setting-custom-api-model')?.addEventListener('change', (e) => {
+        updateSettings({ customApiModel: e.target.value.trim() || 'deepseek-chat' });
     });
 
     // 保存快照

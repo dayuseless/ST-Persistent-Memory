@@ -35,6 +35,10 @@
 
 ## 架构演进与版本日志
 
+### v0.1.6 (独立提炼 API 端点、单轮自包含请求修复与历史思维链解耦)
+- [x] **P0 根绝思维链丢失与历史污染报错 (DeepSeek 400 Bad Request)**：彻底将提炼生成接口由包含全量会话历史的 `c.generateQuietPrompt` 重构为基于 `c.generateRaw` 的自包含单轮生成。仅发送纯净提炼 Prompt，不再携带主聊天历史，根本性解决 DeepSeek 思考模型因历史上下文丢失 `reasoning_content` 被拒收的问题，同时大幅节省提炼 Token 开销。
+- [x] **P1 独立提炼 API 端点支持 (Dedicated Extraction Endpoint)**：在 HUD 设置面板中增加专用 API 配置（Base URL、API Key 与专属模型名），支持将后台提炼任务一键分流至独立端点（如 DeepSeek 直连或本地 Ollama），彻底解耦主角色扮演会话，避免各种复杂正则/提示词后处理脚本的干扰。
+
 ### v0.1.5 (知情等价性隔离、事务式原子提交、提示词注入防护与体验加固)
 - [x] **P1 快捷添加知情范围闭环与体验修复**：UI 快捷添加面板增加 Scope 选项（`world` / `shared` / `character`），未明确指定知情者时智能默认归为 `world` 公开常识并支持自动填充在场角色，彻底解决快捷添加被 Fail-Closed 误杀的问题。
 - [x] **P1 严格知情关系等价性融合防线**：去重融合算法增加 `areSetsEqual` 强等价校验。对于 `shared` 共享记忆，仅当两者的知情者集合 `known_by` **完全等价** 时才允许合并，绝不搞简单集合并集，杜绝不同经历者被错误绑定导致的认知权限穿透。
@@ -75,3 +79,15 @@ window.__persistentMemory.injectNow();
 // 立即强制执行一次后台提炼
 window.__persistentMemory.digestNow();
 ```
+
+---
+
+## 规划路线与待办 (Roadmap)
+
+- [x] **独立后台提炼 API 端点 (Dedicated Extraction Endpoint)** (v0.1.6 已落地 OpenAI 兼容端点直连)
+  - 支持在设置中配置独立的 API Base URL、API Key 与专属提炼模型（如 DeepSeek-V3、本地 Ollama / Qwen-2.5-7B、GPT-4o-mini 等）。
+  - **价值**：彻底解耦主聊天与后台提炼任务，避免主角色扮演模型的生成脚本/前置预设（如正则修改、工具调用）干扰静默提炼，大幅降低提炼延迟与 Token 成本。
+- [ ] **记忆数据导入 / 导出与备份工具 (Export / Import Backup)**
+  - 支持将当前会话记忆导出为便携 JSON 文件，或从已有 Chat / Lorebook 中快速导入并建立初始记忆。
+- [ ] **小型本地模型提炼模板优化**
+  - 为 7B/14B 等小型模型提供更低解析容错率的提示词模板与容错纠错链路。
