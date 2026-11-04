@@ -1,5 +1,5 @@
 /**
- * 注入引擎 (v0.1.4)
+ * 注入引擎 (v0.1.5)
  * 严格落实：L0 独立硬预算上限 (maxSceneTokens)、模板固定开销扣除、Fail-Closed 私有/共享记忆防护、Scope 白名单校验、Presence 严格三态语义与 known_by 知情者分流
  */
 

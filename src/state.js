@@ -1,12 +1,13 @@
 /**
- * 记忆状态管理器 (v0.1.4)
- * 严格落实 state_revision 状态修订号、L0 三态 PATCH 语义与生命周期分流
+ * 记忆状态管理器 (v0.1.5)
+ * 严格落实 state_revision 状态修订号、L0 三态 PATCH 语义、事务式批量更新与严格知情集合隔离
  */
 
 import { MODULE_NAME, DEFAULT_SETTINGS, DEFAULT_STATE, MEMORY_STATUS, MEMORY_LIFECYCLE, MEMORY_TYPES, MEMORY_SCOPE } from './config.js';
 
 let stateCache = null;
 const stateChangeListeners = new Set();
+let isBatchUpdating = false;
 
 function getContext() {
     return window.SillyTavern?.getContext?.() ?? null;
@@ -25,6 +26,24 @@ function notifyChange() {
 export function onStateChange(fn) {
     stateChangeListeners.add(fn);
     return () => stateChangeListeners.delete(fn);
+}
+
+/**
+ * 事务式批量更新包装器 (P1 修复：提炼结果原子提交)
+ * 在事务块执行期间暂停单独持久化与 revision 乱序递增，在结尾统一执行单次落盘
+ */
+export function batchUpdate(fn) {
+    if (isBatchUpdating) {
+        return fn();
+    }
+    isBatchUpdating = true;
+    try {
+        const result = fn();
+        return result;
+    } finally {
+        isBatchUpdating = false;
+        saveCurrentState();
+    }
 }
 
 export function getSettings() {
@@ -63,6 +82,13 @@ export function loadCurrentState() {
     const stored = metadata[MODULE_NAME];
     const rawScene = stored.scene || {};
 
+    const sanitizeId = (id) => {
+        if (typeof id === 'string' && /^[a-zA-Z0-9_\-\.]+$/.test(id.trim())) {
+            return id.trim();
+        }
+        return 'mem-' + Date.now().toString(36) + '-' + Math.random().toString(36).substring(2, 6);
+    };
+
     const migratedMemories = (Array.isArray(stored.memories) ? stored.memories : []).map(m => {
         const scope = m.scope || (m.character ? MEMORY_SCOPE.CHARACTER : MEMORY_SCOPE.SHARED);
         const knownBy = Array.isArray(m.known_by)
@@ -71,6 +97,7 @@ export function loadCurrentState() {
 
         return {
             ...m,
+            id: sanitizeId(m.id),
             scope: scope,
             known_by: knownBy,
             // P1 修复旧记忆迁移语义：旧版无 lifecycle 的 archived 项仅代表检索休眠，绝不擅自篡改为 completed
@@ -106,6 +133,9 @@ export function loadCurrentState() {
 }
 
 export function saveCurrentState() {
+    if (isBatchUpdating) {
+        return; // 事务进行中，由 batchUpdate 统一在结尾原子落盘
+    }
     const c = getContext();
     if (!c?.chat_metadata || !stateCache) return;
 
@@ -213,9 +243,26 @@ function calculateTextSimilarity(str1, str2) {
 }
 
 function hasNegationWord(text) {
-    const negations = ['不', '没', '未', '非', '别', '无', 'not', 'never', 'no', 'deny', 'refuse'];
-    const s = String(text).toLowerCase();
-    return negations.some(w => s.includes(w));
+    if (!text || typeof text !== 'string') return false;
+    const s = text.toLowerCase();
+    // P2 改进：英文单词边界精准匹配 (避免 notable, nobody, normal 等误判)
+    if (/\b(not|never|no|deny|denies|denied|refuse|refuses|refused|cannot|can't|won't|don't|didn't|isn't|aren't)\b/i.test(s)) {
+        return true;
+    }
+    // 中文：排除常见非否定虚词“不仅”、“不只”、“不断”等，匹配真正否定动词/形容词组合
+    const cleanedZh = s.replace(/不仅|不只|不单|不断|不愧|不懈|无微不至|无所不在|无论/g, '');
+    const zhNegationRegex = /(?:[不没未非别无莫弗])[\u4e00-\u9fa5]/;
+    return zhNegationRegex.test(cleanedZh);
+}
+
+function areSetsEqual(arr1, arr2) {
+    const s1 = new Set(Array.isArray(arr1) ? arr1 : []);
+    const s2 = new Set(Array.isArray(arr2) ? arr2 : []);
+    if (s1.size !== s2.size) return false;
+    for (const item of s1) {
+        if (!s2.has(item)) return false;
+    }
+    return true;
 }
 
 /**
@@ -237,7 +284,18 @@ export function addMemory(item) {
         return null;
     }
 
-    const targetScope = item.scope || (item.character ? MEMORY_SCOPE.CHARACTER : MEMORY_SCOPE.SHARED);
+    // P1 修复：未指定特定知情者时默认归类为 world (世界公共事实)，防止快捷添加普通记忆被 Fail-Closed 误杀
+    let targetScope;
+    if (item.scope) {
+        targetScope = item.scope;
+    } else if (item.character) {
+        targetScope = MEMORY_SCOPE.CHARACTER;
+    } else if (Array.isArray(item.known_by) && item.known_by.length > 0) {
+        targetScope = MEMORY_SCOPE.SHARED;
+    } else {
+        targetScope = MEMORY_SCOPE.WORLD;
+    }
+
     if (!validScopes.has(targetScope)) {
         console.warn(`[${MODULE_NAME}] [Fail-Closed] 拦截非法记忆知情范围 "${targetScope}"，拒绝入库`);
         return null;
@@ -277,6 +335,14 @@ export function addMemory(item) {
             continue;
         }
 
+        // 规则 2.1 (P1 修复)：对于 shared 共享记忆，双方知情者集合必须完全等价才允许合并！
+        // 绝不因为甲知道某事、乙也知道某事，就粗暴合并为甲乙共同经历！
+        if (targetScope === MEMORY_SCOPE.SHARED) {
+            if (!areSetsEqual(existing.known_by, knownBy)) {
+                continue;
+            }
+        }
+
         // 规则 3：否定立场对立绝对不合并
         if (itemHasNegation !== hasNegationWord(existing.content)) continue;
 
@@ -293,7 +359,6 @@ export function addMemory(item) {
 
         if (similarity >= threshold) {
             existing.trigger_keys = Array.from(new Set([...(existing.trigger_keys || []), ...newKeys]));
-            existing.known_by = Array.from(new Set([...(existing.known_by || []), ...knownBy]));
 
             if (content.length > existing.content.length && content.includes(existing.content)) {
                 existing.content = content;
@@ -303,7 +368,7 @@ export function addMemory(item) {
             existing.updated_at = new Date().toISOString();
 
             saveCurrentState();
-            console.log(`[${MODULE_NAME}] [保守融合] 匹配到高度吻合条目，融合触发词与知情者: "${existing.content}"`);
+            console.log(`[${MODULE_NAME}] [保守融合] 匹配到高度吻合条目，融合触发词: "${existing.content}"`);
             return existing;
         }
     }

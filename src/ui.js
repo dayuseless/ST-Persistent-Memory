@@ -390,8 +390,12 @@ function renderPanelContent() {
             </div>
             <div class="pm-scene-grid">
                 <div class="pm-input-row">
-                    <label>地点 / 时段</label>
-                    <input type="text" id="pm-scene-location" class="pm-input" value="${escapeHtml(scene.location || '')}" placeholder="例如: 港口酒馆二楼 (暴雨深夜)">
+                    <label>地点环境</label>
+                    <input type="text" id="pm-scene-location" class="pm-input" value="${escapeHtml(scene.location || '')}" placeholder="例如: 港口酒馆二楼">
+                </div>
+                <div class="pm-input-row">
+                    <label>时间 / 天气 / 时段</label>
+                    <input type="text" id="pm-scene-time" class="pm-input" value="${escapeHtml(scene.time || '')}" placeholder="例如: 暴雨深夜 / 破晓时分">
                 </div>
                 <div class="pm-input-row">
                     <label>当前动作 / 焦点</label>
@@ -406,8 +410,8 @@ function renderPanelContent() {
                     <input type="text" id="pm-scene-unresolved" class="pm-input" value="${escapeHtml(scene.unresolved || '')}" placeholder="例如: 尚未挑明那枚徽章的真正来历">
                 </div>
                 <div class="pm-input-row">
-                    <label>在场角色 (逗号分隔)</label>
-                    <input type="text" id="pm-scene-characters" class="pm-input" value="${escapeHtml((scene.in_scene_characters || []).join(', '))}" placeholder="留空则自动检测">
+                    <label>在场角色 (留空为自动检测，填"无"为明确全员离场)</label>
+                    <input type="text" id="pm-scene-characters" class="pm-input" value="${escapeHtml(scene.in_scene_characters === undefined ? '' : (scene.in_scene_characters.length === 0 ? '无' : scene.in_scene_characters.join(', ')))}" placeholder="留空为自动检测(当前角色)，输入'无'为明确全员离场">
                 </div>
             </div>
             <button id="pm-save-scene-btn" class="pm-btn-primary pm-mt-8"><i class="fa-solid fa-check"></i> 保存快照变更</button>
@@ -426,8 +430,16 @@ function renderPanelContent() {
             <!-- 快捷添加 -->
             <div class="pm-add-box">
                 <input type="text" id="pm-new-mem-content" class="pm-input" placeholder="输入一条重要事实、约定或认知...">
-                <div class="pm-flex-between pm-mt-4">
+                <div class="pm-flex-between pm-mt-4 pm-mb-4">
                     <input type="text" id="pm-new-mem-keys" class="pm-input pm-flex-1 pm-mr-4" placeholder="触发词(逗号隔开，可选)">
+                    <select id="pm-new-mem-scope" class="pm-input" style="width: 110px;">
+                        <option value="world" selected>🌍 世界常识</option>
+                        <option value="shared">👥 现场共知</option>
+                        <option value="character">🔒 角色私知</option>
+                    </select>
+                </div>
+                <div class="pm-flex-between">
+                    <input type="text" id="pm-new-mem-target" class="pm-input pm-flex-1 pm-mr-4" placeholder="归属角色/知情者(私知或共知时填写，逗号隔开)">
                     <button id="pm-add-mem-btn" class="pm-btn-secondary"><i class="fa-solid fa-plus"></i> 添加</button>
                 </div>
             </div>
@@ -479,7 +491,7 @@ function renderMemoryCard(mem) {
     const keysHtml = (mem.trigger_keys || []).map(k => `<span class="pm-key-pill">${escapeHtml(k)}</span>`).join('');
 
     return `
-        <div class="pm-card" data-id="${mem.id}">
+        <div class="pm-card" data-id="${escapeHtml(mem.id)}">
             <div class="pm-card-top">
                 <button class="pm-status-chip ${statusClass}" title="点击切换：常驻 / 触发 / 归档" data-action="cycle">
                     ${statusIcon}
@@ -528,15 +540,29 @@ function bindPanelEvents(container) {
 
     // 保存快照
     container.querySelector('#pm-save-scene-btn')?.addEventListener('click', () => {
-        const rawChars = container.querySelector('#pm-scene-characters')?.value || '';
-        const chars = rawChars.split(/[,，]/).map(s => s.trim()).filter(Boolean);
+        const rawLocation = container.querySelector('#pm-scene-location')?.value || '';
+        const rawTime = container.querySelector('#pm-scene-time')?.value || '';
+        const rawAction = container.querySelector('#pm-scene-action')?.value || '';
+        const rawTension = container.querySelector('#pm-scene-tension')?.value || '';
+        const rawUnresolved = container.querySelector('#pm-scene-unresolved')?.value || '';
+        const rawChars = container.querySelector('#pm-scene-characters')?.value?.trim() || '';
+
+        let charsToSave;
+        if (!rawChars || rawChars === '自动' || rawChars.toLowerCase() === 'auto') {
+            charsToSave = null; // 重置为未知 (undefined)
+        } else if (rawChars === '无' || rawChars.toLowerCase() === 'none' || rawChars === '[]') {
+            charsToSave = []; // 明确无人
+        } else {
+            charsToSave = rawChars.split(/[,，]/).map(s => s.trim()).filter(Boolean);
+        }
 
         updateScene({
-            location: container.querySelector('#pm-scene-location')?.value || '',
-            action: container.querySelector('#pm-scene-action')?.value || '',
-            tension: container.querySelector('#pm-scene-tension')?.value || '',
-            unresolved: container.querySelector('#pm-scene-unresolved')?.value || '',
-            in_scene_characters: chars
+            location: rawLocation,
+            time: rawTime,
+            action: rawAction,
+            tension: rawTension,
+            unresolved: rawUnresolved,
+            in_scene_characters: charsToSave
         });
         const btn = container.querySelector('#pm-save-scene-btn');
         if (btn) {
@@ -545,22 +571,42 @@ function bindPanelEvents(container) {
         }
     });
 
-    // 添加记忆
+    // 添加记忆 (P1 修复：知情范围与知情者多维支持，防止被误杀)
     container.querySelector('#pm-add-mem-btn')?.addEventListener('click', () => {
         const contentInput = container.querySelector('#pm-new-mem-content');
         const keysInput = container.querySelector('#pm-new-mem-keys');
+        const scopeSelect = container.querySelector('#pm-new-mem-scope');
+        const targetInput = container.querySelector('#pm-new-mem-target');
+
         const content = contentInput?.value?.trim();
         if (!content) return;
 
         const keys = (keysInput?.value || '').split(/[,，]/).map(k => k.trim()).filter(Boolean);
-        addMemory({
+        const scope = scopeSelect?.value || 'world';
+        const targets = (targetInput?.value || '').split(/[,，]/).map(k => k.trim()).filter(Boolean);
+
+        const state = getState();
+        const c = window.SillyTavern?.getContext?.();
+        const curCharName = c?.characters?.[c?.this_chid]?.name || '角色';
+
+        let memData = {
             content: content,
             trigger_keys: keys,
+            scope: scope,
             status: MEMORY_STATUS.TRIGGERED
-        });
+        };
+
+        if (scope === 'character') {
+            memData.character = targets[0] || curCharName;
+        } else if (scope === 'shared') {
+            memData.known_by = targets.length > 0 ? targets : (Array.isArray(state.scene.in_scene_characters) && state.scene.in_scene_characters.length > 0 ? state.scene.in_scene_characters : [curCharName, c?.name1 || 'User']);
+        }
+
+        addMemory(memData);
 
         contentInput.value = '';
         keysInput.value = '';
+        targetInput.value = '';
     });
 
     // 卡片动作 (点击切换状态 / 删除)
