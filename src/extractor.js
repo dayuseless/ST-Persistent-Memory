@@ -337,6 +337,64 @@ async function executeDigestRequest(c, digestPrompt, settings) {
 }
 
 /**
+ * 测试独立 API 连通性
+ */
+export async function testCustomApiConnection(overrideSettings = null) {
+    const settings = overrideSettings || getSettings();
+    if (!settings?.customApiUrl) {
+        return { success: false, error: '请先填写 Base URL (例如: https://api.deepseek.com/v1)' };
+    }
+    let baseUrl = settings.customApiUrl.trim().replace(/\/+$/, '');
+    const targetUrl = baseUrl.endsWith('/chat/completions') ? baseUrl : `${baseUrl}/chat/completions`;
+    const modelName = (settings.customApiModel || 'deepseek-chat').trim();
+
+    const headers = { 'Content-Type': 'application/json' };
+    if (settings.customApiKey) {
+        headers['Authorization'] = `Bearer ${settings.customApiKey.trim()}`;
+    }
+
+    const start = Date.now();
+    try {
+        const res = await fetch(targetUrl, {
+            method: 'POST',
+            headers: headers,
+            body: JSON.stringify({
+                model: modelName,
+                messages: [
+                    { role: 'user', content: 'Respond with the single word "OK".' }
+                ],
+                max_tokens: 8,
+                temperature: 0.1
+            })
+        });
+
+        const latency = Date.now() - start;
+
+        if (!res.ok) {
+            const errBody = await res.text().catch(() => '');
+            return {
+                success: false,
+                error: `HTTP ${res.status} (${res.statusText}): ${errBody.slice(0, 160)}`
+            };
+        }
+
+        const data = await res.json();
+        const content = data?.choices?.[0]?.message?.content?.trim() || '';
+        return {
+            success: true,
+            latency: latency,
+            model: modelName,
+            reply: content
+        };
+    } catch (err) {
+        return {
+            success: false,
+            error: `网络或跨域异常: ${err.message || String(err)}`
+        };
+    }
+}
+
+/**
  * P0-1 核心修复：带会话身份与 state_revision 版本一致性核验的异步提炼
  */
 export async function triggerAsyncDigest(force = false) {

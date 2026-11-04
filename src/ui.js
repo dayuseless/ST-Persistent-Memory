@@ -1,12 +1,24 @@
 /**
- * UI 管理器 (v0.1.4)：原生扩展抽屉集成、屏幕快捷悬浮按钮（支持自由拖拽与持久化）与 HUD 侧边控制台
+ * UI 管理器 (v0.1.6)：原生扩展抽屉集成、屏幕快捷悬浮按钮（支持自由拖拽与持久化）与 HUD 侧边控制台
+ * 全面升级：选项卡式现代工业风界面、大号高对比度数字显示、独立 API 完整配置与连通性测试
  */
 
-import { MODULE_NAME, MEMORY_STATUS } from './config.js';
+import { MODULE_NAME, MEMORY_STATUS, MEMORY_LIFECYCLE, MEMORY_SCOPE } from './config.js';
 import { getState, getSettings, updateSettings, updateScene, addMemory, deleteMemory, cycleMemoryStatus, onStateChange } from './state.js';
-import { triggerAsyncDigest } from './extractor.js';
+import { triggerAsyncDigest, testCustomApiConnection } from './extractor.js';
 
 let panelEl = null;
+let currentTab = 'memories'; // 'memories' | 'scene' | 'settings'
+
+function escapeHtml(str) {
+    if (!str || typeof str !== 'string') return '';
+    return str
+        .replace(/&/g, '&amp;')
+        .replace(/</g, '&lt;')
+        .replace(/>/g, '&gt;')
+        .replace(/"/g, '&quot;')
+        .replace(/'/g, '&#039;');
+}
 
 /**
  * 初始化 UI 并绑定事件
@@ -30,7 +42,7 @@ function createFloatingButton() {
     const btn = document.createElement('div');
     btn.id = 'pm-floating-bubble';
     btn.className = 'pm-floating-bubble';
-    btn.title = '持续记忆系统 (可拖动，点击打开控制台)';
+    btn.title = '持续记忆系统 (可拖拽，点击打开 HUD 面板)';
     btn.innerHTML = '<i class="fa-solid fa-brain"></i>';
 
     // 绑定拖拽逻辑
@@ -200,17 +212,49 @@ function renderNativeDrawerContent() {
     content.innerHTML = `
         <div class="pm-native-box">
             <div class="flex-container alignitemscenter wide100p pm-mb-8">
-                <label class="checkbox_label flex1">
+                <label class="checkbox_label flex1" style="font-weight: 700; color: #f8fafc;">
                     <input type="checkbox" id="pm-setting-enabled" ${settings.enabled ? 'checked' : ''}>
                     <span>启用持续记忆</span>
                 </label>
                 <button id="pm-open-hud-btn" class="menu_button menu_button_icon">
-                    <i class="fa-solid fa-arrow-up-right-from-square"></i> 打开完整 HUD 面板
+                    <i class="fa-solid fa-arrow-up-right-from-square"></i> 打开完整控制台 (HUD)
                 </button>
             </div>
 
+            <!-- 独立提炼 API 直连配置 (原生抽屉同步) -->
+            <div style="background: rgba(0,0,0,0.3); border: 1px solid rgba(255,255,255,0.12); border-radius: 8px; padding: 10px; margin-bottom: 10px;">
+                <div class="flex-container alignitemscenter wide100p pm-mb-8">
+                    <label class="checkbox_label flex1" style="color: #38bdf8; font-weight: 700;">
+                        <input type="checkbox" id="pm-native-custom-api-enabled" ${settings.useCustomApi ? 'checked' : ''}>
+                        <span><i class="fa-solid fa-bolt"></i> 启用独立提炼 API (直连 DeepSeek / 本地模型)</span>
+                    </label>
+                </div>
+                <div id="pm-native-custom-api-body" style="${settings.useCustomApi ? '' : 'display: none;'}">
+                    <div class="pm-input-row pm-mb-4">
+                        <label class="pm-input-label">Base URL (例如 https://api.deepseek.com/v1):</label>
+                        <input type="text" id="pm-native-custom-api-url" class="pm-input" value="${escapeHtml(settings.customApiUrl || '')}" placeholder="https://api.deepseek.com/v1">
+                    </div>
+                    <div class="pm-grid-2col pm-mb-4">
+                        <div class="pm-input-row">
+                            <label class="pm-input-label">API Key:</label>
+                            <input type="password" id="pm-native-custom-api-key" class="pm-input" value="${escapeHtml(settings.customApiKey || '')}" placeholder="sk-...">
+                        </div>
+                        <div class="pm-input-row">
+                            <label class="pm-input-label">模型名称:</label>
+                            <input type="text" id="pm-native-custom-api-model" class="pm-input" value="${escapeHtml(settings.customApiModel || 'deepseek-chat')}" placeholder="deepseek-chat">
+                        </div>
+                    </div>
+                    <div style="display: flex; gap: 8px; align-items: center; margin-top: 6px;">
+                        <button id="pm-native-test-api-btn" class="pm-btn-test">
+                            <i class="fa-solid fa-plug"></i> 测试 API 连通性
+                        </button>
+                        <span id="pm-native-test-res" style="font-size: 11px; font-weight: 600;"></span>
+                    </div>
+                </div>
+            </div>
+
             <div class="pm-input-row pm-mb-8">
-                <label>运行模式：</label>
+                <label class="pm-input-label">提炼运行模式：</label>
                 <div class="pm-toggle-group">
                     <label class="pm-radio-label">
                         <input type="radio" name="pm-native-mode" value="async" ${settings.mode === 'async' ? 'checked' : ''}>
@@ -224,30 +268,34 @@ function renderNativeDrawerContent() {
             </div>
 
             <div class="pm-input-row pm-mb-8">
-                <label>最近提炼动态：</label>
-                <div class="pm-text-preview" style="color: #38bdf8;">${escapeHtml(state.last_digest_summary || '尚未执行提炼')} ${state.last_digest_time ? `(${state.last_digest_time})` : ''}</div>
+                <label class="pm-input-label">最新提炼动态：</label>
+                <div style="background: rgba(0,0,0,0.35); padding: 8px 10px; border-radius: 6px; border: 1px solid rgba(255,255,255,0.08); font-size: 12px; color: #38bdf8; font-weight: 600;">
+                    ${escapeHtml(state.last_digest_summary || '尚未执行提炼')} ${state.last_digest_time ? `<span style="color: #94a3b8; font-weight: 400;">(${state.last_digest_time})</span>` : ''}
+                </div>
             </div>
 
             <div class="pm-input-row pm-mb-8">
-                <label>当前现场地点：</label>
-                <div class="pm-text-preview">${escapeHtml(scene.location || '（尚未记录地点）')}</div>
-            </div>
-
-            <div class="pm-input-row pm-mb-8">
-                <label>记忆条目概览：</label>
-                <div class="pm-text-preview">版本: rev.${state.state_revision || 0} | 共 ${memories.length} 条记忆（${memories.filter(m => m.status === 'pinned').length} 条常驻，${memories.filter(m => m.status === 'triggered').length} 条条件触发）</div>
+                <label class="pm-input-label">现场快照与状态版本：</label>
+                <div style="background: rgba(0,0,0,0.35); padding: 8px 10px; border-radius: 6px; border: 1px solid rgba(255,255,255,0.08); font-size: 12px; color: #f8fafc;">
+                    修订: <b style="color: #c084fc;">rev.${state.state_revision || 0}</b> | 地点: <b style="color: #38bdf8;">${escapeHtml(scene.location || '未知')}</b> | 记忆: <b style="color: #10b981;">${memories.length}</b> 条
+                </div>
             </div>
 
             <div class="flex-container flexGap10 pm-mt-8">
-                <button id="pm-native-digest-btn" class="menu_button menu_button_icon flex1">
+                <button id="pm-native-digest-btn" class="menu_button menu_button_icon flex1" style="font-weight: 700;">
                     <i class="fa-solid fa-bolt"></i> 立即执行后台提炼
                 </button>
             </div>
         </div>
     `;
 
+    // 绑定原生事件
     content.querySelector('#pm-setting-enabled')?.addEventListener('change', (e) => {
         updateSettings({ enabled: e.target.checked });
+    });
+
+    content.querySelector('#pm-open-hud-btn')?.addEventListener('click', () => {
+        togglePanel(true);
     });
 
     content.querySelectorAll('input[name="pm-native-mode"]').forEach(radio => {
@@ -256,14 +304,51 @@ function renderNativeDrawerContent() {
         });
     });
 
-    content.querySelector('#pm-open-hud-btn')?.addEventListener('click', () => {
-        togglePanel(true);
+    content.querySelector('#pm-native-custom-api-enabled')?.addEventListener('change', (e) => {
+        const isChecked = e.target.checked;
+        const body = content.querySelector('#pm-native-custom-api-body');
+        if (body) body.style.display = isChecked ? '' : 'none';
+        updateSettings({ useCustomApi: isChecked });
+    });
+
+    content.querySelector('#pm-native-custom-api-url')?.addEventListener('change', (e) => {
+        updateSettings({ customApiUrl: e.target.value.trim() });
+    });
+
+    content.querySelector('#pm-native-custom-api-key')?.addEventListener('change', (e) => {
+        updateSettings({ customApiKey: e.target.value.trim() });
+    });
+
+    content.querySelector('#pm-native-custom-api-model')?.addEventListener('change', (e) => {
+        updateSettings({ customApiModel: e.target.value.trim() || 'deepseek-chat' });
+    });
+
+    content.querySelector('#pm-native-test-api-btn')?.addEventListener('click', async () => {
+        const resEl = content.querySelector('#pm-native-test-res');
+        if (resEl) {
+            resEl.style.color = '#38bdf8';
+            resEl.innerHTML = '<i class="fa-solid fa-spinner fa-spin"></i> 测试中...';
+        }
+        const res = await testCustomApiConnection();
+        if (res.success) {
+            if (resEl) {
+                resEl.style.color = '#34d399';
+                resEl.innerHTML = `<i class="fa-solid fa-check"></i> 连通正常 (${res.latency}ms)`;
+            }
+            window.toastr?.success?.(`API 连接成功！延时 ${res.latency}ms，模型: ${res.model}`, '持续记忆');
+        } else {
+            if (resEl) {
+                resEl.style.color = '#f87171';
+                resEl.innerHTML = `<i class="fa-solid fa-xmark"></i> 失败: ${escapeHtml(res.error).slice(0, 30)}`;
+            }
+            window.toastr?.error?.(res.error, 'API 连接失败');
+        }
     });
 
     content.querySelector('#pm-native-digest-btn')?.addEventListener('click', async () => {
         const btn = content.querySelector('#pm-native-digest-btn');
         btn.innerHTML = '<i class="fa-solid fa-spinner fa-spin"></i> 提炼中...';
-        window.toastr?.info?.('后台提炼任务已触发...', '持续记忆');
+        window.toastr?.info?.('后台提炼任务已启动...', '持续记忆');
         const res = await triggerAsyncDigest(true);
         btn.innerHTML = '<i class="fa-solid fa-bolt"></i> 立即执行后台提炼';
         renderNativeDrawerContent();
@@ -277,7 +362,7 @@ function renderNativeDrawerContent() {
 }
 
 /**
- * 3. 创建主抽屉 HUD 控制台 DOM
+ * 3. 创建主抽屉 HUD 控制台 DOM (带导航 Tab)
  */
 function createPanelDOM() {
     if (document.getElementById('pm-drawer-panel')) return;
@@ -289,19 +374,47 @@ function createPanelDOM() {
         <div class="pm-panel-header">
             <div class="pm-title-group">
                 <i class="fa-solid fa-brain pm-title-icon"></i>
-                <span class="pm-title-text">持续记忆控制台 (HUD)</span>
+                <span class="pm-title-text">持续记忆控制台</span>
+                <div class="pm-header-stats" id="pm-header-badges">
+                    <!-- 动态状态徽标 -->
+                </div>
             </div>
             <div class="pm-header-actions">
                 <button id="pm-manual-digest-btn" class="pm-btn-icon" title="立即触发后台提炼"><i class="fa-solid fa-bolt"></i></button>
                 <button id="pm-close-btn" class="pm-btn-icon" title="关闭"><i class="fa-solid fa-xmark"></i></button>
             </div>
         </div>
+        <div class="pm-tab-bar" id="pm-tab-bar">
+            <button class="pm-tab-btn ${currentTab === 'memories' ? 'pm-active' : ''}" data-tab="memories">
+                <i class="fa-solid fa-layer-group"></i> 记忆流
+            </button>
+            <button class="pm-tab-btn ${currentTab === 'scene' ? 'pm-active' : ''}" data-tab="scene">
+                <i class="fa-solid fa-compass"></i> 现场快照
+            </button>
+            <button class="pm-tab-btn ${currentTab === 'settings' ? 'pm-active' : ''}" data-tab="settings">
+                <i class="fa-solid fa-sliders"></i> 设置与 API
+            </button>
+        </div>
         <div class="pm-panel-body" id="pm-panel-body">
-            <!-- 动态渲染内容 -->
+            <!-- 动态渲染 Tab 视图 -->
         </div>
     `;
 
     document.body.appendChild(panelEl);
+
+    // 绑定 Tab 切换事件
+    panelEl.querySelector('#pm-tab-bar')?.addEventListener('click', (e) => {
+        const btn = e.target.closest('.pm-tab-btn');
+        if (!btn) return;
+        const tab = btn.getAttribute('data-tab');
+        if (tab && tab !== currentTab) {
+            currentTab = tab;
+            panelEl.querySelectorAll('.pm-tab-btn').forEach(b => {
+                b.classList.toggle('pm-active', b.getAttribute('data-tab') === currentTab);
+            });
+            renderPanelContent();
+        }
+    });
 
     panelEl.querySelector('#pm-close-btn')?.addEventListener('click', () => togglePanel(false));
     panelEl.querySelector('#pm-manual-digest-btn')?.addEventListener('click', async () => {
@@ -338,6 +451,14 @@ export function togglePanel(show) {
 }
 
 /**
+ * 估算记忆库大概消耗的 Token
+ */
+function estimateTokens(str) {
+    if (!str) return 0;
+    return Math.ceil(str.length / 2.5);
+}
+
+/**
  * 渲染主抽屉面板内部组件
  */
 function renderPanelContent() {
@@ -349,192 +470,282 @@ function renderPanelContent() {
     const scene = state.scene || {};
     const memories = state.memories || [];
 
+    // 更新顶部 Header 状态胶囊
+    const badgesEl = document.getElementById('pm-header-badges');
+    if (badgesEl) {
+        badgesEl.innerHTML = `
+            <span class="pm-hero-pill pm-pill-cyan">rev.<b>${state.state_revision || 0}</b></span>
+            <span class="pm-hero-pill pm-pill-purple"><b>${memories.length}</b> 条</span>
+        `;
+    }
+
     const pinnedCount = memories.filter(m => m.status === MEMORY_STATUS.PINNED).length;
     const triggeredCount = memories.filter(m => m.status === MEMORY_STATUS.TRIGGERED).length;
+    const archivedCount = memories.filter(m => m.status === MEMORY_STATUS.ARCHIVED).length;
 
-    body.innerHTML = `
-        <!-- 运行模式设置 -->
-        <div class="pm-section pm-mode-selector">
-            <div class="pm-flex-between">
-                <span class="pm-section-label">运行模式</span>
-                <div class="pm-toggle-group">
-                    <label class="pm-radio-label">
-                        <input type="radio" name="pm-mode" value="async" ${settings.mode === 'async' ? 'checked' : ''}>
-                        <span>异步后台</span>
+    // 粗估活跃记忆的 Token 占用
+    let activeTokenEstimate = 0;
+    memories.filter(m => m.status !== MEMORY_STATUS.ARCHIVED).forEach(m => {
+        activeTokenEstimate += estimateTokens(m.content) + 12;
+    });
+
+    let tabHtml = '';
+
+    // ─────────────────────────────────────────────────────────────────────────
+    // TAB 1: 记忆流 (Memories)
+    // ─────────────────────────────────────────────────────────────────────────
+    if (currentTab === 'memories') {
+        const memCardsHtml = memories.length > 0
+            ? memories.map(renderMemoryCard).join('')
+            : '<div class="pm-empty-hint"><i class="fa-solid fa-box-open" style="font-size: 24px; margin-bottom: 6px; display: block; opacity: 0.5;"></i>记忆库暂无条目，等待对话提炼或从下方快速添加</div>';
+
+        tabHtml = `
+            <!-- 统计数据横幅 (大号清晰数字) -->
+            <div class="pm-stats-banner">
+                <div class="pm-stat-box">
+                    <span class="pm-stat-label"><i class="fa-solid fa-thumbtack"></i> 常驻记忆</span>
+                    <span class="pm-stat-value pm-text-amber">${pinnedCount} <span style="font-size: 11px; font-weight: 500; color: #64748b;">/ 5</span></span>
+                </div>
+                <div class="pm-stat-box">
+                    <span class="pm-stat-label"><i class="fa-solid fa-bolt"></i> 动态触发</span>
+                    <span class="pm-stat-value pm-text-emerald">${triggeredCount} <span style="font-size: 11px; font-weight: 500; color: #64748b;">/ 5</span></span>
+                </div>
+                <div class="pm-stat-box">
+                    <span class="pm-stat-label"><i class="fa-solid fa-gauge-high"></i> 估算占用</span>
+                    <span class="pm-stat-value pm-text-sky">~${activeTokenEstimate} <span style="font-size: 11px; font-weight: 500; color: #64748b;">/ ${settings.maxTotalMemoryTokens || 450}T</span></span>
+                </div>
+            </div>
+
+            <!-- 记忆列表 -->
+            <div class="pm-section-card" style="flex: 1; display: flex; flex-direction: column;">
+                <div class="pm-section-header">
+                    <span class="pm-section-title"><i class="fa-solid fa-list-check" style="color: #a78bfa;"></i> 记忆条目清单 (${memories.length})</span>
+                    <span style="font-size: 11px; color: #94a3b8;">归档 ${archivedCount} 条</span>
+                </div>
+                <div class="pm-mem-list" id="pm-mem-list-container">
+                    ${memCardsHtml}
+                </div>
+            </div>
+
+            <!-- 快捷添加面板 -->
+            <div class="pm-quick-box">
+                <div class="pm-section-title pm-mb-8">
+                    <i class="fa-solid fa-plus-circle" style="color: #38bdf8;"></i> 手动新增记忆条目
+                </div>
+                <div class="pm-input-row">
+                    <input type="text" id="pm-new-mem-content" class="pm-input" placeholder="输入一句话记忆事实 (例如: 两人曾约定明晚在白马寺汇合)">
+                </div>
+                <div class="pm-grid-2col pm-mb-8">
+                    <div class="pm-input-row" style="margin-bottom: 0;">
+                        <label class="pm-input-label">触发关键词 (逗号隔开):</label>
+                        <input type="text" id="pm-new-mem-keys" class="pm-input" placeholder="白马寺, 汇合">
+                    </div>
+                    <div class="pm-input-row" style="margin-bottom: 0;">
+                        <label class="pm-input-label">知情范围 (Scope):</label>
+                        <select id="pm-new-mem-scope" class="pm-input" style="cursor: pointer;">
+                            <option value="world" selected>🌐 世界事实 (公共常识)</option>
+                            <option value="shared">👥 共同经历 (在场者共知)</option>
+                            <option value="character">👤 角色私密 (专属知晓)</option>
+                        </select>
+                    </div>
+                </div>
+                <div class="pm-input-row" id="pm-target-row" style="margin-bottom: 8px;">
+                    <label class="pm-input-label">关联/知情角色 (逗号隔开，留空自动匹配):</label>
+                    <input type="text" id="pm-new-mem-target" class="pm-input" placeholder="例如: 武大郎, 潘金莲">
+                </div>
+                <button id="pm-add-mem-btn" class="pm-btn-primary">
+                    <i class="fa-solid fa-plus"></i> 录入到记忆库
+                </button>
+            </div>
+        `;
+    }
+
+    // ─────────────────────────────────────────────────────────────────────────
+    // TAB 2: 现场快照 (Scene State L0)
+    // ─────────────────────────────────────────────────────────────────────────
+    else if (currentTab === 'scene') {
+        const rawChars = Array.isArray(scene.in_scene_characters)
+            ? (scene.in_scene_characters.length === 0 ? '无' : scene.in_scene_characters.join(', '))
+            : (scene.in_scene_characters === null ? '自动' : '');
+
+        tabHtml = `
+            <div class="pm-section-card">
+                <div class="pm-section-header">
+                    <span class="pm-section-title"><i class="fa-solid fa-map-location-dot" style="color: #38bdf8;"></i> L0 现场快照 (Scene State)</span>
+                    <span class="pm-hero-pill pm-pill-cyan">每轮必带置顶</span>
+                </div>
+                <div style="font-size: 11px; color: #94a3b8; margin-bottom: 12px; line-height: 1.4;">
+                    记录当前正在发生的客观局势。拥有独立硬 Token 预算（上限 ~${settings.maxSceneTokens || 150}），绝不遗忘此时此刻。
+                </div>
+
+                <div class="pm-input-row">
+                    <label class="pm-input-label"><i class="fa-solid fa-location-dot"></i> 当前地点环境:</label>
+                    <input type="text" id="pm-scene-location" class="pm-input" value="${escapeHtml(scene.location || '')}" placeholder="例如: 阳谷县临街炊饼铺内堂">
+                </div>
+
+                <div class="pm-input-row">
+                    <label class="pm-input-label"><i class="fa-solid fa-clock"></i> 当前时段与天气环境:</label>
+                    <input type="text" id="pm-scene-time" class="pm-input" value="${escapeHtml(scene.time || '')}" placeholder="例如: 傍晚时分，窗外细雨蒙蒙">
+                </div>
+
+                <div class="pm-input-row">
+                    <label class="pm-input-label"><i class="fa-solid fa-person-running"></i> 当前正在进行的动作:</label>
+                    <input type="text" id="pm-scene-action" class="pm-input" value="${escapeHtml(scene.action || '')}" placeholder="例如: 两人坐在桌前，正端起茶碗饮用">
+                </div>
+
+                <div class="pm-grid-2col pm-mb-8">
+                    <div class="pm-input-row" style="margin-bottom: 0;">
+                        <label class="pm-input-label"><i class="fa-solid fa-gauge"></i> 心理张力/即时氛围:</label>
+                        <input type="text" id="pm-scene-tension" class="pm-input" value="${escapeHtml(scene.tension || '')}" placeholder="例如: 表面平静，暗藏试探">
+                    </div>
+                    <div class="pm-input-row" style="margin-bottom: 0;">
+                        <label class="pm-input-label"><i class="fa-solid fa-triangle-exclamation"></i> 悬而未决的冲突焦点:</label>
+                        <input type="text" id="pm-scene-unresolved" class="pm-input" value="${escapeHtml(scene.unresolved || '')}" placeholder="例如: 药包已被金莲藏入袖中">
+                    </div>
+                </div>
+
+                <div class="pm-input-row pm-mb-12">
+                    <label class="pm-input-label">
+                        <i class="fa-solid fa-users"></i> 现场在场角色 (知情权边界):
+                        <span style="font-weight: 400; color: #64748b;">(填 "自动" 为未知回退，填 "无" 为明确无人)</span>
                     </label>
-                    <label class="pm-radio-label">
-                        <input type="radio" name="pm-mode" value="sync" ${settings.mode === 'sync' ? 'checked' : ''}>
-                        <span>伴随标签</span>
-                    </label>
+                    <input type="text" id="pm-scene-characters" class="pm-input" value="${escapeHtml(rawChars)}" placeholder="例如: 武大郎, 潘金莲">
                 </div>
-            </div>
-        </div>
 
-        <!-- 提炼引擎动态与调参 -->
-        <div class="pm-section">
-            <div class="pm-flex-between pm-mb-8">
-                <span class="pm-section-label"><i class="fa-solid fa-microchip"></i> 提炼引擎状态 <span class="pm-rev-pill" title="状态修订计数器 (每次修改或提炼递增)">rev.${state.state_revision || 0}</span></span>
-                <span class="pm-badge-pill">${state.last_digest_time ? state.last_digest_time : '就绪'}</span>
+                <button id="pm-save-scene-btn" class="pm-btn-primary">
+                    <i class="fa-solid fa-check"></i> 保存快照变更
+                </button>
             </div>
-            <div class="pm-digest-status-box pm-mb-8">
-                <div class="pm-digest-summary"><i class="fa-solid fa-circle-info"></i> ${escapeHtml(state.last_digest_summary || '尚未执行提炼')}</div>
-            </div>
-            <div class="pm-grid-2col">
-                <div class="pm-input-row">
-                    <label>提炼频率 (每 N 轮)</label>
-                    <input type="number" id="pm-setting-freq" class="pm-input" min="1" max="20" value="${settings.asyncFrequency || 3}">
-                </div>
-                <div class="pm-input-row">
-                    <label>回溯历史 (条数)</label>
-                    <input type="number" id="pm-setting-slice" class="pm-input" min="2" max="15" value="${settings.digestSliceCount || 6}">
-                </div>
-            </div>
-            <div class="pm-grid-2col pm-mt-8">
-                <div class="pm-input-row">
-                    <label>总 Token 预算</label>
-                    <input type="number" id="pm-setting-tokens" class="pm-input" min="150" max="2000" value="${settings.maxTotalMemoryTokens || 450}">
-                </div>
-                <div class="pm-input-row">
-                    <label>现场快照上限 (Tok)</label>
-                    <input type="number" id="pm-setting-scene-tokens" class="pm-input" min="50" max="500" value="${settings.maxSceneTokens || 150}">
-                </div>
-            </div>
+        `;
+    }
 
-            <!-- 独立提炼 API (彻底解耦主会话与历史思维链) -->
-            <div class="pm-mt-8" style="background: rgba(0,0,0,0.18); border-radius: 6px; padding: 8px; border: 1px solid rgba(255,255,255,0.08);">
-                <div class="pm-flex-between pm-mb-8">
-                    <span style="font-size: 11px; font-weight: bold;"><i class="fa-solid fa-server"></i> 独立提炼 API 端点 (可选)</span>
-                    <label class="pm-radio-label" style="font-size: 11px; cursor: pointer;">
+    // ─────────────────────────────────────────────────────────────────────────
+    // TAB 3: 设置与独立 API (Settings & API)
+    // ─────────────────────────────────────────────────────────────────────────
+    else if (currentTab === 'settings') {
+        tabHtml = `
+            <!-- ⚡ 独立提炼 API 端点配置 (解决主会话脚本冲突与思维链 400 报错) -->
+            <div class="pm-section-card" style="border: 1px solid rgba(56, 189, 248, 0.4); background: rgba(14, 165, 233, 0.05);">
+                <div class="pm-section-header">
+                    <span class="pm-section-title" style="color: #38bdf8;">
+                        <i class="fa-solid fa-server"></i> 独立提炼 API 端点 (强烈推荐)
+                    </span>
+                    <label class="checkbox_label" style="cursor: pointer; font-weight: 700; color: #38bdf8;">
                         <input type="checkbox" id="pm-setting-custom-api-enabled" ${settings.useCustomApi ? 'checked' : ''}>
-                        <span>启用直连</span>
+                        <span>启用独立直连</span>
                     </label>
                 </div>
+                <div style="font-size: 11px; color: #cbd5e1; margin-bottom: 12px; line-height: 1.5;">
+                    提炼任务走专属 API 发送，<b>完全脱离酒馆主聊天链路</b>。彻底解决 DeepSeek 思维链丢失 400 报错、避免主聊天复杂脚本干扰，并大幅节省 Token！
+                </div>
+
                 <div id="pm-custom-api-fields" style="${settings.useCustomApi ? '' : 'display: none;'}">
-                    <div class="pm-input-row pm-mb-4">
-                        <label>Base URL</label>
+                    <div class="pm-input-row">
+                        <label class="pm-input-label">API Base URL:</label>
                         <input type="text" id="pm-setting-custom-api-url" class="pm-input" value="${escapeHtml(settings.customApiUrl || '')}" placeholder="https://api.deepseek.com/v1">
                     </div>
-                    <div class="pm-grid-2col pm-mb-4">
-                        <div class="pm-input-row">
-                            <label>API Key</label>
+
+                    <div class="pm-grid-2col pm-mb-8">
+                        <div class="pm-input-row" style="margin-bottom: 0;">
+                            <label class="pm-input-label">API Key (密钥):</label>
                             <input type="password" id="pm-setting-custom-api-key" class="pm-input" value="${escapeHtml(settings.customApiKey || '')}" placeholder="sk-...">
                         </div>
-                        <div class="pm-input-row">
-                            <label>提炼模型</label>
+                        <div class="pm-input-row" style="margin-bottom: 0;">
+                            <label class="pm-input-label">模型名称:</label>
                             <input type="text" id="pm-setting-custom-api-model" class="pm-input" value="${escapeHtml(settings.customApiModel || 'deepseek-chat')}" placeholder="deepseek-chat">
                         </div>
                     </div>
-                    <div style="font-size: 10px; opacity: 0.65; line-height: 1.4;">
-                        提示：启用后提炼直接向该端点请求，不使用酒馆主模型，彻底杜绝历史思维链或复杂脚本导致的报错。
+
+                    <div style="display: flex; gap: 10px; align-items: center; margin-top: 10px;">
+                        <button id="pm-btn-test-api" class="pm-btn-test">
+                            <i class="fa-solid fa-plug"></i> 测试 API 连通性
+                        </button>
+                        <span id="pm-api-test-status" style="font-size: 12px; font-weight: 600;"></span>
                     </div>
                 </div>
             </div>
-        </div>
 
-        <!-- 现场快照 HUD -->
-        <div class="pm-section">
-            <div class="pm-flex-between pm-mb-8">
-                <span class="pm-section-label"><i class="fa-solid fa-map-location-dot"></i> 现场快照 (Scene State)</span>
-                <span class="pm-badge-pill">L0 状态</span>
-            </div>
-            <div class="pm-scene-grid">
-                <div class="pm-input-row">
-                    <label>地点环境</label>
-                    <input type="text" id="pm-scene-location" class="pm-input" value="${escapeHtml(scene.location || '')}" placeholder="例如: 港口酒馆二楼">
+            <!-- 核心参数与 Token 预算 -->
+            <div class="pm-section-card">
+                <div class="pm-section-header">
+                    <span class="pm-section-title"><i class="fa-solid fa-sliders" style="color: #a78bfa;"></i> 提炼参数与 Token 硬预算</span>
                 </div>
-                <div class="pm-input-row">
-                    <label>时间 / 天气 / 时段</label>
-                    <input type="text" id="pm-scene-time" class="pm-input" value="${escapeHtml(scene.time || '')}" placeholder="例如: 暴雨深夜 / 破晓时分">
-                </div>
-                <div class="pm-input-row">
-                    <label>当前动作 / 焦点</label>
-                    <input type="text" id="pm-scene-action" class="pm-input" value="${escapeHtml(scene.action || '')}" placeholder="例如: 两人坐在壁炉旁低声交谈">
-                </div>
-                <div class="pm-input-row">
-                    <label>即时气氛 / 张力</label>
-                    <input type="text" id="pm-scene-tension" class="pm-input" value="${escapeHtml(scene.tension || '')}" placeholder="例如: 戒备逐渐缓解，各怀心事">
-                </div>
-                <div class="pm-input-row">
-                    <label>未决悬念 / 冲突</label>
-                    <input type="text" id="pm-scene-unresolved" class="pm-input" value="${escapeHtml(scene.unresolved || '')}" placeholder="例如: 尚未挑明那枚徽章的真正来历">
-                </div>
-                <div class="pm-input-row">
-                    <label>在场角色 (留空为自动检测，填"无"为明确全员离场)</label>
-                    <input type="text" id="pm-scene-characters" class="pm-input" value="${escapeHtml(scene.in_scene_characters === undefined ? '' : (scene.in_scene_characters.length === 0 ? '无' : scene.in_scene_characters.join(', ')))}" placeholder="留空为自动检测(当前角色)，输入'无'为明确全员离场">
-                </div>
-            </div>
-            <button id="pm-save-scene-btn" class="pm-btn-primary pm-mt-8"><i class="fa-solid fa-check"></i> 保存快照变更</button>
-        </div>
 
-        <!-- 记忆条目列表 -->
-        <div class="pm-section">
-            <div class="pm-flex-between pm-mb-8">
-                <span class="pm-section-label"><i class="fa-solid fa-database"></i> 记忆档案库 (${memories.length})</span>
-                <div class="pm-stats-hint">
-                    <span class="pm-tag-pin">📌 ${pinnedCount} 常驻</span>
-                    <span class="pm-tag-trig">⚡ ${triggeredCount} 激活</span>
+                <div class="pm-input-row pm-mb-8">
+                    <label class="pm-input-label">提炼模式：</label>
+                    <div class="pm-toggle-group">
+                        <label class="pm-radio-label">
+                            <input type="radio" name="pm-mode" value="async" ${settings.mode === 'async' ? 'checked' : ''}>
+                            <span>异步后台 (安静提炼)</span>
+                        </label>
+                        <label class="pm-radio-label">
+                            <input type="radio" name="pm-mode" value="sync" ${settings.mode === 'sync' ? 'checked' : ''}>
+                            <span>伴随标签 (零额外请求)</span>
+                        </label>
+                    </div>
+                </div>
+
+                <div class="pm-grid-2col pm-mb-8">
+                    <div class="pm-input-row">
+                        <label class="pm-input-label">提炼频率 (每 N 轮):</label>
+                        <input type="number" id="pm-setting-freq" class="pm-input" min="1" max="20" value="${settings.asyncFrequency || 3}">
+                    </div>
+                    <div class="pm-input-row">
+                        <label class="pm-input-label">历史回溯 (条数):</label>
+                        <input type="number" id="pm-setting-slice" class="pm-input" min="2" max="15" value="${settings.digestSliceCount || 6}">
+                    </div>
+                </div>
+
+                <div class="pm-grid-2col pm-mb-8">
+                    <div class="pm-input-row">
+                        <label class="pm-input-label">现场快照上限 (Tok):</label>
+                        <input type="number" id="pm-setting-scene-tokens" class="pm-input" min="50" max="500" value="${settings.maxSceneTokens || 150}">
+                    </div>
+                    <div class="pm-input-row">
+                        <label class="pm-input-label">记忆总 Token 预算:</label>
+                        <input type="number" id="pm-setting-tokens" class="pm-input" min="150" max="2000" value="${settings.maxTotalMemoryTokens || 450}">
+                    </div>
                 </div>
             </div>
+        `;
+    }
 
-            <!-- 快捷添加 -->
-            <div class="pm-add-box">
-                <input type="text" id="pm-new-mem-content" class="pm-input" placeholder="输入一条重要事实、约定或认知...">
-                <div class="pm-flex-between pm-mt-4 pm-mb-4">
-                    <input type="text" id="pm-new-mem-keys" class="pm-input pm-flex-1 pm-mr-4" placeholder="触发词(逗号隔开，可选)">
-                    <select id="pm-new-mem-scope" class="pm-input" style="width: 110px;">
-                        <option value="world" selected>🌍 世界常识</option>
-                        <option value="shared">👥 现场共知</option>
-                        <option value="character">🔒 角色私知</option>
-                    </select>
-                </div>
-                <div class="pm-flex-between">
-                    <input type="text" id="pm-new-mem-target" class="pm-input pm-flex-1 pm-mr-4" placeholder="归属角色/知情者(私知或共知时填写，逗号隔开)">
-                    <button id="pm-add-mem-btn" class="pm-btn-secondary"><i class="fa-solid fa-plus"></i> 添加</button>
-                </div>
-            </div>
-
-            <!-- 卡片列表 -->
-            <div class="pm-mem-list">
-                ${memories.length === 0 ? '<div class="pm-empty-hint">暂无沉淀记忆，将随对话自动生成</div>' : ''}
-                ${memories.map(m => renderMemoryCard(m)).join('')}
-            </div>
-        </div>
-    `;
-
+    body.innerHTML = tabHtml;
     bindPanelEvents(body);
 }
 
+/**
+ * 渲染单个记忆卡片
+ */
 function renderMemoryCard(mem) {
     let statusClass = 'pm-chip-triggered';
-    let statusIcon = '⚡ 触发';
+    let statusIcon = '<i class="fa-solid fa-bolt"></i> 动态触发';
     if (mem.status === MEMORY_STATUS.PINNED) {
         statusClass = 'pm-chip-pinned';
-        statusIcon = '📌 常驻';
+        statusIcon = '<i class="fa-solid fa-thumbtack"></i> 常驻置顶';
     } else if (mem.status === MEMORY_STATUS.ARCHIVED) {
         statusClass = 'pm-chip-archived';
-        statusIcon = '💤 归档';
+        statusIcon = '<i class="fa-solid fa-box-archive"></i> 归档休眠';
     }
 
-    let scopeLabel = '共知';
-    let scopeClass = 'pm-scope-shared';
-    if (mem.scope === 'character') {
-        scopeLabel = mem.character ? `私知: ${mem.character}` : '私知';
+    let scopeClass = 'pm-scope-world';
+    let scopeLabel = '🌐 公共';
+    if (mem.scope === MEMORY_SCOPE.CHARACTER) {
         scopeClass = 'pm-scope-char';
-    } else if (mem.scope === 'world') {
-        scopeLabel = '世界常识';
-        scopeClass = 'pm-scope-world';
-    } else if (mem.scope === 'shared' && Array.isArray(mem.known_by) && mem.known_by.length > 0) {
-        scopeLabel = `共知: ${mem.known_by.join('/')}`;
+        scopeLabel = `👤 私密 (${escapeHtml(mem.character || '角色')})`;
+    } else if (mem.scope === MEMORY_SCOPE.SHARED) {
         scopeClass = 'pm-scope-shared';
+        const knownStr = Array.isArray(mem.known_by) && mem.known_by.length > 0 ? mem.known_by.join(', ') : '全员';
+        scopeLabel = `👥 共享 (${escapeHtml(knownStr)})`;
     }
 
     let lifecycleBadge = '';
-    if (mem.lifecycle === 'completed') {
-        lifecycleBadge = `<span class="pm-lifecycle-badge pm-life-completed" title="约定已履行 / 待办已办结">✓ 已完成</span>`;
-    } else if (mem.lifecycle === 'superseded') {
-        lifecycleBadge = `<span class="pm-lifecycle-badge pm-life-superseded" title="已被新剧情取代">↻ 已更迭</span>`;
-    } else if (mem.lifecycle === 'refuted') {
-        lifecycleBadge = `<span class="pm-lifecycle-badge pm-life-refuted" title="已被证伪">✕ 被证伪</span>`;
+    if (mem.lifecycle === MEMORY_LIFECYCLE.COMPLETED) {
+        lifecycleBadge = '<span class="pm-lifecycle-badge pm-life-completed"><i class="fa-solid fa-check"></i> 履约</span>';
+    } else if (mem.lifecycle === MEMORY_LIFECYCLE.SUPERSEDED) {
+        lifecycleBadge = '<span class="pm-lifecycle-badge pm-life-superseded"><i class="fa-solid fa-rotate"></i> 迭代</span>';
+    } else if (mem.lifecycle === MEMORY_LIFECYCLE.REFUTED) {
+        lifecycleBadge = '<span class="pm-lifecycle-badge pm-life-refuted"><i class="fa-solid fa-xmark"></i> 证伪</span>';
     }
 
     const keysHtml = (mem.trigger_keys || []).map(k => `<span class="pm-key-pill">${escapeHtml(k)}</span>`).join('');
@@ -546,7 +757,7 @@ function renderMemoryCard(mem) {
                     ${statusIcon}
                 </button>
                 <span class="pm-type-badge">${escapeHtml(mem.type || 'fact')}</span>
-                <span class="pm-scope-badge ${scopeClass}">${escapeHtml(scopeLabel)}</span>
+                <span class="pm-scope-badge ${scopeClass}">${scopeLabel}</span>
                 ${lifecycleBadge}
                 <div class="pm-card-actions">
                     <button class="pm-del-btn" title="删除此条记忆" data-action="delete"><i class="fa-solid fa-trash-can"></i></button>
@@ -558,6 +769,9 @@ function renderMemoryCard(mem) {
     `;
 }
 
+/**
+ * 绑定主面板事件
+ */
 function bindPanelEvents(container) {
     // 切换模式
     container.querySelectorAll('input[name="pm-mode"]').forEach(radio => {
@@ -566,7 +780,7 @@ function bindPanelEvents(container) {
         });
     });
 
-    // 提炼参数与 Token 预算动态调整
+    // 提炼参数与 Token 预算
     container.querySelector('#pm-setting-freq')?.addEventListener('change', (e) => {
         const val = Math.max(1, parseInt(e.target.value) || 3);
         updateSettings({ asyncFrequency: val });
@@ -607,6 +821,29 @@ function bindPanelEvents(container) {
         updateSettings({ customApiModel: e.target.value.trim() || 'deepseek-chat' });
     });
 
+    // 测试 API 连通性
+    container.querySelector('#pm-btn-test-api')?.addEventListener('click', async () => {
+        const statusEl = container.querySelector('#pm-api-test-status');
+        if (statusEl) {
+            statusEl.style.color = '#38bdf8';
+            statusEl.innerHTML = '<i class="fa-solid fa-spinner fa-spin"></i> 测试连通性中...';
+        }
+        const res = await testCustomApiConnection();
+        if (res.success) {
+            if (statusEl) {
+                statusEl.style.color = '#34d399';
+                statusEl.innerHTML = `<i class="fa-solid fa-check"></i> 连接成功！(${res.latency}ms)`;
+            }
+            window.toastr?.success?.(`API 连接成功！响应延时 ${res.latency}ms，模型: ${res.model}`, '持续记忆');
+        } else {
+            if (statusEl) {
+                statusEl.style.color = '#f87171';
+                statusEl.innerHTML = `<i class="fa-solid fa-xmark"></i> 失败: ${escapeHtml(res.error).slice(0, 35)}`;
+            }
+            window.toastr?.error?.(res.error, 'API 连接失败');
+        }
+    });
+
     // 保存快照
     container.querySelector('#pm-save-scene-btn')?.addEventListener('click', () => {
         const rawLocation = container.querySelector('#pm-scene-location')?.value || '';
@@ -618,7 +855,7 @@ function bindPanelEvents(container) {
 
         let charsToSave;
         if (!rawChars || rawChars === '自动' || rawChars.toLowerCase() === 'auto') {
-            charsToSave = null; // 重置为未知 (undefined)
+            charsToSave = null; // 重置为未知
         } else if (rawChars === '无' || rawChars.toLowerCase() === 'none' || rawChars === '[]') {
             charsToSave = []; // 明确无人
         } else {
@@ -638,9 +875,10 @@ function bindPanelEvents(container) {
             btn.innerHTML = '<i class="fa-solid fa-check-double"></i> 快照已保存';
             setTimeout(() => { btn.innerHTML = '<i class="fa-solid fa-check"></i> 保存快照变更'; }, 1500);
         }
+        window.toastr?.success?.('现场快照已更新保存', '持续记忆');
     });
 
-    // 添加记忆 (P1 修复：知情范围与知情者多维支持，防止被误杀)
+    // 添加记忆
     container.querySelector('#pm-add-mem-btn')?.addEventListener('click', () => {
         const contentInput = container.querySelector('#pm-new-mem-content');
         const keysInput = container.querySelector('#pm-new-mem-keys');
@@ -671,11 +909,14 @@ function bindPanelEvents(container) {
             memData.known_by = targets.length > 0 ? targets : (Array.isArray(state.scene.in_scene_characters) && state.scene.in_scene_characters.length > 0 ? state.scene.in_scene_characters : [curCharName, c?.name1 || 'User']);
         }
 
-        addMemory(memData);
+        const added = addMemory(memData);
+        if (added) {
+            window.toastr?.success?.(`已录入记忆: "${content.slice(0, 15)}..."`, '持续记忆');
+        }
 
         contentInput.value = '';
         keysInput.value = '';
-        targetInput.value = '';
+        if (targetInput) targetInput.value = '';
     });
 
     // 卡片动作 (点击切换状态 / 删除)
@@ -688,12 +929,4 @@ function bindPanelEvents(container) {
             deleteMemory(id);
         });
     });
-}
-
-function escapeHtml(text) {
-    return String(text ?? '')
-        .replace(/&/g, '&amp;')
-        .replace(/</g, '&lt;')
-        .replace(/>/g, '&gt;')
-        .replace(/"/g, '&quot;');
 }
