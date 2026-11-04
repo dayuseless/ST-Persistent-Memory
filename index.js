@@ -4,7 +4,7 @@
  */
 
 import { MODULE_NAME } from './src/config.js';
-import { loadCurrentState, getSettings } from './src/state.js';
+import { loadCurrentState, getSettings, onStateChange } from './src/state.js';
 import { buildAndInjectMemoryPrompt } from './src/injector.js';
 import { extractAndApplySyncTag, triggerAsyncDigest } from './src/extractor.js';
 import { initUI } from './src/ui.js';
@@ -58,21 +58,53 @@ async function init() {
     const c = await waitForContext();
     await waitForAppReady(c);
 
-    // 1. 初始化当前聊天的状态
+    // 1. 初始化当前聊天的状态并立即初次执行注入
     loadCurrentState();
+    if (getSettings().enabled) {
+        buildAndInjectMemoryPrompt();
+    }
 
     // 2. 初始化 UI 面板
     initUI();
 
-    // 3. 监听切档/切换聊天事件
-    c.eventSource.on(c.event_types.CHAT_CHANGED, () => {
-        console.log(`[${MODULE_NAME}] 检测到聊天会话切换，重新对齐当前会话元数据`);
+    // 3. 监听切档与聊天载入事件
+    const onChatReset = () => {
+        console.log(`[${MODULE_NAME}] 会话切换/载入，对齐状态并更新提示词注入`);
         loadCurrentState();
-        buildAndInjectMemoryPrompt();
-    });
+        if (getSettings().enabled) {
+            buildAndInjectMemoryPrompt();
+        }
+    };
+    c.eventSource.on(c.event_types.CHAT_CHANGED, onChatReset);
+    if (c.event_types.CHAT_LOADED) {
+        c.eventSource.on(c.event_types.CHAT_LOADED, onChatReset);
+    }
 
-    // 4. 发送前钩子：打包注入记忆 Prompt
-    c.eventSource.on(c.event_types.GENERATE_BEFORE_COMBINE_PROMPTS, () => {
+    // 4. 发送前/生成前多重钩子：确保无论走 OpenAI/Claude/DeepSeek 还是 TextGen，均能百分之百注入提示词
+    const ensurePromptInjected = () => {
+        if (getSettings().enabled) {
+            buildAndInjectMemoryPrompt();
+        }
+    };
+
+    if (c.event_types.GENERATION_STARTED) {
+        c.eventSource.on(c.event_types.GENERATION_STARTED, ensurePromptInjected);
+    }
+    if (c.event_types.GENERATION_AFTER_COMMANDS) {
+        c.eventSource.on(c.event_types.GENERATION_AFTER_COMMANDS, ensurePromptInjected);
+    }
+    if (c.event_types.GENERATE_BEFORE_COMBINE_PROMPTS) {
+        c.eventSource.on(c.event_types.GENERATE_BEFORE_COMBINE_PROMPTS, ensurePromptInjected);
+    }
+    if (c.event_types.CHAT_COMPLETION_PROMPT_READY) {
+        c.eventSource.on(c.event_types.CHAT_COMPLETION_PROMPT_READY, ensurePromptInjected);
+    }
+    if (c.event_types.MESSAGE_SENT) {
+        c.eventSource.on(c.event_types.MESSAGE_SENT, ensurePromptInjected);
+    }
+
+    // 5. 记忆状态或快照发生变动时，实时对齐注入词
+    onStateChange(() => {
         if (getSettings().enabled) {
             buildAndInjectMemoryPrompt();
         }

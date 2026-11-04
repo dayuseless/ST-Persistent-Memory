@@ -108,6 +108,10 @@ export function updateSettings(patch) {
     try {
         localStorage.setItem('ST_PM_SETTINGS_BACKUP', JSON.stringify(settings));
     } catch {}
+
+    try {
+        window.__persistentMemory?.injectNow?.();
+    } catch {}
 }
 
 /**
@@ -127,6 +131,9 @@ export function saveSettingsImmediately() {
             c.saveSettingsDebounced();
         }
         localStorage.setItem('ST_PM_SETTINGS_BACKUP', JSON.stringify(settings));
+        try {
+            window.__persistentMemory?.injectNow?.();
+        } catch {}
         return true;
     } catch (e) {
         console.error(`[${MODULE_NAME}] 立即保存配置失败:`, e);

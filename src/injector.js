@@ -60,8 +60,11 @@ export function buildAndInjectMemoryPrompt() {
     const c = getContext();
     const settings = getSettings();
 
+    const position = Number(settings.injectionPosition !== undefined ? settings.injectionPosition : 1);
+    const depth = Number(settings.injectionDepth !== undefined ? settings.injectionDepth : 2);
+
     if (!c || !settings.enabled) {
-        c?.setExtensionPrompt?.(INJECT_KEY, '', settings.injectionPosition, settings.injectionDepth);
+        c?.setExtensionPrompt?.(INJECT_KEY, '', position, depth);
         return '';
     }
 
@@ -264,8 +267,11 @@ export function buildAndInjectMemoryPrompt() {
     }
 
     // 8. 组合成最终注入块 (若处于伴随标签模式，需附带输出协议)
+    const position = Number(settings.injectionPosition !== undefined ? settings.injectionPosition : 1);
+    const depth = Number(settings.injectionDepth !== undefined ? settings.injectionDepth : 2);
+
     if (sceneLines.length === 0 && memLines.length === 0 && settings.mode !== 'sync') {
-        c.setExtensionPrompt?.(INJECT_KEY, '', settings.injectionPosition, settings.injectionDepth);
+        c.setExtensionPrompt?.(INJECT_KEY, '', position, depth);
         return '';
     }
 
@@ -301,11 +307,13 @@ export function buildAndInjectMemoryPrompt() {
     c.setExtensionPrompt?.(
         INJECT_KEY,
         fullPromptBlock,
-        settings.injectionPosition ?? 1,
-        settings.injectionDepth ?? 2,
+        position,
+        depth,
         false,
         0
     );
+
+    console.log(`[${MODULE_NAME}] [Injector] 成功注入提示词 (模式: ${settings.mode}, 位置: ${position === 0 ? 'System Prompt' : 'In-Chat @ 深度 ' + depth}, 长度: ${fullPromptBlock.length} 字符, 伴随协议: ${settings.mode === 'sync' ? '已包含' : '未开启'})`);
 
     if (settings.logVerbose) {
         console.log(`[${INJECT_KEY}] 预算控制：注入 L0 快照 (~${sceneTokenCost} tok, 硬上限 ${maxSceneTokens}) + ${selectedPinnedLines.length} 条常驻 + ${selectedTriggeredLines.length} 条激活记忆，结余预算 ~${remainingTokens} tok`);

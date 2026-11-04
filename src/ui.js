@@ -848,6 +848,20 @@ function renderPanelContent() {
                     </div>
                 </div>
 
+                <div class="pm-grid-2col pm-mb-8">
+                    <div class="pm-input-row">
+                        <label class="pm-input-label">提示词注入位置：</label>
+                        <select id="pm-setting-inject-pos" class="pm-input" style="cursor: pointer;">
+                            <option value="1" ${(settings.injectionPosition ?? 1) == 1 ? 'selected' : ''}>对话内 (In-Chat @ 深度)</option>
+                            <option value="0" ${(settings.injectionPosition ?? 1) == 0 ? 'selected' : ''}>系统主提示词 (System Prompt)</option>
+                        </select>
+                    </div>
+                    <div class="pm-input-row">
+                        <label class="pm-input-label">对话注入深度 (Depth):</label>
+                        <input type="number" id="pm-setting-inject-depth" class="pm-input" min="0" max="20" value="${settings.injectionDepth ?? 2}">
+                    </div>
+                </div>
+
                 <div class="pm-mt-8">
                     <button id="pm-save-all-settings-btn" class="pm-btn-primary" style="padding: 10px 14px; font-size: 13px; background: #059669; border-color: #047857;">
                         <i class="fa-solid fa-floppy-disk"></i> 保存并生效全部配置
@@ -952,6 +966,15 @@ function bindPanelEvents(container) {
         updateSettings({ maxSceneTokens: val });
     });
 
+    container.querySelector('#pm-setting-inject-pos')?.addEventListener('change', (e) => {
+        updateSettings({ injectionPosition: parseInt(e.target.value) || 0 });
+    });
+
+    container.querySelector('#pm-setting-inject-depth')?.addEventListener('change', (e) => {
+        const val = Math.max(0, Math.min(20, parseInt(e.target.value) || 2));
+        updateSettings({ injectionDepth: val });
+    });
+
     // 全局插件启用
     container.querySelector('#pm-setting-hud-enabled')?.addEventListener('change', (e) => {
         const isChecked = e.target.checked;
@@ -1038,6 +1061,8 @@ function bindPanelEvents(container) {
         const isEnabled = container.querySelector('#pm-setting-hud-enabled')?.checked ?? true;
         const showBubble = container.querySelector('#pm-setting-hud-bubble')?.checked ?? true;
         const useCustom = container.querySelector('#pm-setting-custom-api-enabled')?.checked ?? false;
+        const injectPos = parseInt(container.querySelector('#pm-setting-inject-pos')?.value) || 1;
+        const injectDep = parseInt(container.querySelector('#pm-setting-inject-depth')?.value) || 2;
 
         updateSettings({
             enabled: isEnabled,
@@ -1047,7 +1072,9 @@ function bindPanelEvents(container) {
             digestSliceCount: sliceVal,
             maxSceneTokens: sceneTok,
             maxTotalMemoryTokens: memTok,
-            mode: selectedMode
+            mode: selectedMode,
+            injectionPosition: injectPos,
+            injectionDepth: injectDep
         });
 
         const ok = saveSettingsImmediately();
