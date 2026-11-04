@@ -50,7 +50,12 @@ export function getSettings() {
     const c = getContext();
     if (!c?.extension_settings) return { ...DEFAULT_SETTINGS };
     if (!c.extension_settings[MODULE_NAME]) {
-        c.extension_settings[MODULE_NAME] = { ...DEFAULT_SETTINGS };
+        let restored = null;
+        try {
+            const raw = localStorage.getItem('ST_PM_SETTINGS_BACKUP');
+            if (raw) restored = JSON.parse(raw);
+        } catch {}
+        c.extension_settings[MODULE_NAME] = Object.assign({}, DEFAULT_SETTINGS, restored || {});
     }
     return c.extension_settings[MODULE_NAME];
 }
@@ -60,6 +65,29 @@ export function updateSettings(patch) {
     Object.assign(settings, patch);
     const c = getContext();
     c?.saveSettingsDebounced?.();
+    try {
+        localStorage.setItem('ST_PM_SETTINGS_BACKUP', JSON.stringify(settings));
+    } catch {}
+}
+
+/**
+ * 立即持久化配置 (双重保险：酒馆主配置落盘 + 本地持久化备份)
+ */
+export function saveSettingsImmediately() {
+    const c = getContext();
+    const settings = getSettings();
+    try {
+        if (typeof c?.saveSettings === 'function') {
+            c.saveSettings();
+        } else if (typeof c?.saveSettingsDebounced === 'function') {
+            c.saveSettingsDebounced();
+        }
+        localStorage.setItem('ST_PM_SETTINGS_BACKUP', JSON.stringify(settings));
+        return true;
+    } catch (e) {
+        console.error(`[${MODULE_NAME}] 立即保存配置失败:`, e);
+        return false;
+    }
 }
 
 /**

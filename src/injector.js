@@ -263,18 +263,39 @@ export function buildAndInjectMemoryPrompt() {
         memLines.push(...allSelectedMemLines);
     }
 
-    // 8. 组合成最终注入块
-    if (sceneLines.length === 0 && memLines.length === 0) {
+    // 8. 组合成最终注入块 (若处于伴随标签模式，需附带输出协议)
+    if (sceneLines.length === 0 && memLines.length === 0 && settings.mode !== 'sync') {
         c.setExtensionPrompt?.(INJECT_KEY, '', settings.injectionPosition, settings.injectionDepth);
         return '';
     }
 
-    const fullPromptBlock = [
-        '### 持续情境与记忆核心 (Persistent Memory)',
-        ...sceneLines,
-        ...memLines,
-        '──────────────────────────────────────────'
-    ].join('\n');
+    const promptParts = ['### 持续情境与记忆核心 (Persistent Memory)'];
+    if (sceneLines.length > 0) promptParts.push(...sceneLines);
+    if (memLines.length > 0) promptParts.push(...memLines);
+
+    if (settings.mode === 'sync') {
+        promptParts.push(
+            '',
+            '[伴随记忆与情境更新协议 (Sync Protocol)]',
+            '若本轮对话产生了新的地点环境变更、关键动作进展、约定承诺或重要事实，请在回复文本的最末尾（必须独占一行）附带隐藏的状态更新标签：',
+            '<!--PERSISTENT_MEMORY',
+            '{',
+            '  "scene": { "location": "当前地点", "time": "时段/天气", "action": "正在进行的动作", "tension": "心理氛围", "unresolved": "即时冲突焦点", "in_scene_characters": ["在场角色1", "在场角色2"] },',
+            '  "new_memories": [',
+            '    { "content": "客观事实描述", "type": "fact|statement|inference|todo", "scope": "world|shared|character", "character": null, "known_by": ["知情角色名"], "trigger_keys": ["触发词1", "触发词2"] }',
+            '  ],',
+            '  "lifecycle_updates": [',
+            '    { "id": "已履约或已推翻旧记忆的ID", "lifecycle": "completed|superseded|refuted" }',
+            '  ],',
+            '  "summary": "本次更新一句话摘要"',
+            '}',
+            '-->',
+            '（若无新事实发生，则无需附带任何标签，直接正常回复即可。前端会自动截获隐藏此标签，用户界面完全不可见。）'
+        );
+    }
+    promptParts.push('──────────────────────────────────────────');
+
+    const fullPromptBlock = promptParts.join('\n');
 
     // 9. 执行注入
     c.setExtensionPrompt?.(

@@ -28,7 +28,7 @@ export function getChatTurnCount(chat) {
 // 针对不同 ChatID 维护任务并发锁 (解决跨聊天串线问题)
 const activeChatDigests = new Set();
 
-const SYNC_TAG_REGEX = /<!--(?:PERSISTENT_MEMORY|STATE)\s*([\s\S]*?)-->/i;
+const SYNC_TAG_REGEX = /(?:```(?:html|xml)?\s*)?<!--\s*(?:PERSISTENT_MEMORY|STATE|MEMORY_UPDATE)[:\s]*([\s\S]*?)-->\s*(?:```)?/i;
 
 /**
  * 获取当前聊天的全局唯一稳定标识 (无有效标识时返回 null，严禁回退到统一默认会话)
@@ -272,10 +272,11 @@ export function extractAndApplySyncTag(rawText) {
     const payload = validateExtractedPayload(rawPayload, state.memories || []);
 
     if (payload) {
-        applyExtractedData(payload);
-        console.log(`[${MODULE_NAME}] [Sync] 伴生标签通过验证并成功入库`);
+        const summary = applyExtractedData(payload);
+        console.log(`[${MODULE_NAME}] [Sync] 伴生标签通过验证并成功入库: ${summary}`);
+        window.toastr?.success?.(summary, '伴随标签提炼入库');
     } else {
-        console.warn(`[${MODULE_NAME}] [Sync] 伴生标签未通过 Schema 验证`);
+        console.warn(`[${MODULE_NAME}] [Sync] 伴生标签未通过 Schema 验证:`, jsonStr.slice(0, 160));
     }
 
     return cleanText;

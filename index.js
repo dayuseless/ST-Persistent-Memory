@@ -78,8 +78,8 @@ async function init() {
         }
     });
 
-    // 5. 消息完成与渲染处理 (P1-5: 同步/异步严格分流)
-    // 仅在明确启用同步伴随模式时才执行渲染标签截获
+    // 5. 消息完成与渲染处理 (同步/异步严格分流)
+    // 同步伴随模式：消息渲染与接收双重防线截获伴生标签
     c.eventSource.on(c.event_types.CHARACTER_MESSAGE_RENDERED, (mesid) => {
         const settings = getSettings();
         if (!settings.enabled || settings.mode !== 'sync') return;
@@ -91,6 +91,7 @@ async function init() {
         const cleaned = extractAndApplySyncTag(msg.mes);
         if (cleaned !== msg.mes) {
             msg.mes = cleaned;
+            c?.saveChatDebounced?.();
             const el = document.querySelector(`#chat > .mes[mesid="${id}"] .mes_text`);
             if (el) {
                 el.innerHTML = c.markdown(cleaned);
@@ -98,14 +99,25 @@ async function init() {
         }
     });
 
-    // 仅在异步模式下触发后台自动提炼
     c.eventSource.on(c.event_types.MESSAGE_RECEIVED, async (mesid) => {
         const settings = getSettings();
-        if (!settings.enabled || settings.mode !== 'async') return;
+        if (!settings.enabled) return;
 
         const id = Number(mesid);
         const msg = c.chat?.[id];
-        if (msg && !msg.is_user) {
+        if (!msg || msg.is_user) return;
+
+        if (settings.mode === 'sync') {
+            const cleaned = extractAndApplySyncTag(msg.mes);
+            if (cleaned !== msg.mes) {
+                msg.mes = cleaned;
+                c?.saveChatDebounced?.();
+                const el = document.querySelector(`#chat > .mes[mesid="${id}"] .mes_text`);
+                if (el) {
+                    el.innerHTML = c.markdown(cleaned);
+                }
+            }
+        } else if (settings.mode === 'async') {
             await triggerAsyncDigest(false);
         }
     });

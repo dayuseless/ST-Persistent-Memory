@@ -4,7 +4,7 @@
  */
 
 import { MODULE_NAME, MEMORY_STATUS, MEMORY_LIFECYCLE, MEMORY_SCOPE } from './config.js';
-import { getState, getSettings, updateSettings, updateScene, addMemory, deleteMemory, cycleMemoryStatus, onStateChange } from './state.js';
+import { getState, getSettings, updateSettings, saveSettingsImmediately, updateScene, addMemory, deleteMemory, cycleMemoryStatus, onStateChange } from './state.js';
 import { triggerAsyncDigest, testCustomApiConnection } from './extractor.js';
 
 let panelEl = null;
@@ -333,14 +333,34 @@ function renderNativeDrawerContent() {
             </div>
 
             <div class="flex-container flexGap10 pm-mt-8">
+                <button id="pm-native-save-settings-btn" class="pm-btn-primary flex1" style="background: #059669; border-color: #047857;">
+                    <i class="fa-solid fa-floppy-disk"></i> 保存插件配置
+                </button>
                 <button id="pm-native-digest-btn" class="menu_button menu_button_icon flex1">
-                    <i class="fa-solid fa-bolt"></i> 立即执行后台提炼
+                    <i class="fa-solid fa-bolt"></i> 立即后台提炼
                 </button>
             </div>
         </div>
     `;
 
     // 绑定原生事件
+    content.querySelector('#pm-native-save-settings-btn')?.addEventListener('click', () => {
+        syncNativeInputs();
+        const ok = saveSettingsImmediately();
+        const btn = content.querySelector('#pm-native-save-settings-btn');
+        if (btn) {
+            btn.innerHTML = '<i class="fa-solid fa-check"></i> 配置已保存';
+            setTimeout(() => {
+                btn.innerHTML = '<i class="fa-solid fa-floppy-disk"></i> 保存插件配置';
+            }, 1800);
+        }
+        if (ok) {
+            window.toastr?.success?.('插件配置已成功保存！', '持续记忆');
+        } else {
+            window.toastr?.error?.('保存配置遇到异常', '持续记忆');
+        }
+    });
+
     content.querySelector('#pm-setting-enabled')?.addEventListener('change', (e) => {
         const isChecked = e.target.checked;
         updateSettings({ enabled: isChecked });
@@ -773,7 +793,7 @@ function renderPanelContent() {
                 </div>
 
                 <div class="pm-input-row pm-mb-8">
-                    <label class="pm-input-label">提炼模式：</label>
+                    <label class="pm-input-label">提炼运行模式：</label>
                     <div class="pm-toggle-group">
                         <label class="pm-radio-label">
                             <input type="radio" name="pm-mode" value="async" ${settings.mode === 'async' ? 'checked' : ''}>
@@ -783,6 +803,10 @@ function renderPanelContent() {
                             <input type="radio" name="pm-mode" value="sync" ${settings.mode === 'sync' ? 'checked' : ''}>
                             <span>伴随标签 (零额外请求)</span>
                         </label>
+                    </div>
+                    <div style="font-size: 11px; color: #64748b; line-height: 1.4; margin-top: 4px;">
+                        💡 <b>异步后台</b>：主回复完成后由独立 API 自动异步安静提炼，不占正文输出；<br>
+                        💡 <b>伴随标签</b>：回复末尾自动附带隐藏状态标签由插件拦截入库，零额外请求。
                     </div>
                 </div>
 
@@ -806,6 +830,12 @@ function renderPanelContent() {
                         <label class="pm-input-label">记忆总 Token 预算:</label>
                         <input type="number" id="pm-setting-tokens" class="pm-input" min="150" max="2000" value="${settings.maxTotalMemoryTokens || 450}">
                     </div>
+                </div>
+
+                <div class="pm-mt-8">
+                    <button id="pm-save-all-settings-btn" class="pm-btn-primary" style="padding: 10px 14px; font-size: 13px; background: #059669; border-color: #047857;">
+                        <i class="fa-solid fa-floppy-disk"></i> 保存并生效全部配置
+                    </button>
                 </div>
             </div>
         `;
@@ -974,6 +1004,44 @@ function bindPanelEvents(container) {
                 statusEl.innerHTML = `<i class="fa-solid fa-xmark"></i> 失败: ${escapeHtml(res.error).slice(0, 35)}`;
             }
             window.toastr?.error?.(res.error, 'API 连接失败');
+        }
+    });
+
+    // 保存并生效全部配置按钮 (Tab 3)
+    container.querySelector('#pm-save-all-settings-btn')?.addEventListener('click', () => {
+        syncHudApiInputs();
+        const freqVal = Math.max(1, parseInt(container.querySelector('#pm-setting-freq')?.value) || 3);
+        const sliceVal = Math.max(2, Math.min(15, parseInt(container.querySelector('#pm-setting-slice')?.value) || 6));
+        const sceneTok = Math.max(50, Math.min(500, parseInt(container.querySelector('#pm-setting-scene-tokens')?.value) || 150));
+        const memTok = Math.max(150, Math.min(2000, parseInt(container.querySelector('#pm-setting-tokens')?.value) || 450));
+        const selectedMode = container.querySelector('input[name="pm-mode"]:checked')?.value || 'async';
+        const isEnabled = container.querySelector('#pm-setting-hud-enabled')?.checked ?? true;
+        const showBubble = container.querySelector('#pm-setting-hud-bubble')?.checked ?? true;
+        const useCustom = container.querySelector('#pm-setting-custom-api-enabled')?.checked ?? false;
+
+        updateSettings({
+            enabled: isEnabled,
+            showFloatingBubble: showBubble,
+            useCustomApi: useCustom,
+            asyncFrequency: freqVal,
+            digestSliceCount: sliceVal,
+            maxSceneTokens: sceneTok,
+            maxTotalMemoryTokens: memTok,
+            mode: selectedMode
+        });
+
+        const ok = saveSettingsImmediately();
+        const btn = container.querySelector('#pm-save-all-settings-btn');
+        if (btn) {
+            btn.innerHTML = '<i class="fa-solid fa-check"></i> 全部配置已成功保存！';
+            setTimeout(() => {
+                btn.innerHTML = '<i class="fa-solid fa-floppy-disk"></i> 保存并生效全部配置';
+            }, 1800);
+        }
+        if (ok) {
+            window.toastr?.success?.('插件配置已成功保存并立即生效！', '持续记忆');
+        } else {
+            window.toastr?.error?.('保存配置失败，请检查浏览器控制台', '持续记忆');
         }
     });
 
