@@ -3,6 +3,81 @@
  * 采用现代高对比度 Glassmorphism 工业风设计，确保所有数值与状态极其清晰可辨
  */
 
+/* 自定义极速滑块开关 (完全不依赖酒馆主题变量，100% 可见、必定可点) */
+.pm-switch-wrapper {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    cursor: pointer;
+    user-select: none;
+    gap: 10px;
+}
+
+.pm-switch {
+    position: relative;
+    display: inline-block;
+    width: 44px;
+    height: 24px;
+    cursor: pointer;
+    user-select: none;
+    flex-shrink: 0;
+}
+
+.pm-switch input {
+    position: absolute;
+    top: 0;
+    left: 0;
+    width: 100%;
+    height: 100%;
+    opacity: 0;
+    margin: 0;
+    padding: 0;
+    z-index: 3;
+    cursor: pointer;
+}
+
+.pm-slider {
+    position: absolute;
+    top: 0;
+    left: 0;
+    right: 0;
+    bottom: 0;
+    background-color: #334155;
+    transition: 0.25s cubic-bezier(0.16, 1, 0.3, 1);
+    border-radius: 24px;
+    border: 1px solid rgba(255, 255, 255, 0.25);
+    box-sizing: border-box;
+    pointer-events: none;
+}
+
+.pm-switch:hover .pm-slider {
+    border-color: rgba(255, 255, 255, 0.5);
+}
+
+.pm-slider::before {
+    position: absolute;
+    content: "";
+    height: 16px;
+    width: 16px;
+    left: 3px;
+    bottom: 3px;
+    background-color: #ffffff;
+    transition: 0.25s cubic-bezier(0.16, 1, 0.3, 1);
+    border-radius: 50%;
+    box-shadow: 0 2px 4px rgba(0, 0, 0, 0.4);
+}
+
+.pm-switch input:checked + .pm-slider {
+    background-color: #0284c7;
+    border-color: #38bdf8;
+    box-shadow: 0 0 10px rgba(56, 189, 248, 0.5);
+}
+
+.pm-switch input:checked + .pm-slider::before {
+    transform: translateX(20px);
+    background-color: #ffffff;
+}
+
 /* 屏幕悬浮快捷入口 (记忆悬浮球) */
 .pm-floating-bubble {
     position: fixed;

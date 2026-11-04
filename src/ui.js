@@ -211,10 +211,15 @@ function renderNativeDrawerContent() {
 
     content.innerHTML = `
         <div class="pm-native-box">
-            <div class="flex-container alignitemscenter wide100p pm-mb-8">
-                <label class="checkbox_label flex1" style="font-weight: 700; color: #f8fafc;">
-                    <input type="checkbox" id="pm-setting-enabled" ${settings.enabled ? 'checked' : ''}>
-                    <span>启用持续记忆</span>
+            <div class="flex-container alignitemscenter wide100p pm-mb-8" style="justify-content: space-between;">
+                <label class="pm-switch-wrapper" style="gap: 12px;">
+                    <span style="font-weight: 700; color: #f8fafc; font-size: 13px;">
+                        <i class="fa-solid fa-power-off" style="color: #38bdf8;"></i> 启用持续记忆
+                    </span>
+                    <div class="pm-switch">
+                        <input type="checkbox" id="pm-setting-enabled" ${settings.enabled ? 'checked' : ''}>
+                        <span class="pm-slider"></span>
+                    </div>
                 </label>
                 <button id="pm-open-hud-btn" class="menu_button menu_button_icon">
                     <i class="fa-solid fa-arrow-up-right-from-square"></i> 打开完整控制台 (HUD)
@@ -223,13 +228,16 @@ function renderNativeDrawerContent() {
 
             <!-- 独立提炼 API 直连配置 (原生抽屉同步) -->
             <div style="background: rgba(0,0,0,0.3); border: 1px solid rgba(255,255,255,0.12); border-radius: 8px; padding: 10px; margin-bottom: 10px;">
-                <div class="flex-container alignitemscenter wide100p pm-mb-8">
-                    <label class="checkbox_label flex1" style="color: #38bdf8; font-weight: 700;">
+                <label class="pm-switch-wrapper pm-mb-8">
+                    <span style="color: #38bdf8; font-weight: 700; font-size: 13px;">
+                        <i class="fa-solid fa-bolt"></i> 启用独立提炼 API (直连 DeepSeek)
+                    </span>
+                    <div class="pm-switch">
                         <input type="checkbox" id="pm-native-custom-api-enabled" ${settings.useCustomApi ? 'checked' : ''}>
-                        <span><i class="fa-solid fa-bolt"></i> 启用独立提炼 API (直连 DeepSeek / 本地模型)</span>
-                    </label>
-                </div>
-                <div id="pm-native-custom-api-body" style="${settings.useCustomApi ? '' : 'display: none;'}">
+                        <span class="pm-slider"></span>
+                    </div>
+                </label>
+                <div id="pm-native-custom-api-body" style="${settings.useCustomApi ? 'display: block;' : 'display: none;'}">
                     <div class="pm-input-row pm-mb-4">
                         <label class="pm-input-label">Base URL (例如 https://api.deepseek.com/v1):</label>
                         <input type="text" id="pm-native-custom-api-url" class="pm-input" value="${escapeHtml(settings.customApiUrl || '')}" placeholder="https://api.deepseek.com/v1">
@@ -291,7 +299,10 @@ function renderNativeDrawerContent() {
 
     // 绑定原生事件
     content.querySelector('#pm-setting-enabled')?.addEventListener('change', (e) => {
-        updateSettings({ enabled: e.target.checked });
+        const isChecked = e.target.checked;
+        updateSettings({ enabled: isChecked });
+        const hudToggle = document.getElementById('pm-setting-hud-enabled');
+        if (hudToggle) hudToggle.checked = isChecked;
     });
 
     content.querySelector('#pm-open-hud-btn')?.addEventListener('click', () => {
@@ -307,23 +318,32 @@ function renderNativeDrawerContent() {
     content.querySelector('#pm-native-custom-api-enabled')?.addEventListener('change', (e) => {
         const isChecked = e.target.checked;
         const body = content.querySelector('#pm-native-custom-api-body');
-        if (body) body.style.display = isChecked ? '' : 'none';
+        if (body) body.style.display = isChecked ? 'block' : 'none';
         updateSettings({ useCustomApi: isChecked });
+        // 双向同步 HUD 面板
+        const hudCb = document.getElementById('pm-setting-custom-api-enabled');
+        if (hudCb) {
+            hudCb.checked = isChecked;
+            const hudFields = document.getElementById('pm-custom-api-fields');
+            if (hudFields) hudFields.style.display = isChecked ? 'block' : 'none';
+        }
     });
 
-    content.querySelector('#pm-native-custom-api-url')?.addEventListener('change', (e) => {
-        updateSettings({ customApiUrl: e.target.value.trim() });
-    });
+    const syncNativeInputs = () => {
+        const url = (content.querySelector('#pm-native-custom-api-url')?.value || '').trim();
+        const key = (content.querySelector('#pm-native-custom-api-key')?.value || '').trim();
+        const model = (content.querySelector('#pm-native-custom-api-model')?.value || 'deepseek-chat').trim();
+        updateSettings({ customApiUrl: url, customApiKey: key, customApiModel: model });
+    };
 
-    content.querySelector('#pm-native-custom-api-key')?.addEventListener('change', (e) => {
-        updateSettings({ customApiKey: e.target.value.trim() });
-    });
-
-    content.querySelector('#pm-native-custom-api-model')?.addEventListener('change', (e) => {
-        updateSettings({ customApiModel: e.target.value.trim() || 'deepseek-chat' });
+    ['input', 'change'].forEach(evt => {
+        content.querySelector('#pm-native-custom-api-url')?.addEventListener(evt, syncNativeInputs);
+        content.querySelector('#pm-native-custom-api-key')?.addEventListener(evt, syncNativeInputs);
+        content.querySelector('#pm-native-custom-api-model')?.addEventListener(evt, syncNativeInputs);
     });
 
     content.querySelector('#pm-native-test-api-btn')?.addEventListener('click', async () => {
+        syncNativeInputs();
         const resEl = content.querySelector('#pm-native-test-res');
         if (resEl) {
             resEl.style.color = '#38bdf8';
@@ -624,22 +644,35 @@ function renderPanelContent() {
     // ─────────────────────────────────────────────────────────────────────────
     else if (currentTab === 'settings') {
         tabHtml = `
+            <!-- 全局启用总开关 -->
+            <div class="pm-section-card pm-mb-8">
+                <label class="pm-switch-wrapper">
+                    <span style="font-weight: 700; color: #f8fafc; font-size: 13px;">
+                        <i class="fa-solid fa-power-off" style="color: #38bdf8;"></i> 启用持续记忆系统 (全局总开关)
+                    </span>
+                    <div class="pm-switch">
+                        <input type="checkbox" id="pm-setting-hud-enabled" ${settings.enabled ? 'checked' : ''}>
+                        <span class="pm-slider"></span>
+                    </div>
+                </label>
+            </div>
+
             <!-- ⚡ 独立提炼 API 端点配置 (解决主会话脚本冲突与思维链 400 报错) -->
             <div class="pm-section-card" style="border: 1px solid rgba(56, 189, 248, 0.4); background: rgba(14, 165, 233, 0.05);">
-                <div class="pm-section-header">
-                    <span class="pm-section-title" style="color: #38bdf8;">
-                        <i class="fa-solid fa-server"></i> 独立提炼 API 端点 (强烈推荐)
+                <label class="pm-switch-wrapper pm-mb-8">
+                    <span class="pm-section-title" style="color: #38bdf8; font-size: 13px; font-weight: 700;">
+                        <i class="fa-solid fa-server"></i> 独立提炼 API 直连端点 (强烈推荐)
                     </span>
-                    <label class="checkbox_label" style="cursor: pointer; font-weight: 700; color: #38bdf8;">
+                    <div class="pm-switch">
                         <input type="checkbox" id="pm-setting-custom-api-enabled" ${settings.useCustomApi ? 'checked' : ''}>
-                        <span>启用独立直连</span>
-                    </label>
-                </div>
+                        <span class="pm-slider"></span>
+                    </div>
+                </label>
                 <div style="font-size: 11px; color: #cbd5e1; margin-bottom: 12px; line-height: 1.5;">
                     提炼任务走专属 API 发送，<b>完全脱离酒馆主聊天链路</b>。彻底解决 DeepSeek 思维链丢失 400 报错、避免主聊天复杂脚本干扰，并大幅节省 Token！
                 </div>
 
-                <div id="pm-custom-api-fields" style="${settings.useCustomApi ? '' : 'display: none;'}">
+                <div id="pm-custom-api-fields" style="${settings.useCustomApi ? 'display: block;' : 'display: none;'}">
                     <div class="pm-input-row">
                         <label class="pm-input-label">API Base URL:</label>
                         <input type="text" id="pm-setting-custom-api-url" class="pm-input" value="${escapeHtml(settings.customApiUrl || '')}" placeholder="https://api.deepseek.com/v1">
@@ -801,28 +834,45 @@ function bindPanelEvents(container) {
         updateSettings({ maxSceneTokens: val });
     });
 
+    // 全局插件启用
+    container.querySelector('#pm-setting-hud-enabled')?.addEventListener('change', (e) => {
+        const isChecked = e.target.checked;
+        updateSettings({ enabled: isChecked });
+        const nativeToggle = document.getElementById('pm-setting-enabled');
+        if (nativeToggle) nativeToggle.checked = isChecked;
+    });
+
     // 独立提炼 API 配置监听
     container.querySelector('#pm-setting-custom-api-enabled')?.addEventListener('change', (e) => {
         const isChecked = e.target.checked;
         const fields = container.querySelector('#pm-custom-api-fields');
-        if (fields) fields.style.display = isChecked ? '' : 'none';
+        if (fields) fields.style.display = isChecked ? 'block' : 'none';
         updateSettings({ useCustomApi: isChecked });
+        // 双向同步原生抽屉
+        const nativeCb = document.getElementById('pm-native-custom-api-enabled');
+        if (nativeCb) {
+            nativeCb.checked = isChecked;
+            const nativeBody = document.getElementById('pm-native-custom-api-body');
+            if (nativeBody) nativeBody.style.display = isChecked ? 'block' : 'none';
+        }
     });
 
-    container.querySelector('#pm-setting-custom-api-url')?.addEventListener('change', (e) => {
-        updateSettings({ customApiUrl: e.target.value.trim() });
-    });
+    const syncHudApiInputs = () => {
+        const url = (container.querySelector('#pm-setting-custom-api-url')?.value || '').trim();
+        const key = (container.querySelector('#pm-setting-custom-api-key')?.value || '').trim();
+        const model = (container.querySelector('#pm-setting-custom-api-model')?.value || 'deepseek-chat').trim();
+        updateSettings({ customApiUrl: url, customApiKey: key, customApiModel: model });
+    };
 
-    container.querySelector('#pm-setting-custom-api-key')?.addEventListener('change', (e) => {
-        updateSettings({ customApiKey: e.target.value.trim() });
-    });
-
-    container.querySelector('#pm-setting-custom-api-model')?.addEventListener('change', (e) => {
-        updateSettings({ customApiModel: e.target.value.trim() || 'deepseek-chat' });
+    ['input', 'change'].forEach(evt => {
+        container.querySelector('#pm-setting-custom-api-url')?.addEventListener(evt, syncHudApiInputs);
+        container.querySelector('#pm-setting-custom-api-key')?.addEventListener(evt, syncHudApiInputs);
+        container.querySelector('#pm-setting-custom-api-model')?.addEventListener(evt, syncHudApiInputs);
     });
 
     // 测试 API 连通性
     container.querySelector('#pm-btn-test-api')?.addEventListener('click', async () => {
+        syncHudApiInputs();
         const statusEl = container.querySelector('#pm-api-test-status');
         if (statusEl) {
             statusEl.style.color = '#38bdf8';

@@ -60,7 +60,6 @@ export function updateSettings(patch) {
     Object.assign(settings, patch);
     const c = getContext();
     c?.saveSettingsDebounced?.();
-    notifyChange();
 }
 
 /**
