@@ -58,7 +58,24 @@ function createFloatingButton() {
 }
 
 /**
- * 拖拽核心算法：支持边缘保护、点击/拖动区分、触控与坐标持久化
+ * 重置悬浮球位置到系统默认推荐坐标 (适配 PC 与 手机)
+ */
+export function resetBubblePosition() {
+    try {
+        localStorage.removeItem('pm_bubble_pos');
+        localStorage.removeItem('pm_bubble_pos_mobile');
+    } catch {}
+    const bubble = document.getElementById('pm-floating-bubble');
+    if (bubble) {
+        bubble.style.left = '';
+        bubble.style.top = '';
+        bubble.style.right = '';
+        bubble.style.bottom = '';
+    }
+}
+
+/**
+ * 拖拽核心算法：手机触控与桌面鼠标双端适配、防遮挡安全边缘、坐标隔离持久化
  */
 function makeDraggable(el, onClickCallback) {
     let isDragging = false;
@@ -66,19 +83,29 @@ function makeDraggable(el, onClickCallback) {
     let startX = 0, startY = 0;
     let initialX = 0, initialY = 0;
 
-    // 恢复历史记忆位置
+    const isMobile = () => window.innerWidth <= 768;
+    const getStorageKey = () => isMobile() ? 'pm_bubble_pos_mobile' : 'pm_bubble_pos';
+
+    // 恢复历史记忆位置 (手机端与桌面端分别记忆，避免桌面大屏坐标导致手机端飞出屏幕)
     try {
-        const saved = localStorage.getItem('pm_bubble_pos');
+        const key = getStorageKey();
+        const saved = localStorage.getItem(key);
         if (saved) {
             const { x, y } = JSON.parse(saved);
-            const maxX = Math.max(10, window.innerWidth - 60);
-            const maxY = Math.max(10, window.innerHeight - 60);
+            const maxX = Math.max(10, window.innerWidth - 50);
+            const maxY = Math.max(10, window.innerHeight - 50);
             const clampedX = Math.min(Math.max(10, x), maxX);
             const clampedY = Math.min(Math.max(10, y), maxY);
             el.style.left = `${clampedX}px`;
             el.style.top = `${clampedY}px`;
             el.style.right = 'auto';
             el.style.bottom = 'auto';
+        } else {
+            // 未保存过自定义位置时，清空 inline 样式，严格使用 CSS 优雅响应式默认定位 (手机端 140px，桌面端 85px)
+            el.style.left = '';
+            el.style.top = '';
+            el.style.right = '';
+            el.style.bottom = '';
         }
     } catch {}
 
@@ -145,7 +172,7 @@ function makeDraggable(el, onClickCallback) {
         if (hasMoved) {
             const rect = el.getBoundingClientRect();
             try {
-                localStorage.setItem('pm_bubble_pos', JSON.stringify({ x: rect.left, y: rect.top }));
+                localStorage.setItem(getStorageKey(), JSON.stringify({ x: rect.left, y: rect.top }));
             } catch {}
         }
     };
@@ -217,8 +244,8 @@ function renderNativeDrawerContent() {
         <div class="pm-native-box">
             <div class="flex-container alignitemscenter wide100p pm-mb-8" style="justify-content: space-between;">
                 <label class="pm-switch-wrapper" style="gap: 10px;">
-                    <span style="font-weight: 600; color: #e2e8f0; font-size: 13px;">
-                        <i class="fa-solid fa-power-off"></i> 启用持续记忆
+                    <span style="font-weight: 700; color: #0f172a; font-size: 13px;">
+                        <i class="fa-solid fa-power-off" style="color: #2563eb;"></i> 启用持续记忆
                     </span>
                     <div class="pm-switch">
                         <input type="checkbox" id="pm-setting-enabled" ${settings.enabled ? 'checked' : ''}>
@@ -232,8 +259,8 @@ function renderNativeDrawerContent() {
 
             <div class="flex-container alignitemscenter wide100p pm-mb-8">
                 <label class="pm-switch-wrapper flex1">
-                    <span style="color: #cbd5e1; font-size: 12px;">
-                        <i class="fa-solid fa-circle-dot"></i> 屏幕快捷悬浮球
+                    <span style="color: #334155; font-size: 12px; font-weight: 600;">
+                        <i class="fa-solid fa-circle-dot" style="color: #2563eb;"></i> 屏幕快捷悬浮球
                     </span>
                     <div class="pm-switch">
                         <input type="checkbox" id="pm-native-bubble-enabled" ${settings.showFloatingBubble !== false ? 'checked' : ''}>
@@ -246,7 +273,7 @@ function renderNativeDrawerContent() {
             <div class="pm-section-card pm-mb-8">
                 <label class="pm-switch-wrapper pm-mb-8">
                     <span class="pm-section-title">
-                        <i class="fa-solid fa-server"></i> 启用独立提炼 API (直连 DeepSeek)
+                        <i class="fa-solid fa-server" style="color: #2563eb;"></i> 启用独立提炼 API (直连 DeepSeek)
                     </span>
                     <div class="pm-switch">
                         <input type="checkbox" id="pm-native-custom-api-enabled" ${settings.useCustomApi ? 'checked' : ''}>
@@ -293,14 +320,14 @@ function renderNativeDrawerContent() {
 
             <div class="pm-input-row pm-mb-8">
                 <label class="pm-input-label">最新提炼动态：</label>
-                <div style="background: rgba(0,0,0,0.2); padding: 8px 10px; border-radius: 5px; border: 1px solid rgba(255,255,255,0.06); font-size: 12px; color: #e2e8f0;">
-                    ${escapeHtml(state.last_digest_summary || '尚未执行提炼')} ${state.last_digest_time ? `<span style="color: #94a3b8; font-weight: 400;">(${state.last_digest_time})</span>` : ''}
+                <div class="pm-status-box">
+                    ${escapeHtml(state.last_digest_summary || '尚未执行提炼')} ${state.last_digest_time ? `<span style="color: #64748b; font-weight: 400;">(${state.last_digest_time})</span>` : ''}
                 </div>
             </div>
 
             <div class="pm-input-row pm-mb-8">
                 <label class="pm-input-label">现场快照与状态版本：</label>
-                <div style="background: rgba(0,0,0,0.2); padding: 8px 10px; border-radius: 5px; border: 1px solid rgba(255,255,255,0.06); font-size: 12px; color: #cbd5e1;">
+                <div class="pm-status-box">
                     修订: <b>rev.${state.state_revision || 0}</b> | 地点: <b>${escapeHtml(scene.location || '未知')}</b> | 记忆: <b>${memories.length}</b> 条
                 </div>
             </div>
@@ -619,7 +646,7 @@ function renderPanelContent() {
                     <span class="pm-section-title"><i class="fa-solid fa-map-location-dot"></i> L0 现场快照 (Scene State)</span>
                     <span class="pm-hero-pill">现场置顶</span>
                 </div>
-                <div style="font-size: 11px; color: #94a3b8; margin-bottom: 12px; line-height: 1.4;">
+                <div style="font-size: 12px; color: #475569; margin-bottom: 12px; line-height: 1.4;">
                     记录当前正在发生的客观局势。拥有独立硬 Token 预算（上限 ~${settings.maxSceneTokens || 150}），绝不遗忘此时此刻。
                 </div>
 
@@ -673,8 +700,8 @@ function renderPanelContent() {
             <div class="pm-section-card pm-mb-8">
                 <div class="flex-container alignitemscenter wide100p pm-mb-4" style="justify-content: space-between;">
                     <label class="pm-switch-wrapper flex1">
-                        <span style="font-weight: 600; color: #e2e8f0; font-size: 13px;">
-                            <i class="fa-solid fa-power-off"></i> 启用持续记忆系统 (全局总开关)
+                        <span style="font-weight: 700; color: #0f172a; font-size: 13px;">
+                            <i class="fa-solid fa-power-off" style="color: #2563eb;"></i> 启用持续记忆系统 (全局总开关)
                         </span>
                         <div class="pm-switch">
                             <input type="checkbox" id="pm-setting-hud-enabled" ${settings.enabled ? 'checked' : ''}>
@@ -682,16 +709,19 @@ function renderPanelContent() {
                         </div>
                     </label>
                 </div>
-                <div class="flex-container alignitemscenter wide100p" style="justify-content: space-between; padding-top: 6px; border-top: 1px solid rgba(255,255,255,0.06);">
+                <div class="flex-container alignitemscenter wide100p" style="justify-content: space-between; padding-top: 8px; border-top: 1px solid #e2e8f0;">
                     <label class="pm-switch-wrapper flex1">
-                        <span style="color: #94a3b8; font-size: 12px;">
-                            <i class="fa-solid fa-circle-dot"></i> 屏幕快捷悬浮球 (关后可从右侧抽屉打开)
+                        <span style="color: #475569; font-size: 12px; font-weight: 600;">
+                            <i class="fa-solid fa-circle-dot" style="color: #2563eb;"></i> 屏幕快捷悬浮球 (关后可从右侧抽屉打开)
                         </span>
                         <div class="pm-switch">
                             <input type="checkbox" id="pm-setting-hud-bubble" ${settings.showFloatingBubble !== false ? 'checked' : ''}>
                             <span class="pm-slider"></span>
                         </div>
                     </label>
+                    <button id="pm-reset-bubble-btn" class="pm-btn-test" style="margin-left: 8px; padding: 3px 8px; font-size: 11px;" title="重置悬浮球到初始屏幕位置">
+                        <i class="fa-solid fa-arrows-rotate"></i> 重置位置
+                    </button>
                 </div>
             </div>
 
@@ -706,7 +736,7 @@ function renderPanelContent() {
                         <span class="pm-slider"></span>
                     </div>
                 </label>
-                <div style="font-size: 11px; color: #94a3b8; margin-bottom: 10px; line-height: 1.4;">
+                <div style="font-size: 12px; color: #475569; margin-bottom: 10px; line-height: 1.4;">
                     提炼任务走专属 API 独立发送，完全脱离酒馆主聊天链路。彻底解决 DeepSeek 思维链丢失 400 报错，避免主聊天脚本干扰，大幅节省 Token。
                 </div>
 
@@ -880,7 +910,7 @@ function bindPanelEvents(container) {
         if (nativeToggle) nativeToggle.checked = isChecked;
     });
 
-    // 屏幕悬浮球显隐
+    // 屏幕悬浮球显隐与重置
     container.querySelector('#pm-setting-hud-bubble')?.addEventListener('change', (e) => {
         const isChecked = e.target.checked;
         updateSettings({ showFloatingBubble: isChecked });
@@ -888,6 +918,11 @@ function bindPanelEvents(container) {
         if (bubble) bubble.style.display = isChecked ? 'flex' : 'none';
         const nativeCb = document.getElementById('pm-native-bubble-enabled');
         if (nativeCb) nativeCb.checked = isChecked;
+    });
+
+    container.querySelector('#pm-reset-bubble-btn')?.addEventListener('click', () => {
+        resetBubblePosition();
+        window.toastr?.info?.('悬浮球位置已重置至默认推荐位置', '持续记忆');
     });
 
     // 独立提炼 API 配置监听

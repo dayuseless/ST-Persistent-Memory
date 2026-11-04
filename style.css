@@ -1,11 +1,51 @@
 /**
  * 持续记忆插件样式 (ST-Persistent-Memory)
- * 设计规范：原生酒馆质朴半透明风格 (SillyTavern Subdued Aesthetic)
- * 深度融入酒馆背景壁纸与主题变量，杜绝突兀炫彩光效，保障高对比度可读性与无缝交互
+ * 设计规范：纯粹白底黑字清爽风格 (Clean Light Modern Aesthetic)
+ * 白底高对比度，黑字清晰醒目，去除暗色浑浊感，并对手机触控与响应式视口全面强化
  */
 
 /* ─────────────────────────────────────────────────────────────────────────────
- * 1. 自定义极简滑块开关 (完全不依赖主题变量，小巧、质朴、100% 可点)
+ * 1. 屏幕快捷悬浮球 (手机/桌面双端适配，白底深色图标，绝不被手机输入框遮挡)
+ * ───────────────────────────────────────────────────────────────────────────── */
+.pm-floating-bubble {
+    position: fixed;
+    bottom: 85px;
+    right: 20px;
+    width: 42px;
+    height: 42px;
+    background: #ffffff !important;
+    color: #0f172a !important;
+    border-radius: 50%;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    font-size: 18px;
+    box-shadow: 0 4px 16px rgba(0, 0, 0, 0.18), 0 1px 3px rgba(0, 0, 0, 0.1);
+    border: 1.5px solid #cbd5e1 !important;
+    cursor: pointer !important;
+    z-index: 999999 !important;
+    user-select: none;
+    touch-action: none;
+    -webkit-tap-highlight-color: transparent;
+    transition: background 0.15s ease, color 0.15s ease, border-color 0.15s ease, transform 0.15s ease, box-shadow 0.15s ease;
+}
+
+.pm-floating-bubble:hover {
+    color: #2563eb !important;
+    background: #f8fafc !important;
+    border-color: #2563eb !important;
+    transform: scale(1.08);
+    box-shadow: 0 6px 20px rgba(37, 99, 235, 0.25);
+}
+
+.pm-floating-bubble.pm-dragging {
+    cursor: grabbing !important;
+    opacity: 0.92;
+    transform: scale(1.1);
+}
+
+/* ─────────────────────────────────────────────────────────────────────────────
+ * 2. 自定义极简滑块开关 (白底黑字适配，极速、清晰、100% 可点)
  * ───────────────────────────────────────────────────────────────────────────── */
 .pm-switch-wrapper {
     display: flex;
@@ -19,8 +59,8 @@
 .pm-switch {
     position: relative;
     display: inline-block;
-    width: 36px;
-    height: 20px;
+    width: 38px;
+    height: 22px;
     cursor: pointer;
     user-select: none;
     flex-shrink: 0;
@@ -45,34 +85,34 @@
     left: 0;
     right: 0;
     bottom: 0;
-    background-color: rgba(255, 255, 255, 0.12);
-    transition: 0.2s ease-in-out;
-    border-radius: 20px;
-    border: 1px solid rgba(255, 255, 255, 0.18);
+    background-color: #cbd5e1;
+    transition: 0.2s cubic-bezier(0.16, 1, 0.3, 1);
+    border-radius: 22px;
+    border: 1px solid #94a3b8;
     box-sizing: border-box;
     pointer-events: none;
 }
 
 .pm-switch:hover .pm-slider {
-    border-color: rgba(255, 255, 255, 0.35);
+    border-color: #64748b;
 }
 
 .pm-slider::before {
     position: absolute;
     content: "";
-    height: 14px;
-    width: 14px;
+    height: 16px;
+    width: 16px;
     left: 2px;
     bottom: 2px;
-    background-color: #cbd5e1;
-    transition: 0.2s ease-in-out;
+    background-color: #ffffff;
+    transition: 0.2s cubic-bezier(0.16, 1, 0.3, 1);
     border-radius: 50%;
-    box-shadow: 0 1px 3px rgba(0, 0, 0, 0.3);
+    box-shadow: 0 1px 4px rgba(0, 0, 0, 0.25);
 }
 
 .pm-switch input:checked + .pm-slider {
-    background-color: rgba(59, 130, 246, 0.65);
-    border-color: rgba(96, 165, 250, 0.7);
+    background-color: #2563eb;
+    border-color: #1d4ed8;
 }
 
 .pm-switch input:checked + .pm-slider::before {
@@ -81,82 +121,42 @@
 }
 
 /* ─────────────────────────────────────────────────────────────────────────────
- * 2. 屏幕快捷悬浮球 (轻量温润，自然融入聊天壁纸)
- * ───────────────────────────────────────────────────────────────────────────── */
-.pm-floating-bubble {
-    position: fixed;
-    bottom: 75px;
-    right: 18px;
-    width: 38px;
-    height: 38px;
-    background: var(--SmartThemeBlurTintColor, rgba(20, 24, 33, 0.8));
-    backdrop-filter: blur(var(--SmartThemeBlurStrength, 10px));
-    -webkit-backdrop-filter: blur(var(--SmartThemeBlurStrength, 10px));
-    color: #94a3b8;
-    border-radius: 50%;
-    display: flex;
-    align-items: center;
-    justify-content: center;
-    font-size: 16px;
-    box-shadow: 0 3px 10px rgba(0, 0, 0, 0.35);
-    border: 1px solid var(--SmartThemeBorderColor, rgba(255, 255, 255, 0.15));
-    cursor: grab;
-    z-index: 9998;
-    user-select: none;
-    touch-action: none;
-    transition: background 0.15s ease, color 0.15s ease, border-color 0.15s ease, transform 0.15s ease;
-}
-
-.pm-floating-bubble:hover {
-    color: #f1f5f9;
-    background: rgba(30, 36, 48, 0.9);
-    border-color: rgba(255, 255, 255, 0.3);
-    transform: scale(1.05);
-}
-
-.pm-floating-bubble.pm-dragging {
-    cursor: grabbing !important;
-    opacity: 0.9;
-    transform: scale(1.08);
-}
-
-/* ─────────────────────────────────────────────────────────────────────────────
- * 3. 主面板侧边抽屉 (质朴半透明毛玻璃，深度匹配酒馆原生风格)
+ * 3. 主面板抽屉容器 (纯粹白底黑字，极简优雅，大字号高对比)
  * ───────────────────────────────────────────────────────────────────────────── */
 .pm-panel-container {
     position: fixed;
-    top: var(--topBarBlockSize, 40px);
+    top: 0;
     right: -490px;
-    width: 460px;
+    width: 470px;
     max-width: 95vw;
-    height: calc(100vh - var(--topBarBlockSize, 40px));
-    background: var(--SmartThemeBlurTintColor, rgba(17, 20, 26, 0.85));
-    backdrop-filter: blur(var(--SmartThemeBlurStrength, 12px));
-    -webkit-backdrop-filter: blur(var(--SmartThemeBlurStrength, 12px));
-    border-left: 1px solid var(--SmartThemeBorderColor, rgba(255, 255, 255, 0.1));
-    border-radius: 10px 0 0 10px;
-    box-shadow: -6px 0 24px rgba(0, 0, 0, 0.45);
-    z-index: 9999;
+    height: 100vh;
+    height: 100dvh;
+    background: #ffffff !important;
+    border-left: 1px solid #e2e8f0 !important;
+    border-radius: 12px 0 0 12px;
+    box-shadow: -8px 0 30px rgba(0, 0, 0, 0.15) !important;
+    z-index: 999999 !important;
     display: flex;
     flex-direction: column;
     transition: right 0.28s cubic-bezier(0.16, 1, 0.3, 1);
-    color: var(--SmartThemeBodyColor, #e2e8f0);
+    color: #0f172a !important;
     font-size: 13px;
-    font-family: system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
+    font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, "Helvetica Neue", Arial, sans-serif;
+    box-sizing: border-box;
 }
 
 .pm-panel-container.pm-show {
     right: 0;
 }
 
-/* 顶部标题栏 */
+/* 顶部标题栏 (白底黑字) */
 .pm-panel-header {
     display: flex;
     align-items: center;
     justify-content: space-between;
-    padding: 12px 16px;
-    border-bottom: 1px solid rgba(255, 255, 255, 0.08);
-    background: rgba(0, 0, 0, 0.15);
+    padding: 14px 18px;
+    border-bottom: 1px solid #e2e8f0;
+    background: #ffffff;
 }
 
 .pm-title-group {
@@ -166,14 +166,15 @@
 }
 
 .pm-title-icon {
-    color: #94a3b8;
-    font-size: 16px;
+    color: #2563eb;
+    font-size: 18px;
 }
 
 .pm-title-text {
-    font-size: 14px;
-    font-weight: 600;
-    color: #f1f5f9;
+    font-size: 15px;
+    font-weight: 700;
+    color: #0f172a;
+    letter-spacing: -0.2px;
 }
 
 .pm-header-stats {
@@ -187,20 +188,14 @@
     display: inline-flex;
     align-items: center;
     gap: 4px;
-    padding: 1px 6px;
+    padding: 2px 7px;
     border-radius: 4px;
     font-size: 11px;
     font-weight: 600;
     font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace;
-    background: rgba(255, 255, 255, 0.06);
-    color: #cbd5e1;
-    border: 1px solid rgba(255, 255, 255, 0.08);
-}
-
-.pm-pill-cyan, .pm-pill-purple {
-    background: rgba(255, 255, 255, 0.06);
-    color: #cbd5e1;
-    border-color: rgba(255, 255, 255, 0.08);
+    background: #f1f5f9;
+    color: #334155;
+    border: 1px solid #e2e8f0;
 }
 
 .pm-header-actions {
@@ -209,28 +204,29 @@
 }
 
 .pm-btn-icon {
-    background: rgba(255, 255, 255, 0.06);
-    border: 1px solid rgba(255, 255, 255, 0.1);
-    color: #94a3b8;
-    width: 28px;
-    height: 28px;
-    border-radius: 5px;
+    background: #f8fafc;
+    border: 1px solid #cbd5e1;
+    color: #475569;
+    width: 32px;
+    height: 32px;
+    border-radius: 6px;
     display: flex;
     align-items: center;
     justify-content: center;
     cursor: pointer;
-    font-size: 13px;
-    transition: background 0.15s, color 0.15s;
+    font-size: 14px;
+    transition: background 0.15s, color 0.15s, border-color 0.15s;
 }
 
 .pm-btn-icon:hover {
-    background: rgba(255, 255, 255, 0.14);
-    color: #ffffff;
+    background: #f1f5f9;
+    color: #0f172a;
+    border-color: #94a3b8;
 }
 
 .pm-spinning {
     animation: pm-spin 1s linear infinite;
-    color: #93c5fd !important;
+    color: #2563eb !important;
 }
 
 @keyframes pm-spin {
@@ -239,14 +235,14 @@
 }
 
 /* ─────────────────────────────────────────────────────────────────────────────
- * 4. 导航选项卡栏 (Tab Bar - 质朴酒馆平铺风格)
+ * 4. 导航选项卡栏 (Tab Bar - 纯白极简底色，高亮下划线)
  * ───────────────────────────────────────────────────────────────────────────── */
 .pm-tab-bar {
     display: flex;
-    background: transparent;
-    border-bottom: 1px solid rgba(255, 255, 255, 0.08);
-    padding: 2px 12px 0 12px;
-    gap: 4px;
+    background: #ffffff;
+    border-bottom: 1px solid #e2e8f0;
+    padding: 4px 16px 0 16px;
+    gap: 6px;
 }
 
 .pm-tab-btn {
@@ -254,49 +250,53 @@
     background: transparent;
     border: none;
     border-bottom: 2px solid transparent;
-    color: #94a3b8;
-    padding: 8px 10px;
-    font-size: 12px;
-    font-weight: 500;
+    color: #64748b;
+    padding: 9px 12px;
+    font-size: 13px;
+    font-weight: 600;
     cursor: pointer;
     display: flex;
     align-items: center;
     justify-content: center;
     gap: 6px;
-    transition: color 0.15s, border-color 0.15s;
+    border-radius: 6px 6px 0 0;
+    transition: color 0.15s, border-color 0.15s, background 0.15s;
 }
 
 .pm-tab-btn:hover {
-    color: #f1f5f9;
+    color: #0f172a;
+    background: #f8fafc;
 }
 
 .pm-tab-btn.pm-active {
-    color: var(--SmartThemeQuoteColor, #93c5fd);
-    border-bottom-color: var(--SmartThemeQuoteColor, #60a5fa);
-    font-weight: 600;
+    color: #2563eb;
+    border-bottom-color: #2563eb;
+    background: #eff6ff;
 }
 
 /* ─────────────────────────────────────────────────────────────────────────────
- * 5. 主面板内容区与卡片
+ * 5. 主面板内容区与卡片布局
  * ───────────────────────────────────────────────────────────────────────────── */
 .pm-panel-body {
     flex: 1;
     overflow-y: auto;
-    padding: 12px 14px;
+    padding: 14px 16px;
     display: flex;
     flex-direction: column;
     gap: 12px;
+    background: #f8fafc;
 }
 
-/* 统计横幅 (大号等宽数字，无刺眼光晕) */
+/* 统计横幅 (白底卡片 + 清晰大数字) */
 .pm-stats-banner {
     display: grid;
     grid-template-columns: repeat(3, 1fr);
-    gap: 8px;
-    background: rgba(0, 0, 0, 0.18);
-    border: 1px solid rgba(255, 255, 255, 0.06);
-    border-radius: 6px;
-    padding: 8px 12px;
+    gap: 10px;
+    background: #ffffff;
+    border: 1px solid #e2e8f0;
+    border-radius: 8px;
+    padding: 10px 14px;
+    box-shadow: 0 1px 3px rgba(0, 0, 0, 0.04);
 }
 
 .pm-stat-box {
@@ -307,47 +307,60 @@
 
 .pm-stat-label {
     font-size: 11px;
-    color: #94a3b8;
-    font-weight: 500;
+    color: #64748b;
+    font-weight: 600;
 }
 
 .pm-stat-value {
-    font-size: 15px;
-    font-weight: 700;
+    font-size: 16px;
+    font-weight: 800;
     font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace;
 }
 
-.pm-text-amber { color: #fbbf24; }
-.pm-text-emerald { color: #34d399; }
-.pm-text-sky { color: #38bdf8; }
-.pm-text-purple { color: #c084fc; }
-.pm-text-slate { color: #cbd5e1; }
+.pm-text-amber { color: #d97706; }
+.pm-text-emerald { color: #059669; }
+.pm-text-sky { color: #0284c7; }
+.pm-text-purple { color: #7c3aed; }
+.pm-text-slate { color: #334155; }
 
-/* 质朴区块卡片 */
+/* 质朴白底区块卡片 */
 .pm-section-card {
-    background: rgba(0, 0, 0, 0.16);
-    border: 1px solid rgba(255, 255, 255, 0.07);
-    border-radius: 6px;
-    padding: 10px 12px;
+    background: #ffffff;
+    border: 1px solid #e2e8f0;
+    border-radius: 8px;
+    padding: 12px 14px;
+    box-shadow: 0 1px 3px rgba(0, 0, 0, 0.04);
 }
 
 .pm-section-header {
     display: flex;
     align-items: center;
     justify-content: space-between;
-    margin-bottom: 8px;
+    margin-bottom: 10px;
 }
 
 .pm-section-title {
-    font-weight: 600;
-    font-size: 12px;
-    color: #f1f5f9;
+    font-weight: 700;
+    font-size: 13px;
+    color: #0f172a;
     display: flex;
     align-items: center;
     gap: 6px;
 }
 
-/* 输入框与控件 (与酒馆输入风格深度融合) */
+.pm-status-box {
+    background: #f8fafc;
+    border: 1px solid #e2e8f0;
+    border-radius: 6px;
+    padding: 8px 10px;
+    font-size: 12px;
+    color: #1e293b;
+    font-weight: 500;
+}
+
+/* ─────────────────────────────────────────────────────────────────────────────
+ * 6. 输入框与控件 (白底黑字，高对比度，边界分明)
+ * ───────────────────────────────────────────────────────────────────────────── */
 .pm-input-row {
     display: flex;
     flex-direction: column;
@@ -357,8 +370,8 @@
 
 .pm-input-label {
     font-size: 11px;
-    font-weight: 500;
-    color: #94a3b8;
+    font-weight: 600;
+    color: #475569;
     display: flex;
     align-items: center;
     gap: 6px;
@@ -367,68 +380,71 @@
 .pm-input {
     width: 100%;
     box-sizing: border-box;
-    background: rgba(0, 0, 0, 0.25) !important;
-    border: 1px solid rgba(255, 255, 255, 0.12) !important;
-    border-radius: 4px;
-    padding: 6px 8px;
-    color: #f1f5f9 !important;
-    font-size: 12px;
-    font-weight: 400;
+    background: #ffffff !important;
+    border: 1px solid #cbd5e1 !important;
+    border-radius: 6px;
+    padding: 8px 10px;
+    color: #0f172a !important;
+    font-size: 13px;
+    font-weight: 500;
     outline: none;
-    transition: border-color 0.15s;
+    transition: border-color 0.15s, box-shadow 0.15s;
 }
 
 .pm-input:focus {
-    border-color: rgba(255, 255, 255, 0.35) !important;
-    box-shadow: none !important;
+    border-color: #2563eb !important;
+    box-shadow: 0 0 0 3px rgba(37, 99, 235, 0.12) !important;
 }
 
 .pm-input::placeholder {
-    color: #64748b;
+    color: #94a3b8;
     font-weight: 400;
 }
 
-/* 数字输入框：大号清晰等宽，无荧光 */
+/* 大号数字输入框 (黑字粗体等宽) */
 .pm-input[type="number"] {
-    font-size: 14px !important;
+    font-size: 15px !important;
     font-weight: 700 !important;
-    color: #f1f5f9 !important;
+    color: #0f172a !important;
     font-family: ui-monospace, SFMono-Regular, monospace;
 }
 
-/* 快捷记忆添加框 */
+/* 快捷记忆添加卡片 */
 .pm-quick-box {
-    background: rgba(0, 0, 0, 0.18);
-    border: 1px solid rgba(255, 255, 255, 0.06);
-    border-radius: 6px;
-    padding: 8px 10px;
+    background: #ffffff;
+    border: 1px solid #e2e8f0;
+    border-radius: 8px;
+    padding: 12px 14px;
+    box-shadow: 0 1px 3px rgba(0, 0, 0, 0.04);
 }
 
 /* ─────────────────────────────────────────────────────────────────────────────
- * 6. 记忆列表与条目卡片 (素雅低饱和，清晰易读)
+ * 7. 记忆列表与条目卡片 (白底轻阴影，黑字正文，清爽舒适)
  * ───────────────────────────────────────────────────────────────────────────── */
 .pm-mem-list {
     display: flex;
     flex-direction: column;
-    gap: 6px;
-    max-height: 420px;
+    gap: 8px;
+    max-height: 440px;
     overflow-y: auto;
     padding-right: 2px;
 }
 
 .pm-card {
-    background: rgba(0, 0, 0, 0.18);
-    border: 1px solid rgba(255, 255, 255, 0.06);
-    border-radius: 6px;
-    padding: 8px 10px;
+    background: #ffffff;
+    border: 1px solid #e2e8f0;
+    border-radius: 8px;
+    padding: 10px 12px;
     display: flex;
     flex-direction: column;
-    gap: 5px;
-    transition: border-color 0.15s;
+    gap: 6px;
+    box-shadow: 0 1px 3px rgba(0, 0, 0, 0.04);
+    transition: border-color 0.15s, box-shadow 0.15s;
 }
 
 .pm-card:hover {
-    border-color: rgba(255, 255, 255, 0.16);
+    border-color: #cbd5e1;
+    box-shadow: 0 2px 8px rgba(0, 0, 0, 0.08);
 }
 
 .pm-card-top {
@@ -439,11 +455,11 @@
 }
 
 .pm-card-content {
-    font-size: 12px;
-    line-height: 1.45;
-    color: #e2e8f0;
+    font-size: 13px;
+    line-height: 1.5;
+    color: #1e293b;
     word-break: break-word;
-    font-weight: 400;
+    font-weight: 500;
 }
 
 .pm-card-keys {
@@ -453,124 +469,102 @@
 }
 
 .pm-key-pill {
-    font-size: 10px;
-    background: rgba(255, 255, 255, 0.05);
-    color: #94a3b8;
-    padding: 1px 5px;
-    border-radius: 3px;
-    border: 1px solid rgba(255, 255, 255, 0.08);
+    font-size: 11px;
+    background: #f1f5f9;
+    color: #475569;
+    padding: 2px 6px;
+    border-radius: 4px;
+    border: 1px solid #e2e8f0;
+    font-weight: 500;
 }
 
-/* 状态药丸与范围徽标 (质朴微透，低饱和度) */
+/* 状态药丸与徽标 (高可辨低饱和清新配色) */
 .pm-status-chip {
     border: none;
-    padding: 2px 7px;
+    padding: 2px 8px;
     border-radius: 4px;
     font-size: 11px;
-    font-weight: 600;
+    font-weight: 700;
     cursor: pointer;
     transition: opacity 0.15s;
 }
 
 .pm-chip-pinned {
-    background: rgba(245, 158, 11, 0.15);
-    color: #fbbf24;
-    border: 1px solid rgba(245, 158, 11, 0.3);
+    background: #fef3c7;
+    color: #92400e;
+    border: 1px solid #fde68a;
 }
 
 .pm-chip-triggered {
-    background: rgba(16, 185, 129, 0.15);
-    color: #34d399;
-    border: 1px solid rgba(16, 185, 129, 0.3);
+    background: #d1fae5;
+    color: #065f46;
+    border: 1px solid #a7f3d0;
 }
 
 .pm-chip-archived {
-    background: rgba(148, 163, 184, 0.12);
-    color: #94a3b8;
-    border: 1px solid rgba(148, 163, 184, 0.25);
+    background: #f1f5f9;
+    color: #64748b;
+    border: 1px solid #e2e8f0;
 }
 
 .pm-scope-badge {
     font-size: 11px;
-    padding: 1px 5px;
-    border-radius: 3px;
-    font-weight: 500;
+    padding: 2px 6px;
+    border-radius: 4px;
+    font-weight: 600;
 }
 
 .pm-scope-char {
-    background: rgba(236, 72, 153, 0.12);
-    color: #f472b6;
-    border: 1px solid rgba(236, 72, 153, 0.25);
+    background: #fce7f3;
+    color: #9d174d;
+    border: 1px solid #fbcfe8;
 }
 
 .pm-scope-shared {
-    background: rgba(59, 130, 246, 0.12);
-    color: #93c5fd;
-    border: 1px solid rgba(59, 130, 246, 0.25);
+    background: #dbeafe;
+    color: #1e40af;
+    border: 1px solid #bfdbfe;
 }
 
 .pm-scope-world {
-    background: rgba(20, 184, 166, 0.12);
-    color: #5eead4;
-    border: 1px solid rgba(20, 184, 166, 0.25);
+    background: #ccfbf1;
+    color: #115e59;
+    border: 1px solid #99f6e4;
 }
 
 .pm-type-badge {
     font-size: 11px;
-    color: #cbd5e1;
-    background: rgba(255, 255, 255, 0.05);
-    padding: 1px 5px;
-    border-radius: 3px;
-    border: 1px solid rgba(255, 255, 255, 0.08);
-    font-weight: 500;
+    color: #475569;
+    background: #f1f5f9;
+    padding: 2px 6px;
+    border-radius: 4px;
+    border: 1px solid #e2e8f0;
+    font-weight: 600;
 }
 
 .pm-lifecycle-badge {
     font-size: 10px;
-    padding: 1px 5px;
+    padding: 2px 5px;
     border-radius: 3px;
-    font-weight: 500;
+    font-weight: 600;
 }
 
 .pm-life-completed {
-    background: rgba(16, 185, 129, 0.12);
-    color: #6ee7b7;
-    border: 1px solid rgba(16, 185, 129, 0.25);
+    background: #dcfce7;
+    color: #166534;
+    border: 1px solid #bbf7d0;
 }
 
 .pm-life-superseded {
-    background: rgba(148, 163, 184, 0.12);
-    color: #cbd5e1;
-    border: 1px solid rgba(148, 163, 184, 0.25);
+    background: #f1f5f9;
+    color: #475569;
+    border: 1px solid #e2e8f0;
 }
 
 .pm-life-refuted {
-    background: rgba(239, 68, 68, 0.12);
-    color: #fca5a5;
-    border: 1px solid rgba(239, 68, 68, 0.25);
-}
-
-.pm-empty-hint {
-    text-align: center;
-    color: #64748b;
-    font-size: 12px;
-    padding: 24px 12px;
-}
-
-.pm-toggle-group {
-    display: flex;
-    gap: 12px;
-    align-items: center;
-}
-
-.pm-radio-label {
-    display: inline-flex;
-    align-items: center;
-    gap: 5px;
-    font-size: 12px;
-    color: #cbd5e1;
-    cursor: pointer;
-    user-select: none;
+    background: #fee2e2;
+    color: #991b1b;
+    border: 1px solid #fecaca;
 }
 
 .pm-card-actions {
@@ -580,10 +574,10 @@
 .pm-del-btn {
     background: transparent;
     border: none;
-    color: #64748b;
+    color: #94a3b8;
     cursor: pointer;
-    padding: 3px;
-    font-size: 12px;
+    padding: 3px 5px;
+    font-size: 13px;
     transition: color 0.15s;
 }
 
@@ -592,59 +586,84 @@
 }
 
 /* ─────────────────────────────────────────────────────────────────────────────
- * 7. 质朴按钮规范 (脱离高亮渐变，采用沉稳微透色)
+ * 8. 按钮与操作控件
  * ───────────────────────────────────────────────────────────────────────────── */
 .pm-btn-primary {
     width: 100%;
-    background: rgba(59, 130, 246, 0.2);
-    color: #93c5fd;
-    border: 1px solid rgba(59, 130, 246, 0.35);
-    padding: 7px 12px;
-    border-radius: 5px;
-    font-size: 12px;
+    background: #2563eb;
+    color: #ffffff !important;
+    border: 1px solid #1d4ed8;
+    padding: 9px 14px;
+    border-radius: 6px;
+    font-size: 13px;
     font-weight: 600;
     cursor: pointer;
     display: flex;
     align-items: center;
     justify-content: center;
     gap: 6px;
-    box-shadow: none;
-    transition: background 0.15s, color 0.15s, border-color 0.15s;
+    box-shadow: 0 1px 3px rgba(37, 99, 235, 0.2);
+    transition: background 0.15s, border-color 0.15s;
 }
 
 .pm-btn-primary:hover {
-    background: rgba(59, 130, 246, 0.35);
-    color: #ffffff;
-    border-color: rgba(96, 165, 250, 0.6);
+    background: #1d4ed8;
+    border-color: #1e40af;
 }
 
 .pm-btn-test {
-    background: rgba(255, 255, 255, 0.08);
-    color: #cbd5e1;
-    border: 1px solid rgba(255, 255, 255, 0.12);
-    padding: 5px 10px;
-    border-radius: 4px;
-    font-size: 11px;
-    font-weight: 500;
+    background: #f8fafc;
+    color: #334155;
+    border: 1px solid #cbd5e1;
+    padding: 6px 12px;
+    border-radius: 6px;
+    font-size: 12px;
+    font-weight: 600;
     cursor: pointer;
-    transition: background 0.15s, color 0.15s;
+    transition: background 0.15s, color 0.15s, border-color 0.15s;
 }
 
 .pm-btn-test:hover {
-    background: rgba(255, 255, 255, 0.16);
-    color: #ffffff;
+    background: #f1f5f9;
+    color: #0f172a;
+    border-color: #94a3b8;
 }
 
 /* ─────────────────────────────────────────────────────────────────────────────
- * 8. 扩展设置抽屉内置容器
+ * 9. 单选切换与原生设置抽屉内嵌盒
  * ───────────────────────────────────────────────────────────────────────────── */
+.pm-empty-hint {
+    text-align: center;
+    color: #94a3b8;
+    font-size: 13px;
+    padding: 30px 12px;
+}
+
+.pm-toggle-group {
+    display: flex;
+    gap: 14px;
+    align-items: center;
+}
+
+.pm-radio-label {
+    display: inline-flex;
+    align-items: center;
+    gap: 6px;
+    font-size: 12px;
+    color: #334155;
+    cursor: pointer;
+    user-select: none;
+    font-weight: 500;
+}
+
 .pm-native-box {
-    padding: 10px;
-    background: rgba(0, 0, 0, 0.16);
-    border-radius: 6px;
+    padding: 12px;
+    background: #ffffff;
+    border-radius: 8px;
     margin-top: 6px;
     font-size: 12px;
-    border: 1px solid rgba(255, 255, 255, 0.06);
+    border: 1px solid #e2e8f0;
+    color: #0f172a;
 }
 
 .pm-native-open {
@@ -654,7 +673,7 @@
 .pm-grid-2col {
     display: grid;
     grid-template-columns: 1fr 1fr;
-    gap: 8px;
+    gap: 10px;
 }
 
 .pm-mb-4 { margin-bottom: 4px; }
@@ -662,3 +681,33 @@
 .pm-mb-12 { margin-bottom: 12px; }
 .pm-mt-8 { margin-top: 8px; }
 .pm-mt-12 { margin-top: 12px; }
+
+/* ─────────────────────────────────────────────────────────────────────────────
+ * 10. 手机端专属优化 (确保悬浮球永不被输入框遮挡，抽屉全屏沉浸)
+ * ───────────────────────────────────────────────────────────────────────────── */
+@media screen and (max-width: 768px) {
+    .pm-floating-bubble {
+        bottom: 140px !important; /* 避开手机端底栏与输入法 */
+        right: 14px !important;
+        width: 44px !important;
+        height: 44px !important;
+        font-size: 19px !important;
+        z-index: 999999 !important;
+    }
+
+    .pm-panel-container {
+        width: 100vw !important;
+        max-width: 100vw !important;
+        right: -100vw;
+        border-radius: 0 !important;
+        top: 0 !important;
+        height: 100vh !important;
+        height: 100dvh !important;
+        border-left: none !important;
+    }
+
+    .pm-grid-2col {
+        grid-template-columns: 1fr;
+        gap: 6px;
+    }
+}
