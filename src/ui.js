@@ -45,6 +45,10 @@ function createFloatingButton() {
     btn.title = '持续记忆系统 (可拖拽，点击打开 HUD 面板)';
     btn.innerHTML = '<i class="fa-solid fa-brain"></i>';
 
+    if (getSettings().showFloatingBubble === false) {
+        btn.style.display = 'none';
+    }
+
     // 绑定拖拽逻辑
     makeDraggable(btn, () => {
         togglePanel();
@@ -174,7 +178,7 @@ function createNativeExtensionDrawer() {
     drawerWrapper.className = 'extension_container inline-drawer';
     drawerWrapper.innerHTML = `
         <div class="inline-drawer-toggle inline-drawer-header">
-            <b><i class="fa-solid fa-brain" style="color: #a78bfa;"></i> 持续记忆 (Persistent Memory)</b>
+            <b><i class="fa-solid fa-brain"></i> 持续记忆 (Persistent Memory)</b>
             <div class="inline-drawer-icon fa-solid fa-circle-chevron-down"></div>
         </div>
         <div class="inline-drawer-content" id="pm-native-content">
@@ -212,9 +216,9 @@ function renderNativeDrawerContent() {
     content.innerHTML = `
         <div class="pm-native-box">
             <div class="flex-container alignitemscenter wide100p pm-mb-8" style="justify-content: space-between;">
-                <label class="pm-switch-wrapper" style="gap: 12px;">
-                    <span style="font-weight: 700; color: #f8fafc; font-size: 13px;">
-                        <i class="fa-solid fa-power-off" style="color: #38bdf8;"></i> 启用持续记忆
+                <label class="pm-switch-wrapper" style="gap: 10px;">
+                    <span style="font-weight: 600; color: #e2e8f0; font-size: 13px;">
+                        <i class="fa-solid fa-power-off"></i> 启用持续记忆
                     </span>
                     <div class="pm-switch">
                         <input type="checkbox" id="pm-setting-enabled" ${settings.enabled ? 'checked' : ''}>
@@ -226,11 +230,23 @@ function renderNativeDrawerContent() {
                 </button>
             </div>
 
+            <div class="flex-container alignitemscenter wide100p pm-mb-8">
+                <label class="pm-switch-wrapper flex1">
+                    <span style="color: #cbd5e1; font-size: 12px;">
+                        <i class="fa-solid fa-circle-dot"></i> 屏幕快捷悬浮球
+                    </span>
+                    <div class="pm-switch">
+                        <input type="checkbox" id="pm-native-bubble-enabled" ${settings.showFloatingBubble !== false ? 'checked' : ''}>
+                        <span class="pm-slider"></span>
+                    </div>
+                </label>
+            </div>
+
             <!-- 独立提炼 API 直连配置 (原生抽屉同步) -->
-            <div style="background: rgba(0,0,0,0.3); border: 1px solid rgba(255,255,255,0.12); border-radius: 8px; padding: 10px; margin-bottom: 10px;">
+            <div class="pm-section-card pm-mb-8">
                 <label class="pm-switch-wrapper pm-mb-8">
-                    <span style="color: #38bdf8; font-weight: 700; font-size: 13px;">
-                        <i class="fa-solid fa-bolt"></i> 启用独立提炼 API (直连 DeepSeek)
+                    <span class="pm-section-title">
+                        <i class="fa-solid fa-server"></i> 启用独立提炼 API (直连 DeepSeek)
                     </span>
                     <div class="pm-switch">
                         <input type="checkbox" id="pm-native-custom-api-enabled" ${settings.useCustomApi ? 'checked' : ''}>
@@ -256,7 +272,7 @@ function renderNativeDrawerContent() {
                         <button id="pm-native-test-api-btn" class="pm-btn-test">
                             <i class="fa-solid fa-plug"></i> 测试 API 连通性
                         </button>
-                        <span id="pm-native-test-res" style="font-size: 11px; font-weight: 600;"></span>
+                        <span id="pm-native-test-res" style="font-size: 11px; font-weight: 500;"></span>
                     </div>
                 </div>
             </div>
@@ -277,20 +293,20 @@ function renderNativeDrawerContent() {
 
             <div class="pm-input-row pm-mb-8">
                 <label class="pm-input-label">最新提炼动态：</label>
-                <div style="background: rgba(0,0,0,0.35); padding: 8px 10px; border-radius: 6px; border: 1px solid rgba(255,255,255,0.08); font-size: 12px; color: #38bdf8; font-weight: 600;">
+                <div style="background: rgba(0,0,0,0.2); padding: 8px 10px; border-radius: 5px; border: 1px solid rgba(255,255,255,0.06); font-size: 12px; color: #e2e8f0;">
                     ${escapeHtml(state.last_digest_summary || '尚未执行提炼')} ${state.last_digest_time ? `<span style="color: #94a3b8; font-weight: 400;">(${state.last_digest_time})</span>` : ''}
                 </div>
             </div>
 
             <div class="pm-input-row pm-mb-8">
                 <label class="pm-input-label">现场快照与状态版本：</label>
-                <div style="background: rgba(0,0,0,0.35); padding: 8px 10px; border-radius: 6px; border: 1px solid rgba(255,255,255,0.08); font-size: 12px; color: #f8fafc;">
-                    修订: <b style="color: #c084fc;">rev.${state.state_revision || 0}</b> | 地点: <b style="color: #38bdf8;">${escapeHtml(scene.location || '未知')}</b> | 记忆: <b style="color: #10b981;">${memories.length}</b> 条
+                <div style="background: rgba(0,0,0,0.2); padding: 8px 10px; border-radius: 5px; border: 1px solid rgba(255,255,255,0.06); font-size: 12px; color: #cbd5e1;">
+                    修订: <b>rev.${state.state_revision || 0}</b> | 地点: <b>${escapeHtml(scene.location || '未知')}</b> | 记忆: <b>${memories.length}</b> 条
                 </div>
             </div>
 
             <div class="flex-container flexGap10 pm-mt-8">
-                <button id="pm-native-digest-btn" class="menu_button menu_button_icon flex1" style="font-weight: 700;">
+                <button id="pm-native-digest-btn" class="menu_button menu_button_icon flex1">
                     <i class="fa-solid fa-bolt"></i> 立即执行后台提炼
                 </button>
             </div>
@@ -303,6 +319,15 @@ function renderNativeDrawerContent() {
         updateSettings({ enabled: isChecked });
         const hudToggle = document.getElementById('pm-setting-hud-enabled');
         if (hudToggle) hudToggle.checked = isChecked;
+    });
+
+    content.querySelector('#pm-native-bubble-enabled')?.addEventListener('change', (e) => {
+        const isChecked = e.target.checked;
+        updateSettings({ showFloatingBubble: isChecked });
+        const bubble = document.getElementById('pm-floating-bubble');
+        if (bubble) bubble.style.display = isChecked ? 'flex' : 'none';
+        const hudCb = document.getElementById('pm-setting-hud-bubble');
+        if (hudCb) hudCb.checked = isChecked;
     });
 
     content.querySelector('#pm-open-hud-btn')?.addEventListener('click', () => {
@@ -494,8 +519,8 @@ function renderPanelContent() {
     const badgesEl = document.getElementById('pm-header-badges');
     if (badgesEl) {
         badgesEl.innerHTML = `
-            <span class="pm-hero-pill pm-pill-cyan">rev.<b>${state.state_revision || 0}</b></span>
-            <span class="pm-hero-pill pm-pill-purple"><b>${memories.length}</b> 条</span>
+            <span class="pm-hero-pill">rev.<b>${state.state_revision || 0}</b></span>
+            <span class="pm-hero-pill"><b>${memories.length}</b> 条</span>
         `;
     }
 
@@ -539,7 +564,7 @@ function renderPanelContent() {
             <!-- 记忆列表 -->
             <div class="pm-section-card" style="flex: 1; display: flex; flex-direction: column;">
                 <div class="pm-section-header">
-                    <span class="pm-section-title"><i class="fa-solid fa-list-check" style="color: #a78bfa;"></i> 记忆条目清单 (${memories.length})</span>
+                    <span class="pm-section-title"><i class="fa-solid fa-list-check"></i> 记忆条目清单 (${memories.length})</span>
                     <span style="font-size: 11px; color: #94a3b8;">归档 ${archivedCount} 条</span>
                 </div>
                 <div class="pm-mem-list" id="pm-mem-list-container">
@@ -550,7 +575,7 @@ function renderPanelContent() {
             <!-- 快捷添加面板 -->
             <div class="pm-quick-box">
                 <div class="pm-section-title pm-mb-8">
-                    <i class="fa-solid fa-plus-circle" style="color: #38bdf8;"></i> 手动新增记忆条目
+                    <i class="fa-solid fa-plus"></i> 手动新增记忆条目
                 </div>
                 <div class="pm-input-row">
                     <input type="text" id="pm-new-mem-content" class="pm-input" placeholder="输入一句话记忆事实 (例如: 两人曾约定明晚在白马寺汇合)">
@@ -591,8 +616,8 @@ function renderPanelContent() {
         tabHtml = `
             <div class="pm-section-card">
                 <div class="pm-section-header">
-                    <span class="pm-section-title"><i class="fa-solid fa-map-location-dot" style="color: #38bdf8;"></i> L0 现场快照 (Scene State)</span>
-                    <span class="pm-hero-pill pm-pill-cyan">每轮必带置顶</span>
+                    <span class="pm-section-title"><i class="fa-solid fa-map-location-dot"></i> L0 现场快照 (Scene State)</span>
+                    <span class="pm-hero-pill">现场置顶</span>
                 </div>
                 <div style="font-size: 11px; color: #94a3b8; margin-bottom: 12px; line-height: 1.4;">
                     记录当前正在发生的客观局势。拥有独立硬 Token 预算（上限 ~${settings.maxSceneTokens || 150}），绝不遗忘此时此刻。
@@ -644,32 +669,45 @@ function renderPanelContent() {
     // ─────────────────────────────────────────────────────────────────────────
     else if (currentTab === 'settings') {
         tabHtml = `
-            <!-- 全局启用总开关 -->
+            <!-- 全局启用总开关与悬浮球入口 -->
             <div class="pm-section-card pm-mb-8">
-                <label class="pm-switch-wrapper">
-                    <span style="font-weight: 700; color: #f8fafc; font-size: 13px;">
-                        <i class="fa-solid fa-power-off" style="color: #38bdf8;"></i> 启用持续记忆系统 (全局总开关)
-                    </span>
-                    <div class="pm-switch">
-                        <input type="checkbox" id="pm-setting-hud-enabled" ${settings.enabled ? 'checked' : ''}>
-                        <span class="pm-slider"></span>
-                    </div>
-                </label>
+                <div class="flex-container alignitemscenter wide100p pm-mb-4" style="justify-content: space-between;">
+                    <label class="pm-switch-wrapper flex1">
+                        <span style="font-weight: 600; color: #e2e8f0; font-size: 13px;">
+                            <i class="fa-solid fa-power-off"></i> 启用持续记忆系统 (全局总开关)
+                        </span>
+                        <div class="pm-switch">
+                            <input type="checkbox" id="pm-setting-hud-enabled" ${settings.enabled ? 'checked' : ''}>
+                            <span class="pm-slider"></span>
+                        </div>
+                    </label>
+                </div>
+                <div class="flex-container alignitemscenter wide100p" style="justify-content: space-between; padding-top: 6px; border-top: 1px solid rgba(255,255,255,0.06);">
+                    <label class="pm-switch-wrapper flex1">
+                        <span style="color: #94a3b8; font-size: 12px;">
+                            <i class="fa-solid fa-circle-dot"></i> 屏幕快捷悬浮球 (关后可从右侧抽屉打开)
+                        </span>
+                        <div class="pm-switch">
+                            <input type="checkbox" id="pm-setting-hud-bubble" ${settings.showFloatingBubble !== false ? 'checked' : ''}>
+                            <span class="pm-slider"></span>
+                        </div>
+                    </label>
+                </div>
             </div>
 
             <!-- ⚡ 独立提炼 API 端点配置 (解决主会话脚本冲突与思维链 400 报错) -->
-            <div class="pm-section-card" style="border: 1px solid rgba(56, 189, 248, 0.4); background: rgba(14, 165, 233, 0.05);">
+            <div class="pm-section-card pm-mb-8">
                 <label class="pm-switch-wrapper pm-mb-8">
-                    <span class="pm-section-title" style="color: #38bdf8; font-size: 13px; font-weight: 700;">
-                        <i class="fa-solid fa-server"></i> 独立提炼 API 直连端点 (强烈推荐)
+                    <span class="pm-section-title">
+                        <i class="fa-solid fa-server"></i> 独立提炼 API (直连 DeepSeek)
                     </span>
                     <div class="pm-switch">
                         <input type="checkbox" id="pm-setting-custom-api-enabled" ${settings.useCustomApi ? 'checked' : ''}>
                         <span class="pm-slider"></span>
                     </div>
                 </label>
-                <div style="font-size: 11px; color: #cbd5e1; margin-bottom: 12px; line-height: 1.5;">
-                    提炼任务走专属 API 发送，<b>完全脱离酒馆主聊天链路</b>。彻底解决 DeepSeek 思维链丢失 400 报错、避免主聊天复杂脚本干扰，并大幅节省 Token！
+                <div style="font-size: 11px; color: #94a3b8; margin-bottom: 10px; line-height: 1.4;">
+                    提炼任务走专属 API 独立发送，完全脱离酒馆主聊天链路。彻底解决 DeepSeek 思维链丢失 400 报错，避免主聊天脚本干扰，大幅节省 Token。
                 </div>
 
                 <div id="pm-custom-api-fields" style="${settings.useCustomApi ? 'display: block;' : 'display: none;'}">
@@ -693,7 +731,7 @@ function renderPanelContent() {
                         <button id="pm-btn-test-api" class="pm-btn-test">
                             <i class="fa-solid fa-plug"></i> 测试 API 连通性
                         </button>
-                        <span id="pm-api-test-status" style="font-size: 12px; font-weight: 600;"></span>
+                        <span id="pm-api-test-status" style="font-size: 11px; font-weight: 500;"></span>
                     </div>
                 </div>
             </div>
@@ -701,7 +739,7 @@ function renderPanelContent() {
             <!-- 核心参数与 Token 预算 -->
             <div class="pm-section-card">
                 <div class="pm-section-header">
-                    <span class="pm-section-title"><i class="fa-solid fa-sliders" style="color: #a78bfa;"></i> 提炼参数与 Token 硬预算</span>
+                    <span class="pm-section-title"><i class="fa-solid fa-sliders"></i> 提炼参数与 Token 预算</span>
                 </div>
 
                 <div class="pm-input-row pm-mb-8">
@@ -840,6 +878,16 @@ function bindPanelEvents(container) {
         updateSettings({ enabled: isChecked });
         const nativeToggle = document.getElementById('pm-setting-enabled');
         if (nativeToggle) nativeToggle.checked = isChecked;
+    });
+
+    // 屏幕悬浮球显隐
+    container.querySelector('#pm-setting-hud-bubble')?.addEventListener('change', (e) => {
+        const isChecked = e.target.checked;
+        updateSettings({ showFloatingBubble: isChecked });
+        const bubble = document.getElementById('pm-floating-bubble');
+        if (bubble) bubble.style.display = isChecked ? 'flex' : 'none';
+        const nativeCb = document.getElementById('pm-native-bubble-enabled');
+        if (nativeCb) nativeCb.checked = isChecked;
     });
 
     // 独立提炼 API 配置监听
