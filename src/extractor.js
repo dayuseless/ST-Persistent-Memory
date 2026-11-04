@@ -1,5 +1,5 @@
 /**
- * 提炼引擎 (v0.1.2)
+ * 提炼引擎 (v0.1.3)
  * 严格落实：状态版本并发保护 (state_revision)、严格拒绝型 Schema 验证、显式生命周期流转与知情范围
  */
 
@@ -106,7 +106,12 @@ export function validateExtractedPayload(raw, currentMemories = []) {
         const sanitizeString = (val, maxLen) => {
             if (val === undefined) return undefined;
             if (val === null || val === '') return '';
-            return String(val).trim().slice(0, maxLen);
+            // P1 工程加固：严禁隐式转换对象为字符串 (防止产生 [object Object])
+            if (typeof val !== 'string') {
+                console.warn(`[${MODULE_NAME}] [Schema 拦截] 字段值非纯字符串，拒绝隐式转换:`, val);
+                return undefined;
+            }
+            return val.trim().slice(0, maxLen);
         };
 
         if (sc.scene_id !== undefined) validated.scene.scene_id = sanitizeString(sc.scene_id, 40);
@@ -144,7 +149,26 @@ export function validateExtractedPayload(raw, currentMemories = []) {
                 continue;
             }
 
-            const scope = validScopes.has(item.scope) ? item.scope : (item.character ? MEMORY_SCOPE.CHARACTER : MEMORY_SCOPE.SHARED);
+            const char = typeof item.character === 'string' ? item.character.trim().slice(0, 30) : '';
+            const scope = validScopes.has(item.scope) ? item.scope : (char ? MEMORY_SCOPE.CHARACTER : MEMORY_SCOPE.SHARED);
+
+            // P0 修复：Fail-Closed 校验：若 scope === character，必须有明确有效的角色归属
+            if (scope === MEMORY_SCOPE.CHARACTER && !char) {
+                console.warn(`[${MODULE_NAME}] [Schema 拦截] 记忆定义为 character 私知，但缺少归属角色，执行 Fail-Closed 拒绝入库`);
+                continue;
+            }
+
+            // 提取知情者集合 (known_by)
+            let knownBy = [];
+            if (Array.isArray(item.known_by)) {
+                knownBy = item.known_by
+                    .filter(x => typeof x === 'string')
+                    .map(x => x.trim().slice(0, 30))
+                    .filter(Boolean);
+            } else if (char) {
+                knownBy = [char];
+            }
+
             const status = item.status === MEMORY_STATUS.PINNED ? MEMORY_STATUS.PINNED : MEMORY_STATUS.TRIGGERED;
 
             validated.new_memories.push({
@@ -152,8 +176,9 @@ export function validateExtractedPayload(raw, currentMemories = []) {
                 content: content.slice(0, 100),
                 trigger_keys: sanitizeTriggerKeys(item.trigger_keys),
                 status: status,
-                character: typeof item.character === 'string' ? item.character.trim().slice(0, 30) : '',
-                scope: scope
+                character: char,
+                scope: scope,
+                known_by: knownBy
             });
 
             // 单次提炼最多吸收 5 条，防止暴走
@@ -293,9 +318,10 @@ export async function triggerAsyncDigest(force = false) {
    - completed: 约定已履行、待办已做完
    - superseded: 旧状态已被新事件取代 (如伤势痊愈)
    - refuted: 原有判断被证伪 (如谎言被拆穿)
-5. 【知情范围 (scope) 与归属 (character)】：
-   - character: 该记忆直接关联的角色名 (如属全员常识则留空 "")
+5. 【知情范围 (scope)、归属 (character) 与知情者 (known_by)】：
+   - character: 该记忆绑定的私密角色名（若 scope 为 character 则必须填写且不可为空；世界常识可留空 ""）
    - scope: "character"(仅该角色私知) 或 "shared"(在场者共知) 或 "world"(公共事实)
+   - known_by: ["角色A", "角色B"] (选填，仅用于 shared 共享记忆，记录所有知情角色，只要知情者在场即可唤醒)
 6. 【现场快照清空语义】：若场景结束/两人散伙离开，相关动作、张力、未决悬念请显式输出为 ""，角色输出为 []，切勿遗留旧状态。
 
 【已有现场状态】：
@@ -426,6 +452,7 @@ function applyExtractedData(payload, floor = 0) {
                     status: m.status,
                     character: m.character,
                     scope: m.scope,
+                    known_by: m.known_by,
                     floor: floor
                 });
                 if (added) addedCount++;

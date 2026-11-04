@@ -1,5 +1,5 @@
 /**
- * 持续记忆插件配置与常量定义 (v0.1.2)
+ * 持续记忆插件配置与常量定义 (v0.1.3)
  */
 
 export const MODULE_NAME = 'st_persistent_memory';

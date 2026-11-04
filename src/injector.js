@@ -1,6 +1,6 @@
 /**
- * 注入引擎 (v0.1.2)
- * 严格落实：真实 Token 预算核算、L0 优先权扣减、全条目原子截断（不腰斩句子）、Presence Routing 知情范围分流与生命周期过滤
+ * 注入引擎 (v0.1.3)
+ * 严格落实：L0 独立 Token 预算 (maxSceneTokens)、模板固定开销预留、总预算贪心装载、Fail-Closed 私有记忆防护、Presence 严格三态语义与 known_by 知情者分流
  */
 
 import { INJECT_KEY, MEMORY_STATUS, MEMORY_LIFECYCLE, MEMORY_SCOPE, MEMORY_TYPES } from './config.js';
@@ -11,7 +11,7 @@ function getContext() {
 }
 
 /**
- * 真实 Token 消耗保守估算函数
+ * 真实 Token 消耗保守估算函数 (Heuristic Token Estimation)
  * 兼顾中日韩 (CJK) 字符与英文单词的 Tokenizer 行为
  */
 export function estimateTokens(text) {
@@ -51,36 +51,55 @@ export function buildAndInjectMemoryPrompt() {
     }
 
     const state = getState();
-    const scene = state.scene;
+    const scene = state.scene || {};
     const memories = state.memories || [];
 
-    // 1. 确定当前在场角色 (Presence 基础)
+    // 1. 确定当前在场角色 (P0: 严格区分 undefined 未知与 [] 显式无人)
     const currentChid = c.this_chid;
     const charName = c.characters?.[currentChid]?.name || '角色';
     const userName = c.name1 || 'User';
 
-    let inScene = Array.isArray(scene.in_scene_characters) && scene.in_scene_characters.length > 0
-        ? scene.in_scene_characters
-        : [charName, userName];
+    let inScene;
+    if (scene.in_scene_characters === undefined) {
+        inScene = [charName, userName];
+    } else if (Array.isArray(scene.in_scene_characters)) {
+        inScene = scene.in_scene_characters;
+    } else {
+        inScene = [charName, userName];
+    }
 
-    // 2. 组装 L0 现场快照 (享有绝对最高注入优先权)
-    const hasScene = scene.location || scene.action || scene.tension || scene.unresolved;
+    // 2. 组装 L0 现场快照并落实独立预算 (maxSceneTokens)
+    const maxSceneTokens = Math.max(50, Number(settings.maxSceneTokens) || 150);
+    const maxTotalTokens = Math.max(100, Number(settings.maxTotalMemoryTokens) || 450);
+    const TEMPLATE_OVERHEAD_TOKENS = 25; // 标题与分隔线等模板开销
+
+    const hasScene = scene.location || scene.action || scene.tension || scene.unresolved || (Array.isArray(scene.in_scene_characters) && scene.in_scene_characters.length === 0);
     const sceneLines = [];
+
     if (hasScene) {
         sceneLines.push('[当前情境快照 (Scene State)]');
         if (scene.location) sceneLines.push(`- 地点环境: ${scene.location}${scene.time ? ` (${scene.time})` : ''}`);
         if (scene.action) sceneLines.push(`- 正在进行: ${scene.action}`);
         if (scene.tension) sceneLines.push(`- 即时气氛: ${scene.tension}`);
         if (scene.unresolved) sceneLines.push(`- 即时悬念/待决: ${scene.unresolved}`);
-        sceneLines.push(`- 在场角色: ${inScene.join('、')}`);
+        sceneLines.push(`- 在场角色: ${inScene.length > 0 ? inScene.join('、') : '（现场无人在场）'}`);
+
+        // P1 落实 L0 独立预算保护：若超出 maxSceneTokens，按非物理观察字段降级（先裁未决悬念，再裁气氛）
+        let currentSceneCost = estimateTokens(sceneLines.join('\n'));
+        if (currentSceneCost > maxSceneTokens && scene.unresolved) {
+            const idx = sceneLines.findIndex(l => l.startsWith('- 即时悬念/待决:'));
+            if (idx !== -1) sceneLines.splice(idx, 1);
+            currentSceneCost = estimateTokens(sceneLines.join('\n'));
+        }
+        if (currentSceneCost > maxSceneTokens && scene.tension) {
+            const idx = sceneLines.findIndex(l => l.startsWith('- 即时气氛:'));
+            if (idx !== -1) sceneLines.splice(idx, 1);
+        }
     }
 
-    // 3. 计算预算与 L0 优先扣减 (P1-6: 落实真实 Token 预算)
-    const maxTotalTokens = Math.max(100, Number(settings.maxTotalMemoryTokens) || 450);
-    const sceneBlockText = sceneLines.join('\n');
-    const sceneTokenCost = sceneLines.length > 0 ? estimateTokens(sceneBlockText) : 0;
-
-    let remainingTokens = Math.max(0, maxTotalTokens - sceneTokenCost);
+    // 3. 计算剩余记忆预算 (扣减 L0 与模板固定开销)
+    const sceneTokenCost = sceneLines.length > 0 ? estimateTokens(sceneLines.join('\n')) : 0;
+    let remainingTokens = Math.max(0, maxTotalTokens - sceneTokenCost - (sceneLines.length > 0 ? TEMPLATE_OVERHEAD_TOKENS : 0));
 
     // 4. 扫描近期对话上下文以进行触发词匹配打分
     const recentChat = Array.isArray(c.chat) ? c.chat.slice(-5) : [];
@@ -100,21 +119,29 @@ export function buildAndInjectMemoryPrompt() {
             continue;
         }
 
-        // 规则 C：Presence Routing 与 Scope 知情范围判定
+        // 规则 C：Presence Routing 与 Scope 知情范围判定 (P0: Fail-Closed)
         const scope = mem.scope || (mem.character ? MEMORY_SCOPE.CHARACTER : MEMORY_SCOPE.SHARED);
 
         if (scope === MEMORY_SCOPE.CHARACTER) {
-            // 私密记忆：绑定的特定角色不在场时休眠
-            if (mem.character && !inScene.includes(mem.character)) {
+            // P0 Fail-Closed: 角色私密记忆必须具备明确归属，且该角色必须当前在场；缺角色或不在场一律不注入
+            if (!mem.character || !inScene.includes(mem.character)) {
                 continue;
             }
         } else if (scope === MEMORY_SCOPE.SHARED) {
-            // 现场共知：若明确关联了某不在场角色，且当前在场者无人能认领该记忆，则休眠
-            if (mem.character && !inScene.includes(mem.character) && !inScene.includes(userName)) {
-                continue;
+            // P1 现场共知：若提供了知情者列表 known_by，只要现场有任意知情者即可激活
+            const knownList = Array.isArray(mem.known_by) && mem.known_by.length > 0
+                ? mem.known_by
+                : (mem.character ? [mem.character] : []);
+
+            if (knownList.length > 0) {
+                const hasWitnessInScene = knownList.some(k => inScene.includes(k));
+                if (!hasWitnessInScene) {
+                    continue; // 现场没有任何知情角色，进入休眠
+                }
             }
+            // 若 knownList 为空，视为全员公开经历，进入触发词判定
         }
-        // scope === MEMORY_SCOPE.WORLD: 世界公共常识，不受在场人员限制
+        // scope === MEMORY_SCOPE.WORLD: 世界公共常识，不受在场角色限制
 
         const prefix = getMemoryPrefix(mem);
         const formattedLine = `- [${prefix}] ${mem.content}`;
@@ -175,7 +202,7 @@ export function buildAndInjectMemoryPrompt() {
             selectedTriggeredLines.push(item.line);
             remainingTokens -= item.tokens;
         } else {
-            // 预算已满，原子截断，不再塞入不完整的后文
+            // 预算已满，整条截断，不再塞入不完整的后文
             break;
         }
     }
@@ -212,7 +239,7 @@ export function buildAndInjectMemoryPrompt() {
     );
 
     if (settings.logVerbose) {
-        console.log(`[${INJECT_KEY}] 预算控制：已注入 L0 快照 (~${sceneTokenCost} tok) + ${selectedPinnedLines.length} 条常驻 + ${selectedTriggeredLines.length} 条激活记忆，结余预算 ~${remainingTokens} tok`);
+        console.log(`[${INJECT_KEY}] 预算控制：注入 L0 快照 (~${sceneTokenCost} tok, 限额 ${maxSceneTokens}) + ${selectedPinnedLines.length} 条常驻 + ${selectedTriggeredLines.length} 条激活记忆，结余预算 ~${remainingTokens} tok`);
     }
 
     return fullPromptBlock;

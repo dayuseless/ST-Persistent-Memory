@@ -1,5 +1,5 @@
 /**
- * 记忆状态管理器 (v0.1.2)
+ * 记忆状态管理器 (v0.1.3)
  * 严格落实 state_revision 状态修订号、L0 三态 PATCH 语义与生命周期分流
  */
 
@@ -63,11 +63,20 @@ export function loadCurrentState() {
     const stored = metadata[MODULE_NAME];
     const rawScene = stored.scene || {};
 
-    const migratedMemories = (Array.isArray(stored.memories) ? stored.memories : []).map(m => ({
-        ...m,
-        scope: m.scope || (m.character ? MEMORY_SCOPE.CHARACTER : MEMORY_SCOPE.SHARED),
-        lifecycle: m.lifecycle || (m.status === MEMORY_STATUS.ARCHIVED ? MEMORY_LIFECYCLE.COMPLETED : MEMORY_LIFECYCLE.ACTIVE)
-    }));
+    const migratedMemories = (Array.isArray(stored.memories) ? stored.memories : []).map(m => {
+        const scope = m.scope || (m.character ? MEMORY_SCOPE.CHARACTER : MEMORY_SCOPE.SHARED);
+        const knownBy = Array.isArray(m.known_by)
+            ? m.known_by.filter(Boolean)
+            : (m.character ? [m.character] : []);
+
+        return {
+            ...m,
+            scope: scope,
+            known_by: knownBy,
+            // P1 修复旧记忆迁移语义：旧版无 lifecycle 的 archived 项仅代表检索休眠，绝不擅自篡改为 completed
+            lifecycle: m.lifecycle || MEMORY_LIFECYCLE.ACTIVE
+        };
+    });
 
     stateCache = {
         version: 3,
@@ -215,7 +224,19 @@ export function addMemory(item) {
 
     const targetType = item.type || MEMORY_TYPES.FACT;
     const targetScope = item.scope || (item.character ? MEMORY_SCOPE.CHARACTER : MEMORY_SCOPE.SHARED);
+    const targetChar = String(item.character || '').trim();
+
+    // P0 修复：角色私知 (character) 必须具备非空角色归属，无归属一律拒绝入库 (Fail-Closed)
+    if (targetScope === MEMORY_SCOPE.CHARACTER && !targetChar) {
+        console.warn(`[${MODULE_NAME}] [Fail-Closed] 拦截角色私有记忆：缺少明确角色归属，拒绝入库`);
+        return null;
+    }
+
     const newKeys = Array.isArray(item.trigger_keys) ? item.trigger_keys.map(k => String(k).trim()).filter(Boolean) : [];
+    const knownBy = Array.isArray(item.known_by) && item.known_by.length > 0
+        ? Array.from(new Set(item.known_by.map(k => String(k).trim()).filter(Boolean)))
+        : (targetChar ? [targetChar] : []);
+
     const itemHasNegation = hasNegationWord(content);
 
     // 尝试寻找完全等价或极度吻合的条目进行融合
@@ -224,7 +245,7 @@ export function addMemory(item) {
         if (existing.type !== targetType) continue;
 
         // 规则 2：知情范围或目标角色不一致绝对不合并 (防串戏)
-        if (existing.scope !== targetScope || (existing.character || '') !== (item.character || '')) {
+        if (existing.scope !== targetScope || (existing.character || '') !== targetChar) {
             continue;
         }
 
@@ -244,6 +265,7 @@ export function addMemory(item) {
 
         if (similarity >= threshold) {
             existing.trigger_keys = Array.from(new Set([...(existing.trigger_keys || []), ...newKeys]));
+            existing.known_by = Array.from(new Set([...(existing.known_by || []), ...knownBy]));
 
             if (content.length > existing.content.length && content.includes(existing.content)) {
                 existing.content = content;
@@ -253,7 +275,7 @@ export function addMemory(item) {
             existing.updated_at = new Date().toISOString();
 
             saveCurrentState();
-            console.log(`[${MODULE_NAME}] [保守融合] 匹配到高度吻合条目，融合触发词: "${existing.content}"`);
+            console.log(`[${MODULE_NAME}] [保守融合] 匹配到高度吻合条目，融合触发词与知情者: "${existing.content}"`);
             return existing;
         }
     }
@@ -266,8 +288,9 @@ export function addMemory(item) {
         trigger_keys: newKeys,
         status: item.status || MEMORY_STATUS.TRIGGERED,
         lifecycle: item.lifecycle || MEMORY_LIFECYCLE.ACTIVE,
-        character: String(item.character || '').trim(),
+        character: targetChar,
         scope: targetScope,
+        known_by: knownBy,
         floor: item.floor || 0,
         created_at: new Date().toISOString(),
         updated_at: new Date().toISOString()
@@ -324,6 +347,10 @@ export function cycleMemoryStatus(id) {
         item.status = MEMORY_STATUS.ARCHIVED;
     } else {
         item.status = MEMORY_STATUS.PINNED;
+        // 若手动将记忆置为常驻，且其当前处于非 active 状态，自动唤醒为 active，防止出现“已常驻却被生命周期拦截不注入”的误解
+        if (item.lifecycle && item.lifecycle !== MEMORY_LIFECYCLE.ACTIVE) {
+            item.lifecycle = MEMORY_LIFECYCLE.ACTIVE;
+        }
     }
 
     saveCurrentState();

@@ -462,6 +462,9 @@ function renderMemoryCard(mem) {
     } else if (mem.scope === 'world') {
         scopeLabel = '世界常识';
         scopeClass = 'pm-scope-world';
+    } else if (mem.scope === 'shared' && Array.isArray(mem.known_by) && mem.known_by.length > 0) {
+        scopeLabel = `共知: ${mem.known_by.join('/')}`;
+        scopeClass = 'pm-scope-shared';
     }
 
     let lifecycleBadge = '';
