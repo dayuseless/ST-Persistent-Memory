@@ -235,7 +235,7 @@ function renderNativeDrawerContent() {
 
             <div class="pm-input-row pm-mb-8">
                 <label>记忆条目概览：</label>
-                <div class="pm-text-preview">共 ${memories.length} 条记忆（${memories.filter(m => m.status === 'pinned').length} 条常驻，${memories.filter(m => m.status === 'triggered').length} 条条件触发）</div>
+                <div class="pm-text-preview">版本: rev.${state.state_revision || 0} | 共 ${memories.length} 条记忆（${memories.filter(m => m.status === 'pinned').length} 条常驻，${memories.filter(m => m.status === 'triggered').length} 条条件触发）</div>
             </div>
 
             <div class="flex-container flexGap10 pm-mt-8">
@@ -354,7 +354,7 @@ function renderPanelContent() {
         <!-- 提炼引擎动态与调参 -->
         <div class="pm-section">
             <div class="pm-flex-between pm-mb-8">
-                <span class="pm-section-label"><i class="fa-solid fa-microchip"></i> 提炼引擎状态</span>
+                <span class="pm-section-label"><i class="fa-solid fa-microchip"></i> 提炼引擎状态 <span class="pm-rev-pill" title="状态修订计数器 (每次修改或提炼递增)">rev.${state.state_revision || 0}</span></span>
                 <span class="pm-badge-pill">${state.last_digest_time ? state.last_digest_time : '就绪'}</span>
             </div>
             <div class="pm-digest-status-box pm-mb-8">
@@ -368,6 +368,16 @@ function renderPanelContent() {
                 <div class="pm-input-row">
                     <label>回溯历史 (条数)</label>
                     <input type="number" id="pm-setting-slice" class="pm-input" min="2" max="15" value="${settings.digestSliceCount || 6}">
+                </div>
+            </div>
+            <div class="pm-grid-2col pm-mt-8">
+                <div class="pm-input-row">
+                    <label>总 Token 预算</label>
+                    <input type="number" id="pm-setting-tokens" class="pm-input" min="150" max="2000" value="${settings.maxTotalMemoryTokens || 450}">
+                </div>
+                <div class="pm-input-row">
+                    <label>现场快照上限 (Tok)</label>
+                    <input type="number" id="pm-setting-scene-tokens" class="pm-input" min="50" max="500" value="${settings.maxSceneTokens || 150}">
                 </div>
             </div>
         </div>
@@ -444,6 +454,25 @@ function renderMemoryCard(mem) {
         statusIcon = '💤 归档';
     }
 
+    let scopeLabel = '共知';
+    let scopeClass = 'pm-scope-shared';
+    if (mem.scope === 'character') {
+        scopeLabel = mem.character ? `私知: ${mem.character}` : '私知';
+        scopeClass = 'pm-scope-char';
+    } else if (mem.scope === 'world') {
+        scopeLabel = '世界常识';
+        scopeClass = 'pm-scope-world';
+    }
+
+    let lifecycleBadge = '';
+    if (mem.lifecycle === 'completed') {
+        lifecycleBadge = `<span class="pm-lifecycle-badge pm-life-completed" title="约定已履行 / 待办已办结">✓ 已完成</span>`;
+    } else if (mem.lifecycle === 'superseded') {
+        lifecycleBadge = `<span class="pm-lifecycle-badge pm-life-superseded" title="已被新剧情取代">↻ 已更迭</span>`;
+    } else if (mem.lifecycle === 'refuted') {
+        lifecycleBadge = `<span class="pm-lifecycle-badge pm-life-refuted" title="已被证伪">✕ 被证伪</span>`;
+    }
+
     const keysHtml = (mem.trigger_keys || []).map(k => `<span class="pm-key-pill">${escapeHtml(k)}</span>`).join('');
 
     return `
@@ -453,6 +482,8 @@ function renderMemoryCard(mem) {
                     ${statusIcon}
                 </button>
                 <span class="pm-type-badge">${escapeHtml(mem.type || 'fact')}</span>
+                <span class="pm-scope-badge ${scopeClass}">${escapeHtml(scopeLabel)}</span>
+                ${lifecycleBadge}
                 <div class="pm-card-actions">
                     <button class="pm-del-btn" title="删除此条记忆" data-action="delete"><i class="fa-solid fa-trash-can"></i></button>
                 </div>
@@ -471,7 +502,7 @@ function bindPanelEvents(container) {
         });
     });
 
-    // 提炼参数动态调整
+    // 提炼参数与 Token 预算动态调整
     container.querySelector('#pm-setting-freq')?.addEventListener('change', (e) => {
         const val = Math.max(1, parseInt(e.target.value) || 3);
         updateSettings({ asyncFrequency: val });
@@ -480,6 +511,16 @@ function bindPanelEvents(container) {
     container.querySelector('#pm-setting-slice')?.addEventListener('change', (e) => {
         const val = Math.max(2, Math.min(15, parseInt(e.target.value) || 6));
         updateSettings({ digestSliceCount: val });
+    });
+
+    container.querySelector('#pm-setting-tokens')?.addEventListener('change', (e) => {
+        const val = Math.max(150, Math.min(2000, parseInt(e.target.value) || 450));
+        updateSettings({ maxTotalMemoryTokens: val });
+    });
+
+    container.querySelector('#pm-setting-scene-tokens')?.addEventListener('change', (e) => {
+        const val = Math.max(50, Math.min(500, parseInt(e.target.value) || 150));
+        updateSettings({ maxSceneTokens: val });
     });
 
     // 保存快照

@@ -1,10 +1,10 @@
 /**
- * 提炼引擎 (v0.1.1)
- * 严格落实跨会话隔离 (防异步切档污染)、数据 Schema 强校验、PATCH 提取
+ * 提炼引擎 (v0.1.2)
+ * 严格落实：状态版本并发保护 (state_revision)、严格拒绝型 Schema 验证、显式生命周期流转与知情范围
  */
 
-import { MODULE_NAME, MEMORY_TYPES, MEMORY_STATUS } from './config.js';
-import { getState, getSettings, updateScene, addMemory, archiveMemory, saveCurrentState } from './state.js';
+import { MODULE_NAME, MEMORY_TYPES, MEMORY_STATUS, MEMORY_LIFECYCLE, MEMORY_SCOPE } from './config.js';
+import { getState, getSettings, updateScene, addMemory, setMemoryLifecycle, saveCurrentState } from './state.js';
 
 function getContext() {
     return window.SillyTavern?.getContext?.() ?? null;
@@ -13,28 +13,27 @@ function getContext() {
 // 针对不同 ChatID 维护任务并发锁 (解决跨聊天串线问题)
 const activeChatDigests = new Set();
 
-// 匹配同步标签正则: <!--PERSISTENT_MEMORY ... --> 或 <!--STATE ... -->
 const SYNC_TAG_REGEX = /<!--(?:PERSISTENT_MEMORY|STATE)\s*([\s\S]*?)-->/i;
 
 /**
- * 获取当前聊天的全局唯一稳定标识
+ * 获取当前聊天的全局唯一稳定标识 (无有效标识时返回 null，严禁回退到统一默认会话)
  */
 export function getChatIdentifier(c) {
-    if (!c) return 'unknown';
+    if (!c) return null;
     if (c.chatId) return String(c.chatId);
     if (typeof c.getCurrentChatId === 'function') {
         const id = c.getCurrentChatId();
         if (id) return String(id);
     }
     if (c.characters && c.this_chid !== undefined && c.characters[c.this_chid]) {
-        return `char_${c.this_chid}_${c.characters[c.this_chid].chat || 'default'}`;
+        const chatFile = c.characters[c.this_chid].chat;
+        if (chatFile) return `char_${c.this_chid}_${chatFile}`;
     }
-    return 'default_chat';
+    return null;
 }
 
 /**
- * 鲁棒的 JSON 清洗与修复解析器
- * 自动剥离 <think> 思考链、Markdown 代码块、前后说明文字及尾部逗号
+ * 鲁棒的 JSON 清洗与边界解析器
  */
 export function cleanAndParseJson(raw) {
     if (!raw || typeof raw !== 'string') return null;
@@ -55,7 +54,7 @@ export function cleanAndParseJson(raw) {
     }
     text = text.substring(firstBrace, lastBrace + 1);
 
-    // 4. 清理常见的非法尾部逗号 (Trailing comma)
+    // 4. 清理常见的非法尾部逗号
     text = text.replace(/,\s*([}\]])/g, '$1');
 
     try {
@@ -74,81 +73,131 @@ export function cleanAndParseJson(raw) {
 }
 
 /**
- * P0-4 修复：建立严格的数据 Schema 验证拦截器 (validateExtractedPayload)
- * 拒绝非法结构、超长字符串、未知类型，防止模型产生格式污染
+ * P0-4 修复：建立严格的“拒绝型” Schema 验证拦截器
+ * 核心原则：结构缺失全拒，类型未知单拒，严禁把未知类型静默降级为 fact
  */
-export function validateExtractedPayload(raw) {
+export function validateExtractedPayload(raw, currentMemories = []) {
+    // 根节点必须是纯对象
     if (!raw || typeof raw !== 'object' || Array.isArray(raw)) {
+        return null;
+    }
+
+    // 必须至少包含有效 scene 或 new_memories 或 lifecycle_updates 之一，否则拒绝整个 payload
+    const hasScene = raw.scene && typeof raw.scene === 'object' && !Array.isArray(raw.scene);
+    const hasMemories = Array.isArray(raw.new_memories);
+    const hasUpdates = Array.isArray(raw.lifecycle_updates) || Array.isArray(raw.resolved_memory_ids);
+
+    if (!hasScene && !hasMemories && !hasUpdates) {
+        console.warn(`[${MODULE_NAME}] [Schema 拦截] Payload 缺少核心结构，整包拒绝`);
         return null;
     }
 
     const validated = {
         scene: null,
         new_memories: [],
-        resolved_memory_ids: []
+        lifecycle_updates: []
     };
 
-    // 1. 校验 scene 结构
-    if (raw.scene && typeof raw.scene === 'object' && !Array.isArray(raw.scene)) {
+    // 1. 校验 scene 结构 (支持显式清空语义: 允许空字符串和空数组)
+    if (hasScene) {
         const sc = raw.scene;
         validated.scene = {};
 
-        if (typeof sc.location === 'string' && sc.location.trim()) {
-            validated.scene.location = sc.location.trim().slice(0, 80);
-        }
-        if (typeof sc.time === 'string' && sc.time.trim()) {
-            validated.scene.time = sc.time.trim().slice(0, 40);
-        }
-        if (typeof sc.action === 'string' && sc.action.trim()) {
-            validated.scene.action = sc.action.trim().slice(0, 150);
-        }
-        if (typeof sc.tension === 'string' && sc.tension.trim()) {
-            validated.scene.tension = sc.tension.trim().slice(0, 80);
-        }
-        if (typeof sc.unresolved === 'string' && sc.unresolved.trim()) {
-            validated.scene.unresolved = sc.unresolved.trim().slice(0, 120);
-        }
+        const sanitizeString = (val, maxLen) => {
+            if (val === undefined) return undefined;
+            if (val === null || val === '') return '';
+            return String(val).trim().slice(0, maxLen);
+        };
+
+        if (sc.scene_id !== undefined) validated.scene.scene_id = sanitizeString(sc.scene_id, 40);
+        if (sc.location !== undefined) validated.scene.location = sanitizeString(sc.location, 80);
+        if (sc.time !== undefined) validated.scene.time = sanitizeString(sc.time, 40);
+        if (sc.action !== undefined) validated.scene.action = sanitizeString(sc.action, 150);
+        if (sc.tension !== undefined) validated.scene.tension = sanitizeString(sc.tension, 80);
+        if (sc.unresolved !== undefined) validated.scene.unresolved = sanitizeString(sc.unresolved, 120);
+
         if (Array.isArray(sc.in_scene_characters)) {
             validated.scene.in_scene_characters = sc.in_scene_characters
-                .filter(x => typeof x === 'string' && x.trim())
+                .filter(x => typeof x === 'string')
                 .map(x => x.trim().slice(0, 30))
+                .filter(Boolean)
                 .slice(0, 10);
+        } else if (sc.in_scene_characters === null) {
+            validated.scene.in_scene_characters = [];
         }
     }
 
-    // 2. 校验 new_memories 数组
+    // 2. 校验 new_memories 数组 (拒绝策略：非法类型直接丢弃，严禁降级为 fact)
     const validTypes = new Set(Object.values(MEMORY_TYPES));
-    if (Array.isArray(raw.new_memories)) {
+    const validScopes = new Set(Object.values(MEMORY_SCOPE));
+
+    if (hasMemories) {
         for (const item of raw.new_memories) {
             if (!item || typeof item !== 'object') continue;
+
             const content = typeof item.content === 'string' ? item.content.trim() : '';
             if (!content || content.length < 2) continue;
 
-            const type = validTypes.has(item.type) ? item.type : MEMORY_TYPES.FACT;
+            // 规则：类型非法直接剔除！
+            if (!validTypes.has(item.type)) {
+                console.warn(`[${MODULE_NAME}] [Schema 拦截] 记忆类型 "${item.type}" 非法，直接剔除，严禁隐式转为 fact`);
+                continue;
+            }
+
+            const scope = validScopes.has(item.scope) ? item.scope : (item.character ? MEMORY_SCOPE.CHARACTER : MEMORY_SCOPE.SHARED);
             const status = item.status === MEMORY_STATUS.PINNED ? MEMORY_STATUS.PINNED : MEMORY_STATUS.TRIGGERED;
 
             validated.new_memories.push({
-                type: type,
-                content: content.slice(0, 100), // 限制单条记忆不超过 100 字，避免整段贴入
+                type: item.type,
+                content: content.slice(0, 100),
                 trigger_keys: sanitizeTriggerKeys(item.trigger_keys),
-                status: status
+                status: status,
+                character: typeof item.character === 'string' ? item.character.trim().slice(0, 30) : '',
+                scope: scope
             });
+
+            // 单次提炼最多吸收 5 条，防止暴走
+            if (validated.new_memories.length >= 5) break;
         }
     }
 
-    // 3. 校验 resolved_memory_ids
-    if (Array.isArray(raw.resolved_memory_ids)) {
-        validated.resolved_memory_ids = raw.resolved_memory_ids
-            .filter(id => typeof id === 'string' && id.trim())
-            .map(id => id.trim().slice(0, 40));
+    // 3. 校验 lifecycle_updates (确认 ID 真实存在于当前记忆库中)
+    const existingIds = new Set(currentMemories.map(m => m.id));
+    const validLifecycles = new Set(Object.values(MEMORY_LIFECYCLE));
+
+    if (Array.isArray(raw.lifecycle_updates)) {
+        for (const up of raw.lifecycle_updates) {
+            if (!up || typeof up !== 'object') continue;
+            const id = String(up.id || '').trim();
+            if (!existingIds.has(id)) {
+                console.warn(`[${MODULE_NAME}] [Schema 拦截] 待更新记忆 ID "${id}" 不存在，丢弃`);
+                continue;
+            }
+            if (!validLifecycles.has(up.lifecycle)) continue;
+
+            validated.lifecycle_updates.push({
+                id: id,
+                lifecycle: up.lifecycle
+            });
+        }
+    } else if (Array.isArray(raw.resolved_memory_ids)) {
+        // 向后兼容旧格式
+        for (const id of raw.resolved_memory_ids) {
+            const trimmed = String(id || '').trim();
+            if (existingIds.has(trimmed)) {
+                validated.lifecycle_updates.push({
+                    id: trimmed,
+                    lifecycle: MEMORY_LIFECYCLE.COMPLETED
+                });
+            }
+        }
     }
 
     return validated;
 }
 
 /**
- * 检查并解析文本中的同步记忆标签
- * 如果命中，剥离标签并更新状态，返回剥离后的纯文本
+ * 同步伴随标签解析
  */
 export function extractAndApplySyncTag(rawText) {
     if (!rawText || typeof rawText !== 'string') return rawText;
@@ -159,21 +208,22 @@ export function extractAndApplySyncTag(rawText) {
     const jsonStr = match[1].trim();
     const cleanText = rawText.replace(SYNC_TAG_REGEX, '').trim();
 
+    const state = getState();
     const rawPayload = cleanAndParseJson(jsonStr);
-    const payload = validateExtractedPayload(rawPayload);
+    const payload = validateExtractedPayload(rawPayload, state.memories || []);
 
     if (payload) {
         applyExtractedData(payload);
-        console.log(`[${MODULE_NAME}] [Sync] 伴生标签校验通过，已安全提取记忆状态`);
+        console.log(`[${MODULE_NAME}] [Sync] 伴生标签通过验证并成功入库`);
     } else {
-        console.warn(`[${MODULE_NAME}] [Sync] 伴生标签未通过 Schema 数据完整性验证`);
+        console.warn(`[${MODULE_NAME}] [Sync] 伴生标签未通过 Schema 验证`);
     }
 
     return cleanText;
 }
 
 /**
- * P0-1 修复：触发异步后台静默提炼，落实会话隔离防污染机制
+ * P0-1 核心修复：带会话身份与 state_revision 版本一致性核验的异步提炼
  */
 export async function triggerAsyncDigest(force = false) {
     const c = getContext();
@@ -185,14 +235,21 @@ export async function triggerAsyncDigest(force = false) {
     const chat = c.chat;
     if (!Array.isArray(chat) || chat.length < 2) return;
 
-    // 捕获任务启动时的会话身份快照
+    // 捕获任务启动时的会话身份
     const startChatId = getChatIdentifier(c);
-    const currentFloor = chat.length;
+    if (!startChatId) {
+        console.warn(`[${MODULE_NAME}] [Async] 无法获取有效会话标识，拒绝启动提炼任务`);
+        return;
+    }
+
+    // 捕获任务启动时的状态修订号快照
     const state = getState();
+    const startRevision = state.state_revision || 0;
+    const currentFloor = chat.length;
 
     // 针对同一 ChatID 防止并发重入
     if (activeChatDigests.has(startChatId)) {
-        console.log(`[${MODULE_NAME}] [Async] 会话 ${startChatId} 的提炼任务已在进行中，跳过本次触发`);
+        console.log(`[${MODULE_NAME}] [Async] 会话 ${startChatId} 的提炼正在运行中，跳过本次重入`);
         return;
     }
 
@@ -203,7 +260,7 @@ export async function triggerAsyncDigest(force = false) {
     }
 
     activeChatDigests.add(startChatId);
-    console.log(`[${MODULE_NAME}] [Async] 启动提炼任务 (会话: ${startChatId}, 楼层: ${currentFloor})...`);
+    console.log(`[${MODULE_NAME}] [Async] 启动提炼任务 (会话: ${startChatId}, 修订版本: rev.${startRevision}, 楼层: ${currentFloor})...`);
 
     try {
         const sliceCount = Math.max(2, Math.min(15, Number(settings.digestSliceCount) || 6));
@@ -215,12 +272,12 @@ export async function triggerAsyncDigest(force = false) {
 
         const currentScene = JSON.stringify(state.scene, null, 2);
 
-        // 整理当前已有的活跃记忆摘要（帮助提炼模型去重或发现任务完成）
+        // 列出当前活跃记忆供模型去重与生命周期联动
         const activeMemList = (state.memories || [])
-            .filter(m => m.status !== 'archived')
+            .filter(m => m.lifecycle === MEMORY_LIFECYCLE.ACTIVE)
             .slice(-15)
-            .map(m => `(ID: ${m.id}) [${m.type}] ${m.content}`)
-            .join('\n') || '（暂无）';
+            .map(m => `(ID: ${m.id}) [${m.type}] [归属:${m.character || '公共'}] [范围:${m.scope}] ${m.content}`)
+            .join('\n') || '（暂无活跃记忆）';
 
         const digestPrompt = `你是一个严格遵循“事实分级与防幻觉纪律”的持续性记忆系统提炼专家。
 你的任务是基于角色扮演对话的最近进展，更新【现场快照 (Scene State)】，并提炼出值得沉淀为长期记忆的【关键信息】。
@@ -229,73 +286,89 @@ export async function triggerAsyncDigest(force = false) {
 1. 【事实与推测严格解耦】：
    - 角色亲口说过的话（statement），记录为言行约定，不推定未来必然兑现。
    - 角色当下表达的怀疑、好感或心境（inference），记录为主观推断，绝不能写成世界物理事实。
-   - 双方共同约定要执行的事或明显悬念，记录为待办（todo）。
-2. 【严禁脑补过去】：只能根据最近对话中明确出现的内容提炼。禁止擅自补充角色未经提及的身世背景、隐秘动机。
-3. 【情境稳定无新进展时输出空数组】：若最近几句只是普通的闲聊、逗趣或无实质进展的对话，new_memories 必须输出为空数组 []（绝不凑数）。
-4. 【旧记忆消解】：若最近对话表明某个旧状态/任务已解决或已过时，请将对应的条目 ID 填入 resolved_memory_ids。
-5. 【触发词 (trigger_keys) 规范】：
-   - 必须是具体的实体词、道具名、地点、专有名词（如 ["解药", "地牢", "中毒", "配方"]）。
-   - 严禁包含代词或无意义虚词（如 ["你", "我", "说话", "事情", "东西"]）。
-   - 数量控制在 2~5 个。
+   - 双方明确约定要执行的事或明显悬念，记录为待办（todo）。
+2. 【严禁脑补与补全】：只能根据最近对话中明确出现的内容提炼。有些空白不是等待填充的数据，而是角色目前确实不知道的事情。禁止为情节连贯而补充未提及的过去或动机。
+3. 【情境稳定无新进展时输出空数组】：若最近几句只是普通的闲聊、逗趣或无实质进展的对话，new_memories 必须输出为空数组 []（绝不强行凑数）。
+4. 【生命周期精确流转】：若对话表明某旧条目发生状态变迁，请在 lifecycle_updates 中给出更新：
+   - completed: 约定已履行、待办已做完
+   - superseded: 旧状态已被新事件取代 (如伤势痊愈)
+   - refuted: 原有判断被证伪 (如谎言被拆穿)
+5. 【知情范围 (scope) 与归属 (character)】：
+   - character: 该记忆直接关联的角色名 (如属全员常识则留空 "")
+   - scope: "character"(仅该角色私知) 或 "shared"(在场者共知) 或 "world"(公共事实)
+6. 【现场快照清空语义】：若场景结束/两人散伙离开，相关动作、张力、未决悬念请显式输出为 ""，角色输出为 []，切勿遗留旧状态。
 
 【已有现场状态】：
 ${currentScene}
 
-【已有记忆库条目】：
+【已有活跃记忆库】：
 ${activeMemList}
 
 【最近对话记录】：
 ${conversationText}
 
-请直接输出且只输出一个合法的 JSON 纯文本对象（不要 markdown 标记，不要多余解释），字段规范如下：
+请直接输出且只输出一个合法的 JSON 纯文本对象（不要 markdown 标记，不要多余解释），格式如下：
 {
   "scene": {
-    "location": "当前具体地点/环境（若未变动则继承原样）",
+    "location": "当前具体地点/环境（未变则继承，离开请更新）",
     "time": "时间/天气/时段",
-    "action": "当前正在进行的具体可观察动作或交谈焦点",
-    "tension": "当下的心理张力或气氛",
-    "unresolved": "当下悬而未决的冲突或关键疑问",
+    "action": "当前正在进行的具体可观察动作（如交谈已结束请填空串 \"\"）",
+    "tension": "当下的心理张力或气氛（若已消解请填空串 \"\"）",
+    "unresolved": "当下悬而未决的冲突（若已解决请填空串 \"\"）",
     "in_scene_characters": ["在场角色A", "在场角色B"]
   },
   "new_memories": [
     {
       "type": "fact 或 statement 或 inference 或 todo",
       "content": "精炼的一句话事实或约定（≤40字）",
-      "trigger_keys": ["实体词1", "实体词2", "实体词3"],
+      "trigger_keys": ["实体词1", "实体词2"],
+      "character": "关联角色名或留空",
+      "scope": "character 或 shared 或 world",
       "status": "triggered"
     }
   ],
-  "resolved_memory_ids": ["已解决或已过期的已有记忆ID（无则为空数组）"]
+  "lifecycle_updates": [
+    {
+      "id": "已有记忆ID",
+      "lifecycle": "completed 或 superseded 或 refuted"
+    }
+  ]
 }`;
 
         // 调用后台静默接口
         const response = await c.generateQuietPrompt(digestPrompt, false, false);
         if (!response) {
-            console.warn(`[${MODULE_NAME}] [Async] 静默提炼未收到回复`);
+            console.warn(`[${MODULE_NAME}] [Async] 静默提炼未收到有效回复`);
             return;
         }
 
         // ══════════════════════════════════════════════════════════════════════
-        // ★ P0-1 核心安全屏障：验证异步任务返回时的会话一致性！
+        // ★ P0-1 核心安全屏障：会话身份 + state_revision 双重版本一致性核验！
         // ══════════════════════════════════════════════════════════════════════
         const finishChatId = getChatIdentifier(c);
         if (finishChatId !== startChatId) {
-            console.warn(`[${MODULE_NAME}] [Async 隔离拦截] 检测到用户在提炼期间切换了会话！(发起会话: ${startChatId} -> 当前会话: ${finishChatId})。已安全丢弃旧提炼结果，防止跨会话数据污染！`);
-            return; // 坚决不执行写入！
+            console.warn(`[${MODULE_NAME}] [会话隔离拦截] 检测到用户在提炼期间切换了会话 (${startChatId} -> ${finishChatId})，已丢弃旧结果！`);
+            return;
+        }
+
+        const currentState = getState();
+        if ((currentState.state_revision || 0) !== startRevision) {
+            console.warn(`[${MODULE_NAME}] [状态版本冲突拦截] 在提炼期间，会话状态已被修改 (启动版本: rev.${startRevision} -> 当前版本: rev.${currentState.state_revision})。已丢弃旧提炼结果，保护用户最新手改与状态一致性！`);
+            return;
         }
 
         const rawPayload = cleanAndParseJson(response);
-        const payload = validateExtractedPayload(rawPayload);
+        const payload = validateExtractedPayload(rawPayload, currentState.memories || []);
 
         if (payload) {
             const summary = applyExtractedData(payload, currentFloor);
-            state.last_digest_floor = currentFloor;
-            state.last_digest_time = new Date().toLocaleTimeString();
-            state.last_digest_summary = summary;
+            currentState.last_digest_floor = currentFloor;
+            currentState.last_digest_time = new Date().toLocaleTimeString();
+            currentState.last_digest_summary = summary;
             saveCurrentState();
-            console.log(`[${MODULE_NAME}] [Async] 提炼成功落盘 (会话: ${startChatId}): ${summary}`);
+            console.log(`[${MODULE_NAME}] [Async] 提炼成功落盘 (会话: ${startChatId}, rev.${currentState.state_revision}): ${summary}`);
         } else {
-            console.warn(`[${MODULE_NAME}] [Async] 提炼内容未通过数据完整性校验，已丢弃`);
+            console.warn(`[${MODULE_NAME}] [Async] 提炼内容未通过数据完整性校验，已安全丢弃`);
         }
     } catch (e) {
         console.error(`[${MODULE_NAME}] [Async] 后台提炼异常:`, e);
@@ -324,25 +397,25 @@ function applyExtractedData(payload, floor = 0) {
 
     let sceneUpdated = false;
     let addedCount = 0;
-    let resolvedCount = 0;
+    let updatedCount = 0;
 
-    // 1. PATCH 语义更新现场快照 (只更新非空有效字段)
+    // 1. PATCH 语义更新现场快照 (精准区分继承与清空)
     if (payload.scene && typeof payload.scene === 'object') {
         updateScene(payload.scene);
         sceneUpdated = true;
     }
 
-    // 2. 处理已解决/已过期的记忆归档
-    if (Array.isArray(payload.resolved_memory_ids)) {
-        for (const id of payload.resolved_memory_ids) {
-            if (id && typeof id === 'string') {
-                archiveMemory(id.trim());
-                resolvedCount++;
+    // 2. 显式生命周期流转 (completed / superseded / refuted)
+    if (Array.isArray(payload.lifecycle_updates)) {
+        for (const up of payload.lifecycle_updates) {
+            if (up && up.id && up.lifecycle) {
+                setMemoryLifecycle(up.id, up.lifecycle);
+                updatedCount++;
             }
         }
     }
 
-    // 3. 追加新记忆（通过 addMemory 自动触发防幻觉与去重合并）
+    // 3. 追加新记忆（通过 addMemory 自动触发防幻觉与保守融合）
     if (Array.isArray(payload.new_memories)) {
         for (const m of payload.new_memories) {
             if (m && m.content) {
@@ -351,6 +424,8 @@ function applyExtractedData(payload, floor = 0) {
                     content: m.content,
                     trigger_keys: m.trigger_keys,
                     status: m.status,
+                    character: m.character,
+                    scope: m.scope,
                     floor: floor
                 });
                 if (added) addedCount++;
@@ -359,9 +434,9 @@ function applyExtractedData(payload, floor = 0) {
     }
 
     const parts = [];
-    if (sceneUpdated) parts.push('快照已更新');
+    if (sceneUpdated) parts.push('快照更新');
     if (addedCount > 0) parts.push(`沉淀 ${addedCount} 条记忆`);
-    if (resolvedCount > 0) parts.push(`归档 ${resolvedCount} 条过期条目`);
+    if (updatedCount > 0) parts.push(`流转 ${updatedCount} 条状态`);
     if (parts.length === 0) parts.push('情境稳定，无新记忆沉淀');
 
     return parts.join(' | ');
