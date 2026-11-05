@@ -534,3 +534,17 @@ export function cycleMemoryStatus(id) {
 
     saveCurrentState();
 }
+
+export function cycleMemoryType(id) {
+    const s = getState();
+    const item = s.memories.find(m => m.id === id);
+    if (!item) return;
+
+    const types = [MEMORY_TYPES.FACT, MEMORY_TYPES.STATEMENT, MEMORY_TYPES.INFERENCE, MEMORY_TYPES.TODO];
+    const currentIdx = types.indexOf(item.type);
+    const nextIdx = currentIdx === -1 ? 0 : (currentIdx + 1) % types.length;
+    item.type = types[nextIdx];
+    item.updated_at = new Date().toISOString();
+
+    saveCurrentState();
+}

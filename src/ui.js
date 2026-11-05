@@ -4,7 +4,7 @@
  */
 
 import { MODULE_NAME, MEMORY_STATUS, MEMORY_LIFECYCLE, MEMORY_SCOPE } from './config.js';
-import { getState, getSettings, updateSettings, saveSettingsImmediately, updateScene, addMemory, deleteMemory, cycleMemoryStatus, onStateChange } from './state.js';
+import { getState, getSettings, updateSettings, saveSettingsImmediately, updateScene, addMemory, deleteMemory, cycleMemoryStatus, cycleMemoryType, onStateChange } from './state.js';
 import { triggerAsyncDigest, testCustomApiConnection } from './extractor.js';
 
 let panelEl = null;
@@ -733,12 +733,17 @@ function renderPanelContent() {
                     <i class="fa-solid fa-plus"></i> 手动新增记忆条目
                 </div>
                 <div class="pm-input-row">
-                    <input type="text" id="pm-new-mem-content" class="pm-input" placeholder="输入一句话记忆事实 (例如: 两人曾约定明晚在白马寺汇合)">
+                    <input type="text" id="pm-new-mem-content" class="pm-input" placeholder="输入一句话记忆 (例如: 两人曾约定明晚在白马寺汇合)">
                 </div>
                 <div class="pm-grid-2col pm-mb-8">
                     <div class="pm-input-row" style="margin-bottom: 0;">
-                        <label class="pm-input-label">触发关键词 (逗号隔开):</label>
-                        <input type="text" id="pm-new-mem-keys" class="pm-input" placeholder="白马寺, 汇合">
+                        <label class="pm-input-label">记忆类型 (Type):</label>
+                        <select id="pm-new-mem-type" class="pm-input" style="cursor: pointer;">
+                            <option value="fact" selected>📌 客观事实 (fact)</option>
+                            <option value="statement">💬 言行约定 (statement)</option>
+                            <option value="inference">🧠 主观推断 (inference)</option>
+                            <option value="todo">📝 即时待办 (todo)</option>
+                        </select>
                     </div>
                     <div class="pm-input-row" style="margin-bottom: 0;">
                         <label class="pm-input-label">知情范围 (Scope):</label>
@@ -749,9 +754,15 @@ function renderPanelContent() {
                         </select>
                     </div>
                 </div>
-                <div class="pm-input-row" id="pm-target-row" style="margin-bottom: 8px;">
-                    <label class="pm-input-label">关联/知情角色 (逗号隔开，留空自动匹配):</label>
-                    <input type="text" id="pm-new-mem-target" class="pm-input" placeholder="例如: 武大郎, 潘金莲">
+                <div class="pm-grid-2col pm-mb-8">
+                    <div class="pm-input-row" style="margin-bottom: 0;">
+                        <label class="pm-input-label">触发关键词 (逗号隔开):</label>
+                        <input type="text" id="pm-new-mem-keys" class="pm-input" placeholder="例如: 白马寺, 汇合">
+                    </div>
+                    <div class="pm-input-row" id="pm-target-row" style="margin-bottom: 0;">
+                        <label class="pm-input-label">关联/知情角色 (留空自动匹配):</label>
+                        <input type="text" id="pm-new-mem-target" class="pm-input" placeholder="例如: 武大郎, 潘金莲">
+                    </div>
                 </div>
                 <button id="pm-add-mem-btn" class="pm-btn-primary">
                     <i class="fa-solid fa-plus"></i> 录入到记忆库
@@ -1006,13 +1017,29 @@ function renderMemoryCard(mem) {
 
     const keysHtml = (mem.trigger_keys || []).map(k => `<span class="pm-key-pill">${escapeHtml(k)}</span>`).join('');
 
+    let typeIcon = 'fa-file-lines';
+    let typeName = '事实';
+    const curType = mem.type || 'fact';
+    if (curType === 'statement') {
+        typeIcon = 'fa-comment-dots';
+        typeName = '约定';
+    } else if (curType === 'inference') {
+        typeIcon = 'fa-lightbulb';
+        typeName = '推断';
+    } else if (curType === 'todo') {
+        typeIcon = 'fa-clipboard-check';
+        typeName = '待办';
+    }
+
     return `
         <div class="pm-card" data-id="${escapeHtml(mem.id)}">
             <div class="pm-card-top">
                 <button class="pm-status-chip ${statusClass}" title="点击切换：常驻 / 触发 / 归档" data-action="cycle">
                     ${statusIcon}
                 </button>
-                <span class="pm-type-badge">${escapeHtml(mem.type || 'fact')}</span>
+                <button class="pm-type-badge pm-type-${curType}" title="点击切换类型：事实 (fact) / 约定 (statement) / 推断 (inference) / 待办 (todo)" data-action="cycle-type">
+                    <i class="fa-solid ${typeIcon}"></i> ${typeName}
+                </button>
                 <span class="pm-scope-badge ${scopeClass}">${scopeLabel}</span>
                 ${lifecycleBadge}
                 <div class="pm-card-actions">
@@ -1248,6 +1275,7 @@ function bindPanelEvents(container) {
     // 添加记忆
     container.querySelector('#pm-add-mem-btn')?.addEventListener('click', () => {
         const contentInput = container.querySelector('#pm-new-mem-content');
+        const typeSelect = container.querySelector('#pm-new-mem-type');
         const keysInput = container.querySelector('#pm-new-mem-keys');
         const scopeSelect = container.querySelector('#pm-new-mem-scope');
         const targetInput = container.querySelector('#pm-new-mem-target');
@@ -1255,6 +1283,7 @@ function bindPanelEvents(container) {
         const content = contentInput?.value?.trim();
         if (!content) return;
 
+        const type = typeSelect?.value || 'fact';
         const keys = (keysInput?.value || '').split(/[,，]/).map(k => k.trim()).filter(Boolean);
         const scope = scopeSelect?.value || 'world';
         const targets = (targetInput?.value || '').split(/[,，]/).map(k => k.trim()).filter(Boolean);
@@ -1264,6 +1293,7 @@ function bindPanelEvents(container) {
         const curCharName = c?.characters?.[c?.this_chid]?.name || '角色';
 
         let memData = {
+            type: type,
             content: content,
             trigger_keys: keys,
             scope: scope,
@@ -1278,7 +1308,7 @@ function bindPanelEvents(container) {
 
         const added = addMemory(memData);
         if (added) {
-            window.toastr?.success?.(`已录入记忆: "${content.slice(0, 15)}..."`, '持续记忆');
+            window.toastr?.success?.(`已录入 [${type}] 记忆: "${content.slice(0, 15)}..."`, '持续记忆');
         }
 
         contentInput.value = '';
@@ -1286,11 +1316,14 @@ function bindPanelEvents(container) {
         if (targetInput) targetInput.value = '';
     });
 
-    // 卡片动作 (点击切换状态 / 删除)
+    // 卡片动作 (点击切换状态 / 点击切换类型 / 删除)
     container.querySelectorAll('.pm-card').forEach(card => {
         const id = card.getAttribute('data-id');
         card.querySelector('[data-action="cycle"]')?.addEventListener('click', () => {
             cycleMemoryStatus(id);
+        });
+        card.querySelector('[data-action="cycle-type"]')?.addEventListener('click', () => {
+            cycleMemoryType(id);
         });
         card.querySelector('[data-action="delete"]')?.addEventListener('click', () => {
             deleteMemory(id);

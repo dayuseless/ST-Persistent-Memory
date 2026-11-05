@@ -1,5 +1,5 @@
 /**
- * SillyTavern 插件入口: 持续记忆 (Persistent Memory) v0.1.6
+ * SillyTavern 插件入口: 持续记忆 (Persistent Memory) v0.1.7
  * 遵循现场快照 (L0 Resume) 与事件驱动记忆架构
  */
 
@@ -54,7 +54,7 @@ function waitForAppReady(c) {
  * 主初始化函数
  */
 async function init() {
-    console.log(`[${MODULE_NAME}] 正在初始化持续记忆插件 (v0.1.6)...`);
+    console.log(`[${MODULE_NAME}] 正在初始化持续记忆插件 (v0.1.7)...`);
     const c = await waitForContext();
     await waitForAppReady(c);
 
@@ -162,7 +162,7 @@ async function init() {
         }
     });
 
-    console.log(`[${MODULE_NAME}] 持续记忆系统 (v0.1.6) 初始化就绪`);
+    console.log(`[${MODULE_NAME}] 持续记忆系统 (v0.1.7) 初始化就绪`);
 
     // 暴露全局调试接口
     window.__persistentMemory = {

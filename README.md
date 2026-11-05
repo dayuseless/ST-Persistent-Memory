@@ -1,6 +1,6 @@
 # SillyTavern 持续记忆插件 (ST-Persistent-Memory)
 
-[![Version](https://img.shields.io/badge/version-v0.1.6-blue.svg)](https://github.com/dayuseless/ST-Persistent-Memory)
+[![Version](https://img.shields.io/badge/version-v0.1.7-blue.svg)](https://github.com/dayuseless/ST-Persistent-Memory)
 [![SillyTavern](https://img.shields.io/badge/SillyTavern-1.12.0+-purple.svg)](https://github.com/SillyTavern/SillyTavern)
 [![License](https://img.shields.io/badge/license-MIT-green.svg)](LICENSE)
 
@@ -144,6 +144,11 @@ window.__persistentMemory.digestNow();
 ---
 
 ## 📝 版本历史
+
+### v0.1.7
+- **手动录入类型支持**：在 HUD 控制台手动新增条目面板中，新增记忆类型选择器（📌 客观事实 `fact` / 💬 言行约定 `statement` / 🧠 主观推断 `inference` / 📝 即时待办 `todo`），彻底打破原先手动添加只能默认为 `fact` 的限制。
+- **卡片类型一键轮转**：记忆卡片顶部类型徽章支持直接点击切换（`fact` ➔ `statement` ➔ `inference` ➔ `todo`），随心订正条目分类。
+- **色彩语义强化**：各类记忆拥有专属高对比度配色徽标（事实灰蓝、约定科技蓝、推断高贵紫、待办琥珀金），辨识度倍增。
 
 ### v0.1.6
 - **核心修复**：排除了注入引擎内部重复声明的致命编译错误；启动生命周期重构为 UI 优先加载，彻底根治插件抽屉与悬浮窗偶发消失的问题。
