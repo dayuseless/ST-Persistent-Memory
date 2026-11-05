@@ -3,7 +3,7 @@
  * 严格落实：L0 独立硬预算上限 (maxSceneTokens)、模板固定开销扣除、Fail-Closed 私有/共享记忆防护、Scope 白名单校验、Presence 严格三态语义与 known_by 知情者分流
  */
 
-import { INJECT_KEY, MEMORY_STATUS, MEMORY_LIFECYCLE, MEMORY_SCOPE, MEMORY_TYPES } from './config.js';
+import { MODULE_NAME, INJECT_KEY, MEMORY_STATUS, MEMORY_LIFECYCLE, MEMORY_SCOPE, MEMORY_TYPES } from './config.js';
 import { getState, getSettings } from './state.js';
 
 function getContext() {

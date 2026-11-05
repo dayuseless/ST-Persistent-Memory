@@ -192,6 +192,42 @@ function makeDraggable(el, onClickCallback) {
 }
 
 /**
+ * 一键提取并同步 SillyTavern 原生连接设置中的 Custom / OpenAI API 端点、密钥与模型
+ */
+export function importSillyTavernApiConfig() {
+    let url = '';
+    let key = '';
+    let model = '';
+
+    try {
+        const c = typeof window !== 'undefined' && window.SillyTavern?.getContext ? window.SillyTavern.getContext() : null;
+
+        // 1. 尝试从酒馆 DOM 元素中提取 (最实时，用户当前在酒馆设置界面填写的)
+        const customUrlEl = document.getElementById('custom_api_url_text');
+        const customKeyEl = document.getElementById('api_key_custom') || document.getElementById('api_key_openai');
+        const customModelEl = document.getElementById('custom_model_id') || document.getElementById('model_custom_select') || document.getElementById('model_openai_select');
+
+        if (customUrlEl?.value) url = customUrlEl.value.trim();
+        if (customKeyEl?.value) key = customKeyEl.value.trim();
+        if (customModelEl?.value) model = customModelEl.value.trim();
+
+        // 2. 尝试从酒馆上下文 chatCompletionSettings 中提取兜底
+        if (c?.chatCompletionSettings) {
+            if (!url && c.chatCompletionSettings.custom_url) {
+                url = c.chatCompletionSettings.custom_url.trim();
+            }
+            if (!model && (c.chatCompletionSettings.custom_model || c.chatCompletionSettings.model)) {
+                model = (c.chatCompletionSettings.custom_model || c.chatCompletionSettings.model).trim();
+            }
+        }
+    } catch (e) {
+        console.warn(`[${MODULE_NAME}] 读取酒馆 API 设置失败:`, e);
+    }
+
+    return { url, key, model };
+}
+
+/**
  * 2. 注入 SillyTavern 原生扩展面板 (#extensions_settings)
  */
 function createNativeExtensionDrawer() {
@@ -269,11 +305,11 @@ function renderNativeDrawerContent() {
                 </label>
             </div>
 
-            <!-- 独立提炼 API 直连配置 (原生抽屉同步) -->
+            <!-- 独立提炼 API 直连配置 (自定义兼容 OpenAI 格式) -->
             <div class="pm-section-card pm-mb-8">
                 <label class="pm-switch-wrapper pm-mb-8">
                     <span class="pm-section-title">
-                        <i class="fa-solid fa-server" style="color: #2563eb;"></i> 启用独立提炼 API (直连 DeepSeek)
+                        <i class="fa-solid fa-server" style="color: #2563eb;"></i> 启用独立提炼 API (自定义兼容 OpenAI)
                     </span>
                     <div class="pm-switch">
                         <input type="checkbox" id="pm-native-custom-api-enabled" ${settings.useCustomApi ? 'checked' : ''}>
@@ -282,22 +318,25 @@ function renderNativeDrawerContent() {
                 </label>
                 <div id="pm-native-custom-api-body" style="${settings.useCustomApi ? 'display: block;' : 'display: none;'}">
                     <div class="pm-input-row pm-mb-4">
-                        <label class="pm-input-label">Base URL (例如 https://api.deepseek.com/v1):</label>
-                        <input type="text" id="pm-native-custom-api-url" class="pm-input" value="${escapeHtml(settings.customApiUrl || '')}" placeholder="https://api.deepseek.com/v1">
+                        <label class="pm-input-label">Base URL (例如 https://api.openai.com/v1 或本地 http://localhost:11434/v1):</label>
+                        <input type="text" id="pm-native-custom-api-url" class="pm-input" value="${escapeHtml(settings.customApiUrl || '')}" placeholder="https://api.openai.com/v1">
                     </div>
                     <div class="pm-grid-2col pm-mb-4">
                         <div class="pm-input-row">
-                            <label class="pm-input-label">API Key:</label>
-                            <input type="password" id="pm-native-custom-api-key" class="pm-input" value="${escapeHtml(settings.customApiKey || '')}" placeholder="sk-...">
+                            <label class="pm-input-label">API Key (密钥):</label>
+                            <input type="password" id="pm-native-custom-api-key" class="pm-input" value="${escapeHtml(settings.customApiKey || '')}" placeholder="sk-... (无密码端点可留空)">
                         </div>
                         <div class="pm-input-row">
                             <label class="pm-input-label">模型名称:</label>
-                            <input type="text" id="pm-native-custom-api-model" class="pm-input" value="${escapeHtml(settings.customApiModel || 'deepseek-chat')}" placeholder="deepseek-chat">
+                            <input type="text" id="pm-native-custom-api-model" class="pm-input" value="${escapeHtml(settings.customApiModel || 'gpt-4o-mini')}" placeholder="gpt-4o-mini">
                         </div>
                     </div>
-                    <div style="display: flex; gap: 8px; align-items: center; margin-top: 6px;">
+                    <div style="display: flex; gap: 8px; align-items: center; margin-top: 6px; flex-wrap: wrap;">
                         <button id="pm-native-test-api-btn" class="pm-btn-test">
                             <i class="fa-solid fa-plug"></i> 测试 API 连通性
+                        </button>
+                        <button id="pm-native-import-st-api-btn" class="pm-btn-test" title="一键同步酒馆主连接设置中填写的 Custom / OpenAI 端点与模型">
+                            <i class="fa-solid fa-file-import"></i> 同步酒馆主 API
                         </button>
                         <span id="pm-native-test-res" style="font-size: 11px; font-weight: 500;"></span>
                     </div>
@@ -408,7 +447,7 @@ function renderNativeDrawerContent() {
     const syncNativeInputs = () => {
         const url = (content.querySelector('#pm-native-custom-api-url')?.value || '').trim();
         const key = (content.querySelector('#pm-native-custom-api-key')?.value || '').trim();
-        const model = (content.querySelector('#pm-native-custom-api-model')?.value || 'deepseek-chat').trim();
+        const model = (content.querySelector('#pm-native-custom-api-model')?.value || 'gpt-4o-mini').trim();
         const mode = content.querySelector('input[name="pm-native-mode"]:checked')?.value || 'async';
         const isEnabled = content.querySelector('#pm-setting-enabled')?.checked ?? true;
         const bubble = content.querySelector('#pm-native-bubble-enabled')?.checked ?? true;
@@ -428,6 +467,29 @@ function renderNativeDrawerContent() {
         content.querySelector('#pm-native-custom-api-url')?.addEventListener(evt, syncNativeInputs);
         content.querySelector('#pm-native-custom-api-key')?.addEventListener(evt, syncNativeInputs);
         content.querySelector('#pm-native-custom-api-model')?.addEventListener(evt, syncNativeInputs);
+    });
+
+    content.querySelector('#pm-native-import-st-api-btn')?.addEventListener('click', () => {
+        const conf = importSillyTavernApiConfig();
+        let count = 0;
+        if (conf.url) {
+            const el = content.querySelector('#pm-native-custom-api-url');
+            if (el) { el.value = conf.url; count++; }
+        }
+        if (conf.key) {
+            const el = content.querySelector('#pm-native-custom-api-key');
+            if (el) { el.value = conf.key; count++; }
+        }
+        if (conf.model) {
+            const el = content.querySelector('#pm-native-custom-api-model');
+            if (el) { el.value = conf.model; count++; }
+        }
+        syncNativeInputs();
+        if (count > 0) {
+            window.toastr?.success?.(`已同步酒馆配置 (端点: ${conf.url || '未变'}, 模型: ${conf.model || '未变'})`, '持续记忆');
+        } else {
+            window.toastr?.info?.('未能从酒馆连接设置读取到有效 Custom/OpenAI 配置，请在酒馆连接处填写或手动输入', '持续记忆');
+        }
     });
 
     content.querySelector('#pm-native-test-api-btn')?.addEventListener('click', async () => {
@@ -761,11 +823,11 @@ function renderPanelContent() {
                 </div>
             </div>
 
-            <!-- ⚡ 独立提炼 API 端点配置 (解决主会话脚本冲突与思维链 400 报错) -->
+            <!-- ⚡ 独立提炼 API 端点配置 (自定义兼容 OpenAI 格式) -->
             <div class="pm-section-card pm-mb-8">
                 <label class="pm-switch-wrapper pm-mb-8">
                     <span class="pm-section-title">
-                        <i class="fa-solid fa-server"></i> 独立提炼 API (直连 DeepSeek)
+                        <i class="fa-solid fa-server"></i> 独立提炼 API (自定义兼容 OpenAI)
                     </span>
                     <div class="pm-switch">
                         <input type="checkbox" id="pm-setting-custom-api-enabled" ${settings.useCustomApi ? 'checked' : ''}>
@@ -773,29 +835,32 @@ function renderPanelContent() {
                     </div>
                 </label>
                 <div style="font-size: 12px; color: #475569; margin-bottom: 10px; line-height: 1.4;">
-                    提炼任务走专属 API 独立发送，完全脱离酒馆主聊天链路。彻底解决 DeepSeek 思维链丢失 400 报错，避免主聊天脚本干扰，大幅节省 Token。
+                    提炼任务走通用 OpenAI 格式专属 API 独立发送（完全支持 DeepSeek、OpenAI、Claude 代理、通义千问、硅基流动、本地 Ollama / LM Studio / vLLM 等所有兼容接口）。完全脱离酒馆主聊天链路，彻底根除 DeepSeek 思维链丢失 400 报错与主提示词干扰。
                 </div>
 
                 <div id="pm-custom-api-fields" style="${settings.useCustomApi ? 'display: block;' : 'display: none;'}">
                     <div class="pm-input-row">
-                        <label class="pm-input-label">API Base URL:</label>
-                        <input type="text" id="pm-setting-custom-api-url" class="pm-input" value="${escapeHtml(settings.customApiUrl || '')}" placeholder="https://api.deepseek.com/v1">
+                        <label class="pm-input-label">API Base URL (例如 https://api.openai.com/v1 或本地 http://localhost:11434/v1):</label>
+                        <input type="text" id="pm-setting-custom-api-url" class="pm-input" value="${escapeHtml(settings.customApiUrl || '')}" placeholder="https://api.openai.com/v1">
                     </div>
 
                     <div class="pm-grid-2col pm-mb-8">
                         <div class="pm-input-row" style="margin-bottom: 0;">
                             <label class="pm-input-label">API Key (密钥):</label>
-                            <input type="password" id="pm-setting-custom-api-key" class="pm-input" value="${escapeHtml(settings.customApiKey || '')}" placeholder="sk-...">
+                            <input type="password" id="pm-setting-custom-api-key" class="pm-input" value="${escapeHtml(settings.customApiKey || '')}" placeholder="sk-... (无密码端点可留空)">
                         </div>
                         <div class="pm-input-row" style="margin-bottom: 0;">
                             <label class="pm-input-label">模型名称:</label>
-                            <input type="text" id="pm-setting-custom-api-model" class="pm-input" value="${escapeHtml(settings.customApiModel || 'deepseek-chat')}" placeholder="deepseek-chat">
+                            <input type="text" id="pm-setting-custom-api-model" class="pm-input" value="${escapeHtml(settings.customApiModel || 'gpt-4o-mini')}" placeholder="gpt-4o-mini">
                         </div>
                     </div>
 
-                    <div style="display: flex; gap: 10px; align-items: center; margin-top: 10px;">
+                    <div style="display: flex; gap: 10px; align-items: center; margin-top: 10px; flex-wrap: wrap;">
                         <button id="pm-btn-test-api" class="pm-btn-test">
                             <i class="fa-solid fa-plug"></i> 测试 API 连通性
+                        </button>
+                        <button id="pm-btn-import-st-api" class="pm-btn-test" title="一键同步酒馆主连接设置中填写的 Custom / OpenAI 端点与模型">
+                            <i class="fa-solid fa-file-import"></i> 同步酒馆主 API 配置
                         </button>
                         <span id="pm-api-test-status" style="font-size: 11px; font-weight: 500;"></span>
                     </div>
@@ -1016,7 +1081,7 @@ function bindPanelEvents(container) {
     const syncHudApiInputs = () => {
         const url = (container.querySelector('#pm-setting-custom-api-url')?.value || '').trim();
         const key = (container.querySelector('#pm-setting-custom-api-key')?.value || '').trim();
-        const model = (container.querySelector('#pm-setting-custom-api-model')?.value || 'deepseek-chat').trim();
+        const model = (container.querySelector('#pm-setting-custom-api-model')?.value || 'gpt-4o-mini').trim();
         updateSettings({ customApiUrl: url, customApiKey: key, customApiModel: model });
     };
 
@@ -1024,6 +1089,30 @@ function bindPanelEvents(container) {
         container.querySelector('#pm-setting-custom-api-url')?.addEventListener(evt, syncHudApiInputs);
         container.querySelector('#pm-setting-custom-api-key')?.addEventListener(evt, syncHudApiInputs);
         container.querySelector('#pm-setting-custom-api-model')?.addEventListener(evt, syncHudApiInputs);
+    });
+
+    // 同步酒馆主 API 配置
+    container.querySelector('#pm-btn-import-st-api')?.addEventListener('click', () => {
+        const conf = importSillyTavernApiConfig();
+        let count = 0;
+        if (conf.url) {
+            const el = container.querySelector('#pm-setting-custom-api-url');
+            if (el) { el.value = conf.url; count++; }
+        }
+        if (conf.key) {
+            const el = container.querySelector('#pm-setting-custom-api-key');
+            if (el) { el.value = conf.key; count++; }
+        }
+        if (conf.model) {
+            const el = container.querySelector('#pm-setting-custom-api-model');
+            if (el) { el.value = conf.model; count++; }
+        }
+        syncHudApiInputs();
+        if (count > 0) {
+            window.toastr?.success?.(`已同步酒馆配置 (端点: ${conf.url || '未变'}, 模型: ${conf.model || '未变'})`, '持续记忆');
+        } else {
+            window.toastr?.info?.('未能从酒馆连接设置读取到有效 Custom/OpenAI 配置，请在酒馆连接处填写或手动输入', '持续记忆');
+        }
     });
 
     // 测试 API 连通性

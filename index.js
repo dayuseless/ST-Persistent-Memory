@@ -44,9 +44,9 @@ function waitForAppReady(c) {
         let done = false;
         const finish = () => { if (done) return; done = true; resolve(); };
         try {
-            c.eventSource.once?.(c.event_types.APP_READY, finish);
+            c.eventSource.on?.(c.event_types.APP_READY, finish);
         } catch { /* 忽略 */ }
-        setTimeout(finish, 3000); // 兜底超时
+        setTimeout(finish, 1000); // 兜底超时
     });
 }
 
@@ -54,18 +54,26 @@ function waitForAppReady(c) {
  * 主初始化函数
  */
 async function init() {
-    console.log(`[${MODULE_NAME}] 正在初始化持续记忆插件 (v0.1.5)...`);
+    console.log(`[${MODULE_NAME}] 正在初始化持续记忆插件 (v0.1.6)...`);
     const c = await waitForContext();
     await waitForAppReady(c);
 
-    // 1. 初始化当前聊天的状态并立即初次执行注入
-    loadCurrentState();
-    if (getSettings().enabled) {
-        buildAndInjectMemoryPrompt();
+    // 1. 优先初始化 UI 面板 (保证悬浮球与原生抽屉绝对稳定呈现，不受后续逻辑干扰)
+    try {
+        initUI();
+    } catch (e) {
+        console.error(`[${MODULE_NAME}] UI 初始化异常:`, e);
     }
 
-    // 2. 初始化 UI 面板
-    initUI();
+    // 2. 初始化当前聊天的状态并执行初次注入
+    try {
+        loadCurrentState();
+        if (getSettings().enabled) {
+            buildAndInjectMemoryPrompt();
+        }
+    } catch (e) {
+        console.error(`[${MODULE_NAME}] 状态加载与初次注入异常:`, e);
+    }
 
     // 3. 监听切档与聊天载入事件
     const onChatReset = () => {

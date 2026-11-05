@@ -293,9 +293,9 @@ async function executeDigestRequest(c, digestPrompt, settings) {
     if (settings?.useCustomApi && settings?.customApiUrl) {
         let baseUrl = settings.customApiUrl.trim().replace(/\/+$/, '');
         const targetUrl = baseUrl.endsWith('/chat/completions') ? baseUrl : `${baseUrl}/chat/completions`;
-        const modelName = (settings.customApiModel || 'deepseek-chat').trim();
+        const modelName = (settings.customApiModel || 'gpt-4o-mini').trim();
 
-        console.log(`[${MODULE_NAME}] [Async] 使用独立 API 发起提炼: ${targetUrl} (模型: ${modelName})`);
+        console.log(`[${MODULE_NAME}] [Async] 使用自定义 OpenAI 兼容接口发起提炼: ${targetUrl} (模型: ${modelName})`);
         const headers = { 'Content-Type': 'application/json' };
         if (settings.customApiKey) {
             headers['Authorization'] = `Bearer ${settings.customApiKey.trim()}`;
@@ -343,11 +343,11 @@ async function executeDigestRequest(c, digestPrompt, settings) {
 export async function testCustomApiConnection(overrideSettings = null) {
     const settings = overrideSettings || getSettings();
     if (!settings?.customApiUrl) {
-        return { success: false, error: '请先填写 Base URL (例如: https://api.deepseek.com/v1)' };
+        return { success: false, error: '请先填写 Base URL (例如: https://api.openai.com/v1 或本地 http://localhost:11434/v1)' };
     }
     let baseUrl = settings.customApiUrl.trim().replace(/\/+$/, '');
     const targetUrl = baseUrl.endsWith('/chat/completions') ? baseUrl : `${baseUrl}/chat/completions`;
-    const modelName = (settings.customApiModel || 'deepseek-chat').trim();
+    const modelName = (settings.customApiModel || 'gpt-4o-mini').trim();
 
     const headers = { 'Content-Type': 'application/json' };
     if (settings.customApiKey) {

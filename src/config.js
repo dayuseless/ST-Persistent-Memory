@@ -48,11 +48,11 @@ export const DEFAULT_SETTINGS = {
     maxTriggeredCount: 5,      // 激活记忆最大条数保护
     logVerbose: true,          // 控制台详细调试日志
 
-    // 独立提炼 API (彻底隔离主会话与历史思维链)
+    // 独立提炼 API (自定义兼容 OpenAI 格式，彻底隔离主会话与历史思维链)
     useCustomApi: false,       // 是否启用独立提取 API
-    customApiUrl: '',          // 自定义 Base URL (例如 https://api.deepseek.com/v1)
+    customApiUrl: '',          // 自定义 Base URL (例如 https://api.openai.com/v1 或 http://localhost:11434/v1)
     customApiKey: '',          // 自定义 API Key
-    customApiModel: 'deepseek-chat' // 自定义提炼模型名称
+    customApiModel: 'gpt-4o-mini' // 自定义提炼模型名称 (如 gpt-4o-mini, deepseek-chat, qwen-turbo 等)
 };
 
 export const DEFAULT_STATE = {
