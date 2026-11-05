@@ -27,6 +27,18 @@ export function initUI() {
     createPanelDOM();
     createFloatingButton();
     createNativeExtensionDrawer();
+    registerExtensionsMenuEntry();
+
+    // 针对酒馆模板异步延迟生成，进行多轮对齐挂载
+    setTimeout(() => {
+        createNativeExtensionDrawer();
+        registerExtensionsMenuEntry();
+    }, 500);
+    setTimeout(() => {
+        createNativeExtensionDrawer();
+        registerExtensionsMenuEntry();
+    }, 2000);
+
     onStateChange(() => {
         renderPanelContent();
         renderNativeDrawerContent();
@@ -262,6 +274,24 @@ function createNativeExtensionDrawer() {
     });
 
     renderNativeDrawerContent();
+}
+
+/**
+ * 注入顶部扩展下拉菜单入口 (#extensionsMenu)
+ */
+function registerExtensionsMenuEntry() {
+    const menu = document.getElementById('extensionsMenu');
+    if (!menu || document.getElementById('pm-menu-entry')) return;
+
+    const item = document.createElement('div');
+    item.id = 'pm-menu-entry';
+    item.className = 'list-group-item flex-container flexGap5 interactable';
+    item.innerHTML = '<i class="fa-solid fa-brain" style="color: #2563eb;"></i><span>持续记忆</span>';
+    item.title = '打开持续记忆 HUD 控制台';
+    item.addEventListener('click', () => {
+        togglePanel(true);
+    });
+    menu.appendChild(item);
 }
 
 /**

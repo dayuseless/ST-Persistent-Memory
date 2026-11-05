@@ -172,11 +172,15 @@ async function init() {
     };
 }
 
-// 启动入口
-jQuery(async () => {
-    try {
-        await init();
-    } catch (e) {
-        console.error(`[${MODULE_NAME}] 启动失败:`, e);
-    }
-});
+// 启动入口 (支持立即执行与 jQuery ready 双重保活)
+if (typeof document !== 'undefined' && (document.readyState === 'complete' || document.readyState === 'interactive')) {
+    init().catch(e => console.error(`[${MODULE_NAME}] 启动失败:`, e));
+} else {
+    jQuery(async () => {
+        try {
+            await init();
+        } catch (e) {
+            console.error(`[${MODULE_NAME}] 启动失败:`, e);
+        }
+    });
+}

@@ -267,9 +267,6 @@ export function buildAndInjectMemoryPrompt() {
     }
 
     // 8. 组合成最终注入块 (若处于伴随标签模式，需附带输出协议)
-    const position = Number(settings.injectionPosition !== undefined ? settings.injectionPosition : 1);
-    const depth = Number(settings.injectionDepth !== undefined ? settings.injectionDepth : 2);
-
     if (sceneLines.length === 0 && memLines.length === 0 && settings.mode !== 'sync') {
         c.setExtensionPrompt?.(INJECT_KEY, '', position, depth);
         return '';
