@@ -1,9 +1,9 @@
 /**
- * SillyTavern 插件入口: 持续记忆 (Persistent Memory) v0.1.7
+ * SillyTavern 插件入口: 持续记忆 (Persistent Memory) v0.1.8
  * 遵循现场快照 (L0 Resume) 与事件驱动记忆架构
  */
 
-import { MODULE_NAME } from './src/config.js';
+import { MODULE_NAME, EXTENSION_VERSION } from './src/config.js';
 import { loadCurrentState, getSettings, onStateChange } from './src/state.js';
 import { buildAndInjectMemoryPrompt } from './src/injector.js';
 import { extractAndApplySyncTag, triggerAsyncDigest } from './src/extractor.js';
@@ -54,7 +54,7 @@ function waitForAppReady(c) {
  * 主初始化函数
  */
 async function init() {
-    console.log(`[${MODULE_NAME}] 正在初始化持续记忆插件 (v0.1.7)...`);
+    console.log(`[${MODULE_NAME}] 正在初始化持续记忆插件 (v${EXTENSION_VERSION})...`);
     const c = await waitForContext();
     await waitForAppReady(c);
 
@@ -162,7 +162,7 @@ async function init() {
         }
     });
 
-    console.log(`[${MODULE_NAME}] 持续记忆系统 (v0.1.7) 初始化就绪`);
+    console.log(`[${MODULE_NAME}] 持续记忆系统 (v${EXTENSION_VERSION}) 初始化就绪`);
 
     // 暴露全局调试接口
     window.__persistentMemory = {

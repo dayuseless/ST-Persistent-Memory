@@ -1,6 +1,6 @@
 /**
- * 提炼引擎 (v0.1.6)
- * 严格落实：状态版本并发保护 (state_revision)、独立API/generateRaw单轮自包含请求 (根绝缺失 reasoning_content 报错)、严格拒绝型 Schema 验证、显式生命周期流转、知情范围隔离与提示词注入防护
+ * 提炼引擎 (v0.1.8)
+ * 严格落实：状态版本并发保护 (state_revision)、独立API/generateRaw自包含请求、严格拒绝型 Schema 验证、显式生命周期流转、知情范围隔离与请求超时保护
  */
 
 import { MODULE_NAME, MEMORY_TYPES, MEMORY_STATUS, MEMORY_LIFECYCLE, MEMORY_SCOPE } from './config.js';
@@ -175,13 +175,7 @@ export function validateExtractedPayload(raw, currentMemories = []) {
             }
 
             const char = typeof item.character === 'string' ? item.character.trim().slice(0, 30) : '';
-            const scope = validScopes.has(item.scope) ? item.scope : (char ? MEMORY_SCOPE.CHARACTER : MEMORY_SCOPE.SHARED);
-
-            // P0 修复：Fail-Closed 校验：若 scope === character，必须有明确有效的角色归属
-            if (scope === MEMORY_SCOPE.CHARACTER && !char) {
-                console.warn(`[${MODULE_NAME}] [Schema 拦截] 记忆定义为 character 私知，但缺少归属角色，执行 Fail-Closed 拒绝入库`);
-                continue;
-            }
+            let scope = validScopes.has(item.scope) ? item.scope : (char ? MEMORY_SCOPE.CHARACTER : MEMORY_SCOPE.SHARED);
 
             // 提取知情者集合 (known_by)
             let knownBy = [];
@@ -192,6 +186,20 @@ export function validateExtractedPayload(raw, currentMemories = []) {
                     .filter(Boolean);
             } else if (char) {
                 knownBy = [char];
+            }
+
+            // P1-03 修复：结构与权限合法性约束——严禁将明确带有角色私密或知情限制的信息直接提升为 world 公共常识
+            if (scope === MEMORY_SCOPE.WORLD && char) {
+                scope = MEMORY_SCOPE.CHARACTER;
+            }
+            if (scope === MEMORY_SCOPE.WORLD && knownBy.length > 0) {
+                scope = MEMORY_SCOPE.SHARED;
+            }
+
+            // P0 修复：Fail-Closed 校验：若 scope === character，必须有明确有效的角色归属
+            if (scope === MEMORY_SCOPE.CHARACTER && !char) {
+                console.warn(`[${MODULE_NAME}] [Schema 拦截] 记忆定义为 character 私知，但缺少归属角色，执行 Fail-Closed 拒绝入库`);
+                continue;
             }
 
             // P1 修复：Fail-Closed 校验：若 scope === shared，必须有明确知情者集合，严禁作为公共常识入库
@@ -273,14 +281,27 @@ export function extractAndApplySyncTag(rawText) {
 
     if (payload) {
         const summary = applyExtractedData(payload);
+        state.last_sync_error = null;
         console.log(`[${MODULE_NAME}] [Sync] 伴生标签通过验证并成功入库: ${summary}`);
         window.toastr?.success?.(summary, '伴随标签提炼入库');
     } else {
-        console.warn(`[${MODULE_NAME}] [Sync] 伴生标签未通过 Schema 验证:`, jsonStr.slice(0, 160));
+        // P2-05 修复：标签校验失败绝不静默丢弃，留存错误日志并提供 HUD 可观测性
+        const failReason = !rawPayload ? 'JSON 解析失败 (标签格式畸形)' : 'Schema 校验未通过 (缺少必要核心字段或类型非法)';
+        console.warn(`[${MODULE_NAME}] [Sync] 伴生标签验证失败: ${failReason}`, jsonStr.slice(0, 160));
+        state.last_sync_error = {
+            time: new Date().toLocaleTimeString(),
+            error: failReason,
+            rawSnippet: jsonStr.slice(0, 200)
+        };
+        saveCurrentState();
+        window.toastr?.warning?.(`伴随记忆标签未通过验证: ${failReason} (已记录至状态面板，可展开查看)`, '伴随标签异常');
     }
 
     return cleanText;
 }
+
+const DIGEST_REQUEST_TIMEOUT_MS = 45000; // P2-03: 45秒提炼请求硬超时，防并发锁长久挂起
+const TEST_CONNECTION_TIMEOUT_MS = 15000; // P2-03: 15秒接口连通性测试超时
 
 /**
  * 执行提炼生成请求：
@@ -301,27 +322,42 @@ async function executeDigestRequest(c, digestPrompt, settings) {
             headers['Authorization'] = `Bearer ${settings.customApiKey.trim()}`;
         }
 
-        const res = await fetch(targetUrl, {
-            method: 'POST',
-            headers: headers,
-            body: JSON.stringify({
-                model: modelName,
-                messages: [
-                    { role: 'user', content: digestPrompt }
-                ],
-                temperature: 0.1
-            })
-        });
+        const controller = new AbortController();
+        const timeoutId = setTimeout(() => {
+            controller.abort();
+        }, DIGEST_REQUEST_TIMEOUT_MS);
 
-        if (!res.ok) {
-            const errBody = await res.text().catch(() => '');
-            throw new Error(`独立 API 响应异常 HTTP ${res.status}: ${errBody.slice(0, 300)}`);
+        try {
+            const res = await fetch(targetUrl, {
+                method: 'POST',
+                headers: headers,
+                body: JSON.stringify({
+                    model: modelName,
+                    messages: [
+                        { role: 'user', content: digestPrompt }
+                    ],
+                    temperature: 0.1
+                }),
+                signal: controller.signal
+            });
+
+            if (!res.ok) {
+                const errBody = await res.text().catch(() => '');
+                throw new Error(`独立 API 响应异常 HTTP ${res.status}: ${errBody.slice(0, 300)}`);
+            }
+
+            const data = await res.json();
+            const content = data?.choices?.[0]?.message?.content;
+            if (!content) throw new Error('独立 API 返回内容为空');
+            return content;
+        } catch (fetchErr) {
+            if (fetchErr.name === 'AbortError') {
+                throw new Error(`独立提炼 API 请求超时 (超过 ${DIGEST_REQUEST_TIMEOUT_MS / 1000} 秒未响应)`);
+            }
+            throw fetchErr;
+        } finally {
+            clearTimeout(timeoutId);
         }
-
-        const data = await res.json();
-        const content = data?.choices?.[0]?.message?.content;
-        if (!content) throw new Error('独立 API 返回内容为空');
-        return content;
     }
 
     // 方案 B: 优先使用 generateRaw (单轮独立 Prompt，不附带历史会话与缺失的 reasoning_content)
@@ -354,6 +390,11 @@ export async function testCustomApiConnection(overrideSettings = null) {
         headers['Authorization'] = `Bearer ${settings.customApiKey.trim()}`;
     }
 
+    const controller = new AbortController();
+    const timeoutId = setTimeout(() => {
+        controller.abort();
+    }, TEST_CONNECTION_TIMEOUT_MS);
+
     const start = Date.now();
     try {
         const res = await fetch(targetUrl, {
@@ -366,7 +407,8 @@ export async function testCustomApiConnection(overrideSettings = null) {
                 ],
                 max_tokens: 8,
                 temperature: 0.1
-            })
+            }),
+            signal: controller.signal
         });
 
         const latency = Date.now() - start;
@@ -388,10 +430,18 @@ export async function testCustomApiConnection(overrideSettings = null) {
             reply: content
         };
     } catch (err) {
+        if (err.name === 'AbortError') {
+            return {
+                success: false,
+                error: `连接超时 (超过 ${TEST_CONNECTION_TIMEOUT_MS / 1000} 秒未收到回复)`
+            };
+        }
         return {
             success: false,
             error: `网络或跨域异常: ${err.message || String(err)}`
         };
+    } finally {
+        clearTimeout(timeoutId);
     }
 }
 
@@ -438,18 +488,44 @@ export async function triggerAsyncDigest(force = false) {
     try {
         const sliceCount = Math.max(2, Math.min(15, Number(settings.digestSliceCount) || 6));
         const recentSlice = chat.slice(-sliceCount);
-        const conversationText = recentSlice.map((m, idx) => {
+
+        // P2-04 修复：提炼输入总预算与单条消息长度约束 (防超长文本撑爆上下文与节约用户 Token 费用)
+        const MAX_SINGLE_MSG_CHARS = 1000;
+        const MAX_TOTAL_CONVERSATION_CHARS = 3500;
+
+        const formattedMsgs = [];
+        let accumulatedChars = 0;
+
+        // 从最新消息往前回溯累加，优先保证最新对话的完整性，遇满则舍弃更早轮次，杜绝从单句中间机械腰斩
+        for (let i = recentSlice.length - 1; i >= 0; i--) {
+            const m = recentSlice[i];
             const sender = m.is_user ? (c.name1 || 'User') : (m.name || 'AI');
-            return `[${sender}]: ${m.mes}`;
-        }).join('\n\n');
+            let rawMes = typeof m.mes === 'string' ? m.mes.trim() : '';
+
+            // 单条消息超长安全压缩
+            if (rawMes.length > MAX_SINGLE_MSG_CHARS) {
+                rawMes = rawMes.slice(0, 600) + '\n...[中间叙事已压缩]...\n' + rawMes.slice(-300);
+            }
+
+            const formatted = `[${sender}]: ${rawMes}`;
+            if (accumulatedChars + formatted.length > MAX_TOTAL_CONVERSATION_CHARS && formattedMsgs.length >= 2) {
+                // 已保留最新至少2条完整消息，超出总上限停止吸纳更早消息
+                break;
+            }
+
+            formattedMsgs.unshift(formatted);
+            accumulatedChars += formatted.length;
+        }
+
+        const conversationText = formattedMsgs.join('\n\n');
 
         const currentScene = JSON.stringify(state.scene, null, 2);
 
-        // 列出当前活跃记忆供模型去重与生命周期联动
+        // 列出当前活跃记忆供模型去重与生命周期联动 (最多 10 条，且单条内容截断至 90 字符，控制 Prompt 开销)
         const activeMemList = (state.memories || [])
             .filter(m => m.lifecycle === MEMORY_LIFECYCLE.ACTIVE)
-            .slice(-15)
-            .map(m => `(ID: ${m.id}) [${m.type}] [归属:${m.character || '公共'}] [范围:${m.scope}] ${m.content}`)
+            .slice(-10)
+            .map(m => `(ID: ${m.id}) [${m.type}] [归属:${m.character || '公共'}] [范围:${m.scope}] ${String(m.content || '').slice(0, 90)}`)
             .join('\n') || '（暂无活跃记忆）';
 
         const digestPrompt = `你是一个严格遵循“事实分级与防幻觉纪律”的持续性记忆系统提炼专家。
@@ -547,15 +623,21 @@ ${conversationText}
                 currentState.last_digest_floor = currentTurn;
                 currentState.last_digest_time = new Date().toLocaleTimeString();
                 currentState.last_digest_summary = summary;
+                currentState.last_digest_error = null;
             });
             console.log(`[${MODULE_NAME}] [Async] 提炼原子提交落盘 (会话: ${startChatId}, rev.${currentState.state_revision}): ${currentState.last_digest_summary}`);
             return { success: true, summary: currentState.last_digest_summary };
         } else {
             console.warn(`[${MODULE_NAME}] [Async] 提炼内容未通过数据完整性校验，已安全丢弃`);
-            return { success: false, error: '模型返回的内容未通过 Schema 格式校验' };
+            const schemaErr = '模型返回的内容未通过 Schema 格式校验';
+            currentState.last_digest_error = schemaErr;
+            saveCurrentState();
+            return { success: false, error: schemaErr };
         }
     } catch (e) {
         console.error(`[${MODULE_NAME}] [Async] 后台提炼异常:`, e);
+        currentState.last_digest_error = e.message || String(e);
+        saveCurrentState();
         return { success: false, error: e.message || String(e) };
     } finally {
         activeChatDigests.delete(startChatId);

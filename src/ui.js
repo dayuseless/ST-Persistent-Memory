@@ -1,5 +1,5 @@
 /**
- * UI 管理器 (v0.1.6)：原生扩展抽屉集成、屏幕快捷悬浮按钮（支持自由拖拽与持久化）与 HUD 侧边控制台
+ * UI 管理器 (v0.1.8)：原生扩展抽屉集成、屏幕快捷悬浮按钮（支持自由拖拽与持久化）与 HUD 侧边控制台
  * 全面升级：选项卡式现代工业风界面、大号高对比度数字显示、独立 API 完整配置与连通性测试
  */
 
@@ -394,6 +394,23 @@ function renderNativeDrawerContent() {
                 </div>
             </div>
 
+            ${state.last_sync_error ? `
+            <div class="pm-input-row pm-mb-8">
+                <label class="pm-input-label" style="color: #ef4444;"><i class="fa-solid fa-triangle-exclamation"></i> 伴随标签解析异常：</label>
+                <div class="pm-status-box" style="border-left: 3px solid #ef4444; background: rgba(239, 68, 68, 0.08);">
+                    <div style="font-weight: 600; color: #dc2626;">${escapeHtml(state.last_sync_error.error)} (${escapeHtml(state.last_sync_error.time)})</div>
+                    <div style="font-size: 11px; opacity: 0.8; word-break: break-all; margin-top: 4px; font-family: monospace;">${escapeHtml(state.last_sync_error.rawSnippet || '')}</div>
+                </div>
+            </div>` : ''}
+
+            ${state.last_digest_error ? `
+            <div class="pm-input-row pm-mb-8">
+                <label class="pm-input-label" style="color: #f59e0b;"><i class="fa-solid fa-circle-exclamation"></i> 提炼请求异常：</label>
+                <div class="pm-status-box" style="border-left: 3px solid #f59e0b; background: rgba(245, 158, 11, 0.08); color: #d97706;">
+                    ${escapeHtml(state.last_digest_error)}
+                </div>
+            </div>` : ''}
+
             <div class="pm-input-row pm-mb-8">
                 <label class="pm-input-label">现场快照与状态版本：</label>
                 <div class="pm-status-box">
@@ -715,6 +732,18 @@ function renderPanelContent() {
                     <span class="pm-stat-value pm-text-sky">~${activeTokenEstimate} <span style="font-size: 11px; font-weight: 500; color: #64748b;">/ ${settings.maxTotalMemoryTokens || 450}T</span></span>
                 </div>
             </div>
+
+            ${state.last_sync_error ? `
+            <div style="background: rgba(239, 68, 68, 0.08); border-left: 3px solid #ef4444; padding: 6px 10px; border-radius: 4px; margin-bottom: 8px; font-size: 11px;">
+                <span style="color: #dc2626; font-weight: 600;"><i class="fa-solid fa-triangle-exclamation"></i> 伴生标签解析未通过 (${escapeHtml(state.last_sync_error.time)}):</span>
+                <span style="color: #64748b;"> ${escapeHtml(state.last_sync_error.error)}</span>
+                <div style="font-family: monospace; font-size: 10px; opacity: 0.75; margin-top: 2px; word-break: break-all;">${escapeHtml(state.last_sync_error.rawSnippet || '')}</div>
+            </div>` : ''}
+            ${state.last_digest_error ? `
+            <div style="background: rgba(245, 158, 11, 0.08); border-left: 3px solid #f59e0b; padding: 6px 10px; border-radius: 4px; margin-bottom: 8px; font-size: 11px;">
+                <span style="color: #d97706; font-weight: 600;"><i class="fa-solid fa-circle-exclamation"></i> 提炼请求异常:</span>
+                <span style="color: #64748b;"> ${escapeHtml(state.last_digest_error)}</span>
+            </div>` : ''}
 
             <!-- 记忆列表 -->
             <div class="pm-section-card" style="flex: 1; display: flex; flex-direction: column;">
@@ -1280,7 +1309,7 @@ function bindPanelEvents(container) {
         const scopeSelect = container.querySelector('#pm-new-mem-scope');
         const targetInput = container.querySelector('#pm-new-mem-target');
 
-        const content = contentInput?.value?.trim();
+        const content = (contentInput?.value || '').trim().slice(0, 150);
         if (!content) return;
 
         const type = typeSelect?.value || 'fact';

@@ -1,6 +1,6 @@
 /**
- * 记忆状态管理器 (v0.1.5)
- * 严格落实 state_revision 状态修订号、L0 三态 PATCH 语义、事务式批量更新与严格知情集合隔离
+ * 记忆状态管理器 (v0.1.8)
+ * 严格落实 state_revision 状态修订号、L0 三态 PATCH 语义、真正原子回滚事务与严格知情集合隔离
  */
 
 import { MODULE_NAME, DEFAULT_SETTINGS, DEFAULT_STATE, MEMORY_STATUS, MEMORY_LIFECYCLE, MEMORY_TYPES, MEMORY_SCOPE } from './config.js';
@@ -29,20 +29,31 @@ export function onStateChange(fn) {
 }
 
 /**
- * 事务式批量更新包装器 (P1 修复：提炼结果原子提交)
- * 在事务块执行期间暂停单独持久化与 revision 乱序递增，在结尾统一执行单次落盘
+ * P1-02 修复：事务式批量更新包装器 (具备完整内存快照与异常回滚能力)
+ * 在事务块执行期间暂停单独持久化；若执行过程中发生任何异常，完整恢复先前快照，严禁落盘半修改状态
  */
 export function batchUpdate(fn) {
     if (isBatchUpdating) {
         return fn();
     }
     isBatchUpdating = true;
+    // 事务开始前保留完整内存状态快照 (深拷贝)
+    const snapshot = stateCache ? JSON.parse(JSON.stringify(stateCache)) : null;
     try {
         const result = fn();
+        // 仅在全部操作执行成功后才统一落盘
+        saveCurrentState();
         return result;
+    } catch (err) {
+        // 异常回滚内存状态，阻止脏数据持久化
+        console.error(`[${MODULE_NAME}] [Transaction Rollback] 批量更新发生异常，执行状态完整回滚:`, err);
+        if (snapshot) {
+            stateCache = snapshot;
+            notifyChange();
+        }
+        throw err;
     } finally {
         isBatchUpdating = false;
-        saveCurrentState();
     }
 }
 
@@ -51,6 +62,17 @@ let settingsCache = null;
 function getExtSettingsObject() {
     const c = getContext();
     return c?.extensionSettings ?? c?.extension_settings ?? window.extension_settings ?? null;
+}
+
+/**
+ * P1-04 修复：针对 localStorage 备份执行敏感凭据脱敏过滤
+ * 严禁将用户 API Key 以明文形式备份至浏览器共享本地存储中
+ */
+function getSanitizedSettingsForBackup(settings) {
+    if (!settings || typeof settings !== 'object') return {};
+    const safe = Object.assign({}, settings);
+    delete safe.customApiKey;
+    return safe;
 }
 
 export function getSettings() {
@@ -62,7 +84,14 @@ export function getSettings() {
             let restored = null;
             try {
                 const raw = localStorage.getItem('ST_PM_SETTINGS_BACKUP');
-                if (raw) restored = JSON.parse(raw);
+                if (raw) {
+                    restored = JSON.parse(raw);
+                    // 清理旧版本可能遗留的明文 Key
+                    if (restored && restored.customApiKey) {
+                        delete restored.customApiKey;
+                        localStorage.setItem('ST_PM_SETTINGS_BACKUP', JSON.stringify(restored));
+                    }
+                }
             } catch {}
             extSettings[MODULE_NAME] = Object.assign({}, DEFAULT_SETTINGS, restored || {});
         } else {
@@ -82,7 +111,13 @@ export function getSettings() {
         let restored = null;
         try {
             const raw = localStorage.getItem('ST_PM_SETTINGS_BACKUP');
-            if (raw) restored = JSON.parse(raw);
+            if (raw) {
+                restored = JSON.parse(raw);
+                if (restored && restored.customApiKey) {
+                    delete restored.customApiKey;
+                    localStorage.setItem('ST_PM_SETTINGS_BACKUP', JSON.stringify(restored));
+                }
+            }
         } catch {}
         settingsCache = Object.assign({}, DEFAULT_SETTINGS, restored || {});
     }
@@ -106,7 +141,7 @@ export function updateSettings(patch) {
     c?.saveSettingsDebounced?.();
 
     try {
-        localStorage.setItem('ST_PM_SETTINGS_BACKUP', JSON.stringify(settings));
+        localStorage.setItem('ST_PM_SETTINGS_BACKUP', JSON.stringify(getSanitizedSettingsForBackup(settings)));
     } catch {}
 
     try {
@@ -115,7 +150,7 @@ export function updateSettings(patch) {
 }
 
 /**
- * 立即持久化配置 (双重保险：酒馆主配置落盘 + 本地持久化备份)
+ * 立即持久化配置 (双重保险：酒馆主配置落盘 + 本地安全脱敏备份)
  */
 export function saveSettingsImmediately() {
     const c = getContext();
@@ -130,7 +165,7 @@ export function saveSettingsImmediately() {
         } else if (typeof c?.saveSettingsDebounced === 'function') {
             c.saveSettingsDebounced();
         }
-        localStorage.setItem('ST_PM_SETTINGS_BACKUP', JSON.stringify(settings));
+        localStorage.setItem('ST_PM_SETTINGS_BACKUP', JSON.stringify(getSanitizedSettingsForBackup(settings)));
         try {
             window.__persistentMemory?.injectNow?.();
         } catch {}
@@ -167,11 +202,42 @@ export function loadCurrentState() {
         return 'mem-' + Date.now().toString(36) + '-' + Math.random().toString(36).substring(2, 6);
     };
 
+    const isLegacyVersion = !stored.version || stored.version < 3;
+    const defaultParticipants = [c?.name1, c?.name2].filter(Boolean);
+    if (defaultParticipants.length === 0) {
+        defaultParticipants.push('User', 'Character');
+    }
+
+    let migratedCount = 0;
+    let upgradedCount = 0;
+    let dormantCount = 0;
+
     const migratedMemories = (Array.isArray(stored.memories) ? stored.memories : []).map(m => {
-        const scope = m.scope || (m.character ? MEMORY_SCOPE.CHARACTER : MEMORY_SCOPE.SHARED);
-        const knownBy = Array.isArray(m.known_by)
-            ? m.known_by.filter(Boolean)
-            : (m.character ? [m.character] : []);
+        migratedCount++;
+        let scope = m.scope;
+        let knownBy = Array.isArray(m.known_by) ? m.known_by.filter(Boolean) : null;
+
+        if (!scope) {
+            upgradedCount++;
+            if (m.character) {
+                scope = MEMORY_SCOPE.CHARACTER;
+                if (!knownBy || knownBy.length === 0) knownBy = [m.character];
+            } else {
+                // P2-06 修复：针对旧版本未设定知情范围的单聊记忆，对齐为 shared 并赋予当前会话参与者，防止用户历史记忆静默休眠
+                scope = MEMORY_SCOPE.SHARED;
+                if (!knownBy || knownBy.length === 0) {
+                    knownBy = [...defaultParticipants];
+                }
+            }
+        } else {
+            if (!knownBy) {
+                knownBy = m.character ? [m.character] : [];
+            }
+        }
+
+        if (scope === MEMORY_SCOPE.SHARED && knownBy.length === 0) {
+            dormantCount++;
+        }
 
         return {
             ...m,
@@ -182,6 +248,10 @@ export function loadCurrentState() {
             lifecycle: m.lifecycle || MEMORY_LIFECYCLE.ACTIVE
         };
     });
+
+    if (isLegacyVersion && migratedCount > 0) {
+        console.log(`[${MODULE_NAME}] [Migration Report] 旧版本记忆数据平滑升级完成：共载入 ${migratedCount} 条 (自动补齐知情范围 ${upgradedCount} 条, 知情者待补休眠 ${dormantCount} 条)`);
+    }
 
     stateCache = {
         version: 3,
@@ -358,7 +428,8 @@ export function addMemory(item) {
     if (!item || typeof item !== 'object') return null;
     const s = getState();
     if (typeof item.content !== 'string') return null;
-    const content = item.content.trim();
+    // P2-04 修复：单条记忆硬长度上限保护，防止超长内容挤占上下文
+    const content = item.content.trim().slice(0, 150);
     if (!content) return null;
 
     const validTypes = new Set(Object.values(MEMORY_TYPES));
@@ -370,16 +441,31 @@ export function addMemory(item) {
         return null;
     }
 
-    // P1 修复：未指定特定知情者时默认归类为 world (世界公共事实)，防止快捷添加普通记忆被 Fail-Closed 误杀
+    let targetChar = typeof item.character === 'string' ? item.character.trim() : '';
+
+    let knownBy = Array.isArray(item.known_by) && item.known_by.length > 0
+        ? Array.from(new Set(item.known_by.filter(k => typeof k === 'string').map(k => k.trim()).filter(Boolean)))
+        : (targetChar ? [targetChar] : []);
+
     let targetScope;
     if (item.scope) {
         targetScope = item.scope;
-    } else if (item.character) {
+    } else if (targetChar) {
         targetScope = MEMORY_SCOPE.CHARACTER;
-    } else if (Array.isArray(item.known_by) && item.known_by.length > 0) {
+    } else if (knownBy.length > 0) {
         targetScope = MEMORY_SCOPE.SHARED;
     } else {
         targetScope = MEMORY_SCOPE.WORLD;
+    }
+
+    // P1-03 修复：结构与权限合法性约束 (防提示词注入扩大知情范围)
+    // 规则 A：若绑定了特定角色私有属性，绝不允许直接当成 world 公共世界常识
+    if (targetScope === MEMORY_SCOPE.WORLD && targetChar) {
+        targetScope = MEMORY_SCOPE.CHARACTER;
+    }
+    // 规则 B：若限定了特定知情者名单，绝不允许声称为 world 公开常识
+    if (targetScope === MEMORY_SCOPE.WORLD && knownBy.length > 0) {
+        targetScope = MEMORY_SCOPE.SHARED;
     }
 
     if (!validScopes.has(targetScope)) {
@@ -387,27 +473,50 @@ export function addMemory(item) {
         return null;
     }
 
-    const targetChar = typeof item.character === 'string' ? item.character.trim() : '';
-
     // P0 Fail-Closed: 角色私知 (character) 必须具备非空角色归属
     if (targetScope === MEMORY_SCOPE.CHARACTER && !targetChar) {
         console.warn(`[${MODULE_NAME}] [Fail-Closed] 拦截角色私有记忆：缺少明确角色归属，拒绝入库`);
         return null;
     }
 
-    const newKeys = Array.isArray(item.trigger_keys)
-        ? item.trigger_keys.filter(k => typeof k === 'string').map(k => k.trim()).filter(Boolean)
-        : [];
-
-    const knownBy = Array.isArray(item.known_by) && item.known_by.length > 0
-        ? Array.from(new Set(item.known_by.filter(k => typeof k === 'string').map(k => k.trim()).filter(Boolean)))
-        : (targetChar ? [targetChar] : []);
-
     // P1 Fail-Closed: 现场共知 (shared) 必须具备至少一个知情者 (known_by 或 character)，严禁作为公共记忆入库
     if (targetScope === MEMORY_SCOPE.SHARED && knownBy.length === 0) {
         console.warn(`[${MODULE_NAME}] [Fail-Closed] 拦截共享记忆：缺少知情者集合 (known_by / character)，拒绝入库`);
         return null;
     }
+
+    const SCOPE_RANK = {
+        [MEMORY_SCOPE.CHARACTER]: 1, // 私密
+        [MEMORY_SCOPE.SHARED]: 2,    // 现场共享
+        [MEMORY_SCOPE.WORLD]: 3      // 全域公共
+    };
+
+    // 规则 C (P1-03 核心)：越权提权防线——若既有记忆库中已存在语义吻合的私有/共享条目，严禁模型通过新输出将既有知识越权提升为更高范围
+    for (const existing of s.memories) {
+        if (existing.lifecycle === MEMORY_LIFECYCLE.COMPLETED ||
+            existing.lifecycle === MEMORY_LIFECYCLE.SUPERSEDED ||
+            existing.lifecycle === MEMORY_LIFECYCLE.REFUTED) {
+            continue;
+        }
+        const sim = calculateTextSimilarity(existing.content, content);
+        if (sim >= 0.70) {
+            const existingRank = SCOPE_RANK[existing.scope] || 1;
+            const newRank = SCOPE_RANK[targetScope] || 1;
+            if (newRank > existingRank) {
+                console.warn(`[${MODULE_NAME}] [Scope Escalation Guard] 拦截模型越权将已有受限条目 (ID: ${existing.id}, scope: ${existing.scope}) 扩大为 ${targetScope}，强制收敛至严格知情范围 ${existing.scope}`);
+                targetScope = existing.scope;
+                if (existing.character) targetChar = existing.character;
+                if (Array.isArray(existing.known_by) && existing.known_by.length > 0) {
+                    knownBy = [...existing.known_by];
+                }
+                break;
+            }
+        }
+    }
+
+    const newKeys = Array.isArray(item.trigger_keys)
+        ? item.trigger_keys.filter(k => typeof k === 'string').map(k => k.trim()).filter(Boolean)
+        : [];
 
     const itemHasNegation = hasNegationWord(content);
 

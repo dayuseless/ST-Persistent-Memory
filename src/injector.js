@@ -1,6 +1,10 @@
 /**
- * 注入引擎 (v0.1.5)
- * 严格落实：L0 独立硬预算上限 (maxSceneTokens)、模板固定开销扣除、Fail-Closed 私有/共享记忆防护、Scope 白名单校验、Presence 严格三态语义与 known_by 知情者分流
+ * 注入引擎 (v0.1.8)
+ * 严格落实：
+ * 1. P1-01 角色级知情范围严格路由 (生成主体 POV 与现场角色集合严格解耦)
+ * 2. P2-01 L0 现场快照时间字段 (scene.time) 纳入与三态存在判定
+ * 3. P2-02 真实 Token 预算全开销扣除 (包含韩文 Hangul 估算与 Sync 协议开销扣除)
+ * 4. Fail-Closed 拒绝优先与知情者隔离防线
  */
 
 import { MODULE_NAME, INJECT_KEY, MEMORY_STATUS, MEMORY_LIFECYCLE, MEMORY_SCOPE, MEMORY_TYPES } from './config.js';
@@ -11,17 +15,56 @@ function getContext() {
 }
 
 /**
+ * P1-01 核心函数：判定当前生成请求的接收主体 (Generating Recipient / POV)
+ * 区分群聊特定回复角色、单聊专属角色与未知/旁白主体
+ */
+export function getGeneratingEntity(c) {
+    if (!c) return null;
+    // 1. 群聊或单聊中由 this_chid / characterId 指定的当前生成角色
+    if (typeof c.characterId === 'number' && Array.isArray(c.characters) && c.characters[c.characterId]) {
+        return c.characters[c.characterId].name || null;
+    }
+    // 2. 单聊常规 fallback (无 groupId 时的对方角色名)
+    if (!c.groupId && c.name2) {
+        return c.name2;
+    }
+    return null;
+}
+
+/**
+ * 伴随模式状态更新协议文本定义
+ */
+export const SYNC_PROTOCOL_TEXT = [
+    '',
+    '[伴随记忆与情境更新协议 (Sync Protocol)]',
+    '若本轮对话产生了新的地点环境变更、关键动作进展、约定承诺或重要事实，请在回复文本的最末尾（必须独占一行）附带隐藏的状态更新标签：',
+    '<!--PERSISTENT_MEMORY',
+    '{',
+    '  "scene": { "location": "当前地点", "time": "时段/天气", "action": "正在进行的动作", "tension": "心理氛围", "unresolved": "即时冲突焦点", "in_scene_characters": ["在场角色1", "在场角色2"] },',
+    '  "new_memories": [',
+    '    { "content": "客观事实描述", "type": "fact|statement|inference|todo", "scope": "world|shared|character", "character": null, "known_by": ["知情角色名"], "trigger_keys": ["触发词1", "触发词2"] }',
+    '  ],',
+    '  "lifecycle_updates": [',
+    '    { "id": "已履约或已推翻旧记忆的ID", "lifecycle": "completed|superseded|refuted" }',
+    '  ],',
+    '  "summary": "本次更新一句话摘要"',
+    '}',
+    '-->',
+    '（若无新事实发生，则无需附带任何标签，直接正常回复即可。前端会自动截获隐藏此标签，用户界面完全不可见。）'
+].join('\n');
+
+/**
  * 真实 Token 消耗保守估算函数 (Heuristic Token Estimation)
- * 兼顾中日韩 (CJK) 字符与英文单词的 Tokenizer 行为
+ * P2-02 修复：扩展 CJK 字符集，将韩文音节 (Hangul Syllables: \uac00-\ud7af) 与谚文字母 (\u1100-\u11ff, \u3130-\u318f) 全面纳入
  */
 export function estimateTokens(text) {
     if (!text || typeof text !== 'string') return 0;
-    // CJK 字符：平均 1 字符 ≈ 1~1.2 Token
-    const cjkMatches = text.match(/[\u4e00-\u9fff\u3400-\u4dbf\uf900-\ufaff\u3040-\u30ff]/g);
+    // CJK 字符：涵盖汉字 (常用、扩展A)、日文假名、韩文音节与谚文字母
+    const cjkMatches = text.match(/[\u4e00-\u9fff\u3400-\u4dbf\uf900-\ufaff\u3040-\u30ff\uac00-\ud7af\u1100-\u11ff\u3130-\u318f]/g);
     const cjkCount = cjkMatches ? cjkMatches.length : 0;
 
     // 非 CJK 文本：以单词或 ~3.5 字符估算 1 Token
-    const nonCjkText = text.replace(/[\u4e00-\u9fff\u3400-\u4dbf\uf900-\ufaff\u3040-\u30ff]/g, '');
+    const nonCjkText = text.replace(/[\u4e00-\u9fff\u3400-\u4dbf\uf900-\ufaff\u3040-\u30ff\uac00-\ud7af\u1100-\u11ff\u3130-\u318f]/g, '');
     const words = nonCjkText.trim().split(/\s+/).filter(Boolean).length;
     const nonCjkTokens = Math.ceil(Math.max(words * 1.3, nonCjkText.length / 3.5));
 
@@ -86,12 +129,20 @@ export function buildAndInjectMemoryPrompt() {
         inScene = [charName, userName];
     }
 
-    // 2. 组装 L0 现场快照并落实硬预算 (maxSceneTokens)
+    // 2. 组装 L0 现场快照并落实硬预算 (扣减全部固定模板与协议开销)
     const maxSceneTokens = Math.max(50, Number(settings.maxSceneTokens) || 150);
     const maxTotalTokens = Math.max(100, Number(settings.maxTotalMemoryTokens) || 450);
-    const TEMPLATE_OVERHEAD_TOKENS = 25; // 标题与分隔线等模板固定开销
 
-    const hasScene = scene.location || scene.action || scene.tension || scene.unresolved || (Array.isArray(scene.in_scene_characters) && scene.in_scene_characters.length === 0);
+    // P2-02 修复：总预算必须全量扣减包含标题、分隔线与伴随协议在内的全部模板固定开销
+    const BASE_TEMPLATE_OVERHEAD_TOKENS = 35; // 标题与分隔线等模板开销
+    const syncProtocolCost = settings.mode === 'sync' ? estimateTokens(SYNC_PROTOCOL_TEXT) : 0;
+    const totalFixedOverhead = BASE_TEMPLATE_OVERHEAD_TOKENS + syncProtocolCost;
+
+    const maxAvailableForContent = Math.max(50, maxTotalTokens - totalFixedOverhead);
+    const effectiveMaxSceneTokens = Math.min(maxSceneTokens, Math.max(50, Math.floor(maxAvailableForContent * 0.5)));
+
+    // P2-01 修复：将 scene.time 明确纳入现场快照存在判断，并纠正 in_scene_characters 长度判定
+    const hasScene = Boolean(scene.time || scene.location || scene.action || scene.tension || scene.unresolved || (Array.isArray(scene.in_scene_characters) && scene.in_scene_characters.length > 0));
     let sceneLines = [];
 
     if (hasScene) {
@@ -106,47 +157,50 @@ export function buildAndInjectMemoryPrompt() {
 
         // P1 落实 L0 硬预算约束 (逐级降级与压缩)
         // 阶段 1：超出预算时，裁减未决悬念
-        if (estimateTokens(sceneLines.join('\n')) > maxSceneTokens && curUnres) {
+        if (estimateTokens(sceneLines.join('\n')) > effectiveMaxSceneTokens && curUnres) {
             curUnres = '';
             sceneLines = assembleSceneLines(curLoc, curTime, curAct, curTen, curUnres, curChars);
         }
 
         // 阶段 2：仍超出时，裁减即时气氛
-        if (estimateTokens(sceneLines.join('\n')) > maxSceneTokens && curTen) {
+        if (estimateTokens(sceneLines.join('\n')) > effectiveMaxSceneTokens && curTen) {
             curTen = '';
             sceneLines = assembleSceneLines(curLoc, curTime, curAct, curTen, curUnres, curChars);
         }
 
         // 阶段 3：仍超出时，压缩动作描述
-        while (estimateTokens(sceneLines.join('\n')) > maxSceneTokens && curAct.length > 15) {
+        while (estimateTokens(sceneLines.join('\n')) > effectiveMaxSceneTokens && curAct.length > 15) {
             curAct = curAct.slice(0, Math.floor(curAct.length * 0.75)).trim() + '...';
             sceneLines = assembleSceneLines(curLoc, curTime, curAct, curTen, curUnres, curChars);
         }
 
         // 阶段 4：仍超出时，压缩地点并收缩角色列表
-        while (estimateTokens(sceneLines.join('\n')) > maxSceneTokens && curLoc.length > 15) {
+        while (estimateTokens(sceneLines.join('\n')) > effectiveMaxSceneTokens && curLoc.length > 15) {
             curLoc = curLoc.slice(0, Math.floor(curLoc.length * 0.75)).trim() + '...';
             sceneLines = assembleSceneLines(curLoc, curTime, curAct, curTen, curUnres, curChars);
         }
 
-        if (estimateTokens(sceneLines.join('\n')) > maxSceneTokens && curChars && curChars.length > 3) {
+        if (estimateTokens(sceneLines.join('\n')) > effectiveMaxSceneTokens && curChars && curChars.length > 3) {
             curChars = curChars.slice(0, 3);
             sceneLines = assembleSceneLines(curLoc, curTime, curAct, curTen, curUnres, curChars);
         }
 
-        // 阶段 5：硬性截断兜底 (保证估算绝对不超过 maxSceneTokens)
-        while (estimateTokens(sceneLines.join('\n')) > maxSceneTokens && sceneLines.length > 1) {
+        // 阶段 5：硬性截断兜底 (保证估算绝对不超过 effectiveMaxSceneTokens)
+        while (estimateTokens(sceneLines.join('\n')) > effectiveMaxSceneTokens && sceneLines.length > 1) {
             sceneLines.pop();
         }
     }
 
-    // 3. 计算剩余记忆预算 (扣减 L0 实际消耗与模板固定开销)
+    // 3. 计算剩余记忆预算 (扣减 L0 实际消耗与模板全开销)
     const sceneTokenCost = sceneLines.length > 0 ? estimateTokens(sceneLines.join('\n')) : 0;
-    let remainingTokens = Math.max(0, maxTotalTokens - sceneTokenCost - (sceneLines.length > 0 ? TEMPLATE_OVERHEAD_TOKENS : 0));
+    let remainingTokens = Math.max(0, maxAvailableForContent - sceneTokenCost);
 
     // 4. 扫描近期对话上下文以进行触发词匹配打分
     const recentChat = Array.isArray(c.chat) ? c.chat.slice(-5) : [];
     const scanCorpus = recentChat.map(m => m.mes || '').join('\n').toLowerCase();
+
+    // P1-01 核心修复：确定当前生成请求的接收主体 (Generating Entity / POV)
+    const generatingEntity = getGeneratingEntity(c);
 
     const pinnedCandidates = [];
     const triggeredCandidates = [];
@@ -171,31 +225,48 @@ export function buildAndInjectMemoryPrompt() {
             continue;
         }
 
+        let extraWarning = '';
+
         if (scope === MEMORY_SCOPE.CHARACTER) {
-            // P0 Fail-Closed: 角色私密记忆必须具备明确归属，且该角色必须当前在场；缺角色或不在场一律不注入
-            if (!mem.character || !inScene.includes(mem.character)) {
+            // P1-01 修复：角色私密记忆仅允许路由给该角色自身生成的上下文！
+            // 若当前生成主体无法确定（如旁白/未知），或当前生成角色并非记忆归属者，一律严格拒绝注入！
+            if (!generatingEntity || mem.character !== generatingEntity) {
+                continue;
+            }
+            // 现场物理在场核验：该角色当下必须在场
+            if (!inScene.includes(generatingEntity)) {
                 continue;
             }
         } else if (scope === MEMORY_SCOPE.SHARED) {
-            // P1 Fail-Closed: 现场共知必须具备明确知情者集合
             const knownList = Array.isArray(mem.known_by) && mem.known_by.length > 0
                 ? mem.known_by
                 : (mem.character ? [mem.character] : []);
 
             if (knownList.length === 0) {
-                // 没有任何知情者信息的共享记忆绝不作为公共常识注入，执行休眠
+                continue; // 缺知情者信息，进入休眠
+            }
+
+            // P1-01 修复：当前生成角色必须本身在知情者列表 (known_by) 中！
+            // 严禁因为现场“存在一个知情者”而将秘密注入其他不知情角色的生成上下文！
+            if (!generatingEntity || !knownList.includes(generatingEntity)) {
                 continue;
             }
 
-            const hasWitnessInScene = knownList.some(k => inScene.includes(k));
-            if (!hasWitnessInScene) {
-                continue; // 现场没有任何知情角色，进入休眠
+            // 现场物理在场核验：知情角色当下必须在场
+            if (!inScene.includes(generatingEntity)) {
+                continue;
+            }
+
+            // 机密边界强化：若现场存在不知情角色，添加保密提示，防止当前角色失言穿帮
+            const outsidersInScene = inScene.filter(k => k && k !== c.name1 && !knownList.includes(k));
+            if (outsidersInScene.length > 0) {
+                extraWarning = ` [保密提示: 现场存在不知情者 ${outsidersInScene.join(', ')}，当前角色切勿透露此秘密]`;
             }
         }
-        // scope === MEMORY_SCOPE.WORLD: 世界公共常识，不受在场角色限制
+        // scope === MEMORY_SCOPE.WORLD: 世界公共常识，允许任何角色接收
 
         const prefix = getMemoryPrefix(mem);
-        const formattedLine = `- [${prefix}] ${mem.content}`;
+        const formattedLine = `- [${prefix}] ${mem.content}${extraWarning}`;
         const itemTokens = estimateTokens(formattedLine);
 
         // 常驻项 (Pinned)
@@ -277,24 +348,7 @@ export function buildAndInjectMemoryPrompt() {
     if (memLines.length > 0) promptParts.push(...memLines);
 
     if (settings.mode === 'sync') {
-        promptParts.push(
-            '',
-            '[伴随记忆与情境更新协议 (Sync Protocol)]',
-            '若本轮对话产生了新的地点环境变更、关键动作进展、约定承诺或重要事实，请在回复文本的最末尾（必须独占一行）附带隐藏的状态更新标签：',
-            '<!--PERSISTENT_MEMORY',
-            '{',
-            '  "scene": { "location": "当前地点", "time": "时段/天气", "action": "正在进行的动作", "tension": "心理氛围", "unresolved": "即时冲突焦点", "in_scene_characters": ["在场角色1", "在场角色2"] },',
-            '  "new_memories": [',
-            '    { "content": "客观事实描述", "type": "fact|statement|inference|todo", "scope": "world|shared|character", "character": null, "known_by": ["知情角色名"], "trigger_keys": ["触发词1", "触发词2"] }',
-            '  ],',
-            '  "lifecycle_updates": [',
-            '    { "id": "已履约或已推翻旧记忆的ID", "lifecycle": "completed|superseded|refuted" }',
-            '  ],',
-            '  "summary": "本次更新一句话摘要"',
-            '}',
-            '-->',
-            '（若无新事实发生，则无需附带任何标签，直接正常回复即可。前端会自动截获隐藏此标签，用户界面完全不可见。）'
-        );
+        promptParts.push(SYNC_PROTOCOL_TEXT);
     }
     promptParts.push('──────────────────────────────────────────');
 

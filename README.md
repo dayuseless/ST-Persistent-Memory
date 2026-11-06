@@ -1,17 +1,17 @@
 # SillyTavern 持续记忆插件 (ST-Persistent-Memory)
 
-[![Version](https://img.shields.io/badge/version-v0.1.7-blue.svg)](https://github.com/dayuseless/ST-Persistent-Memory)
+[![Version](https://img.shields.io/badge/version-v0.1.8-blue.svg)](https://github.com/dayuseless/ST-Persistent-Memory)
 [![SillyTavern](https://img.shields.io/badge/SillyTavern-1.12.0+-purple.svg)](https://github.com/SillyTavern/SillyTavern)
 [![License](https://img.shields.io/badge/license-MIT-green.svg)](LICENSE)
 
-> **定位**：SillyTavern Persistent Memory 是一套专为长文本角色扮演 (RP) 设计的持续性情境与记忆扩展系统。通过维护**现场即时快照 (L0 Scene State)**、**事实分级认知流 (L1/L2 Active Memories)** 与**多角色在场权限状态机**，确保 AI 在有限上下文窗口内始终牢记当下发生了什么、角色真正知晓什么，彻底告别失忆与逻辑穿帮。
+> **定位**：SillyTavern Persistent Memory 是一套专为长文本角色扮演 (RP) 设计的持续性情境与记忆扩展系统。通过维护**现场即时快照 (L0 Scene State)**、**事实分级认知流 (L1/L2 Active Memories)** 与**多角色在场权限状态机**，确保 AI 在有限上下文窗口内始终牢记当下发生了什么、角色真正知晓什么，显著增强长程对话的情境连贯性，有效抑制跨轮失忆与身份逻辑穿帮。
 
 ---
 
 ## 🌟 核心特性与亮点
 
 ### 1. 现场快照 (L0 Scene State)
-- **拒绝大而全的空洞摘要**：区别于传统“剧情总结”，L0 聚焦当前物理现场：**角色在哪里、在做什么、心理张力如何、现场遗留什么未决悬念、谁在场**。
+- **拒绝大而全的空洞摘要**：区别于传统“剧情总结”，L0 聚焦当前物理现场：**角色在哪里、处于何时/何种天气、在做什么、心理张力如何、现场遗留什么未决悬念、谁在场**。
 - **独立硬预算上限保护**：L0 享受专属启发式 Token 硬上限（默认 ~150 tok），即使剧情再复杂也绝不撑爆上下文。
 - **精准清空语义**：散伙离场或动作结束时自动清空，绝不留存旧动作幽灵。
 
@@ -23,27 +23,29 @@
   - `todo`（即时待办）：未竟之约或即时行动目标。
 - **防幻觉纪律**：空白代表角色确实未知，严禁模型为了情节顺畅而脑补未经证实的过去或动机。
 
-### 3. 知情范围隔离与权限防穿透 (Presence Routing & Scope)
+### 3. 知情范围隔离与接收者权限路由 (Presence & Recipient Routing)
 - **多角色权限分流**：
   - 🌐 `world`（公共世界常识）：全员通用。
-  - 👥 `shared`（现场经历共知）：必须携带明确的 `known_by` 知情角色列表；不在场且不知情的角色无法获取。
-  - 👤 `character`（角色私密经历）：只有该角色在场时才会激活注入，离场自动静默休眠，**0 Token 占用，彻底防止群聊偷窥私密记忆**。
-- **Fail-Closed 闭环保护**：缺失归属或知情者的非法共享条目直接拦截入库，杜绝权限越权泄露。
+  - 👥 `shared`（现场经历共知）：基于当前生成主体 (POV) 严格验证其是否在 `known_by` 知情列表中；若现场存在其他不知情者，自动附加保密约束标记。
+  - 👤 `character`（角色私密经历）：基于生成目标主体严格路由，仅允许该角色本人生成时注入，离场或无关角色生成时自动静默休眠，不占额外 Token，严格防止群聊无关角色获悉私密记忆。
+- **Fail-Closed 闭环保护**：生成主体无法确定时保守拒绝注入私密/共享记忆；缺失归属或知情者的非法条目直接拒绝入库。
 
 ### 4. 双模式提炼架构 (Dual Extraction Modes)
 - ⚡ **异步后台独立提炼 (Async Mode)**：
   - 支持**通用 OpenAI 兼容接口**（包含 OpenAI 官方、DeepSeek、Claude 代理中转、通义千问、硅基流动、本地 Ollama / LM Studio / vLLM 等）。
   - 独立专属端点发起单轮自包含提取请求，**彻底隔绝主会话上下文与思维链丢失问题 (彻底解决 DeepSeek `400 Bad Request: reasoning_content must be passed` 报错)**。
+  - 具备 **45 秒 AbortController 超时保护**，避免网络挂死锁定提炼通道。
   - **一键同步酒馆主 API**：点击按钮即可自动提取酒馆主界面配置的 Endpoint URL、Key 与模型名称，免去重复配置烦恼。
 - 🏷️ **伴随标签模式 (Sync Tag Mode)**：
   - 在主回复末尾附加隐藏状态标签 `<!--PERSISTENT_MEMORY: ... -->`，由前端无感截获入库并从消息正文中剥离。
-  - **零额外 API 调用与请求消耗**，适合 API 额度紧张或不支持多并发连接的环境。
+  - **零额外 API 调用与请求消耗**，适合 API 额度紧张或不支持多并发连接的环境；异常标签自动保留并提供 HUD 错误排查面板。
 
 ### 5. 三重 UI 入口与清爽现代交互
 - 📱 **屏幕快捷悬浮球**：右下角极简白底脑形气泡，支持触控拖拽、双端独立坐标记忆。
 - 🧩 **顶部扩展快捷菜单**：深度融入酒馆顶部工具栏扩展下拉菜单（拼图/魔棒），随时一键唤起。
 - ⚙️ **原生扩展设置抽屉 & 侧边 HUD 控制台**：
   - 记忆流管理：支持常驻置顶 (Pinned)、动态触发 (Triggered)、归档 (Archived) 一键切换。
+  - 四维类型轮转：事实、约定、推断、待办一键点击更迭。
   - 即时现场快照修改器：随手手填或纠偏现场地点与角色。
   - 状态与生命周期显式流转：已履约 (`completed`)、已迭代 (`superseded`)、已证伪 (`refuted`) 实时徽标展示。
 
@@ -63,7 +65,7 @@
 
 ### 方式二：手动离线包安装
 
-1. 从 [Releases 页面](https://github.com/dayuseless/ST-Persistent-Memory/releases) 下载 `ST-Persistent-Memory-v0.1.6.zip`。
+1. 从 [Releases 页面](https://github.com/dayuseless/ST-Persistent-Memory/releases) 下载 `ST-Persistent-Memory-v0.1.8.zip`。
 2. 解压到 SillyTavern 的扩展目录中：
    ```text
    SillyTavern/public/scripts/extensions/third-party/ST-Persistent-Memory/
@@ -144,6 +146,18 @@ window.__persistentMemory.digestNow();
 ---
 
 ## 📝 版本历史
+
+### v0.1.8 (架构边界与安全加固)
+- **P1-01 角色级接收者权限隔离 (POV-based Routing)**：重构知情范围过滤机制，基于当前实际生成对象 (POV) 进行记忆权限路由。私密记忆仅允许路由给该角色生成的提示词；共享记忆严格要求当前生成角色必须在 `known_by` 知情列表中；现场存在不知情角色时自动附加保密约束标记；生成主体无法确定时执行 Fail-Closed 仅注入公共常识。
+- **P1-02 真正原子回滚事务**：重构 `batchUpdate`，在执行前创建内存状态完整深拷贝快照，执行过程中发生任何未捕获异常均完整回滚内存状态，杜绝局部脏数据落盘。
+- **P1-03 提权注入防线 (Scope Escalation Guard)**：禁止模型通过输出 `world` 擅自扩大私有或共享条目的知情范围；相似已有条目禁止单方面提升权限；限制单条记忆最大长度 (150 字)。
+- **P1-04 API Key 脱敏存储**：剥离 `localStorage` 备份中的明文 API Key，回写安全过滤，确保密钥仅在安全环境中受控持有。
+- **P2-01 L0 时间维度补齐**：将 `scene.time`（时段/天气）纳入快照判定，修复仅有时间信息时快照被判定为空的缺陷。
+- **P2-02 真实 Token 预算全开销扣除**：扩展 CJK 字符估算支持韩文音节与字母 (Hangul)；将伴随协议 (Sync Protocol) 与模板固定开销全量纳入总 Token 预算先期扣减。
+- **P2-03 提炼请求超时保护**：异步提炼与连通性测试引入 `AbortController` 45 秒 / 15 秒硬超时保护，网络挂起时自动释放并发任务锁。
+- **P2-04 会话切片输入预算上限**：提炼历史消息引入单条 1000 字符安全压缩与 3500 字符总上限，逆序保留最新完整轮次，杜绝机械腰斩与超额 API 费用。
+- **P2-05 伴生标签异常留存**：伴生标签解析或验证失败不再静默丢弃，错误原因与原始片段存入状态并在 HUD 控制台呈现。
+- **P2-06 旧版本记忆平滑迁移**：无知情范围旧单聊记忆自动对齐为参与者共享并输出统计报告，杜绝历史记忆静默休眠。
 
 ### v0.1.7
 - **手动录入类型支持**：在 HUD 控制台手动新增条目面板中，新增记忆类型选择器（📌 客观事实 `fact` / 💬 言行约定 `statement` / 🧠 主观推断 `inference` / 📝 即时待办 `todo`），彻底打破原先手动添加只能默认为 `fact` 的限制。
