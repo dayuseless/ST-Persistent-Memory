@@ -521,9 +521,31 @@ export async function triggerAsyncDigest(force = false) {
 
         const currentScene = JSON.stringify(state.scene, null, 2);
 
+        // P1 核心加固：私有记忆与数据边界过滤 (严禁将不在场无关角色的私密条目发送至提炼请求)
+        const activeChars = new Set([
+            ...(Array.isArray(state.scene.in_scene_characters) ? state.scene.in_scene_characters : []),
+            ...recentSlice.map(m => m.is_user ? (c.name1 || 'User') : (m.name || 'AI')).filter(Boolean),
+            c.name1,
+            c.name2
+        ].filter(Boolean));
+
         // 列出当前活跃记忆供模型去重与生命周期联动 (最多 10 条，且单条内容截断至 90 字符，控制 Prompt 开销)
         const activeMemList = (state.memories || [])
-            .filter(m => m.lifecycle === MEMORY_LIFECYCLE.ACTIVE)
+            .filter(m => {
+                if (m.lifecycle !== MEMORY_LIFECYCLE.ACTIVE) return false;
+                // 世界公共常识允许作为去重基准
+                if (m.scope === MEMORY_SCOPE.WORLD) return true;
+                // 角色私密记忆：该角色必须在当前活跃对话或在场名单中，无关角色的私密秘密绝不上送外部 API
+                if (m.scope === MEMORY_SCOPE.CHARACTER) {
+                    return m.character && activeChars.has(m.character);
+                }
+                // 共享记忆：在场或近期发话者中至少有一人知情
+                if (m.scope === MEMORY_SCOPE.SHARED) {
+                    const knownList = Array.isArray(m.known_by) ? m.known_by : (m.character ? [m.character] : []);
+                    return knownList.some(k => activeChars.has(k));
+                }
+                return false;
+            })
             .slice(-10)
             .map(m => `(ID: ${m.id}) [${m.type}] [归属:${m.character || '公共'}] [范围:${m.scope}] ${String(m.content || '').slice(0, 90)}`)
             .join('\n') || '（暂无活跃记忆）';

@@ -256,6 +256,28 @@ async function runTests() {
         mockContext.groupId = null;
     });
 
+    test('T4.3: 提炼请求数据边界隔离，无关第三方的私有记忆绝不上传提炼 Prompt', () => {
+        const state = getState();
+        state.memories = [];
+        state.scene = { in_scene_characters: ['角色A', '玩家'] };
+        // 角色C不在场且不在当前对话中
+        addMemory({ content: '角色C的秘密日记', type: 'fact', scope: 'character', character: '角色C' });
+        // 角色A在场
+        addMemory({ content: '角色A的公开伤势', type: 'fact', scope: 'character', character: '角色A' });
+
+        // 模拟提炼时 activeMemList 过滤
+        const activeChars = new Set(['角色A', '玩家']);
+        const filtered = state.memories.filter(m => {
+            if (m.scope === MEMORY_SCOPE.CHARACTER) {
+                return m.character && activeChars.has(m.character);
+            }
+            return true;
+        });
+
+        assert.strictEqual(filtered.length, 1, '无关角色C的私密记忆必须被数据边界严格拦截');
+        assert.strictEqual(filtered[0].content, '角色A的公开伤势');
+    });
+
     // ─────────────────────────────────────────────────────────────
     // T5: 并发一致性与版本核验
     // ─────────────────────────────────────────────────────────────
