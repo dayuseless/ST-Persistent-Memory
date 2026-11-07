@@ -13,6 +13,10 @@ let currentTab = 'memories'; // 'memories' | 'scene' | 'settings'
 let memoryFilter = 'active'; // 'active' | 'archived' | 'all'
 let lorebookFilter = '';    // '' (全部) | '__unlinked__' (未关联) | '<entry_name>'
 
+function getContext() {
+    return window.SillyTavern?.getContext?.() ?? null;
+}
+
 function escapeHtml(str) {
     if (!str || typeof str !== 'string') return '';
     return str
@@ -585,7 +589,10 @@ function renderNativeDrawerContent() {
  * 3. 创建主抽屉 HUD 控制台 DOM (带导航 Tab)
  */
 function createPanelDOM() {
-    if (document.getElementById('pm-drawer-panel')) return;
+    if (document.getElementById('pm-drawer-panel')) {
+        panelEl = document.getElementById('pm-drawer-panel');
+        return;
+    }
 
     panelEl = document.createElement('div');
     panelEl.id = 'pm-drawer-panel';
@@ -685,10 +692,12 @@ function renderPanelContent() {
     const body = document.getElementById('pm-panel-body');
     if (!body) return;
 
-    const state = getState();
-    const settings = getSettings();
-    const scene = state.scene || {};
-    const memories = state.memories || [];
+    try {
+        const c = getContext();
+        const state = getState();
+        const settings = getSettings();
+        const scene = state.scene || {};
+        const memories = state.memories || [];
 
     // 更新顶部 Header 状态胶囊
     const badgesEl = document.getElementById('pm-header-badges');
@@ -1240,6 +1249,10 @@ function renderPanelContent() {
 
     body.innerHTML = tabHtml;
     bindPanelEvents(body);
+    } catch (err) {
+        console.error(`[${MODULE_NAME}] [UI] 渲染控制台失败:`, err);
+        body.innerHTML = `<div class="pm-section-card" style="color: #dc2626;"><i class="fa-solid fa-triangle-exclamation"></i> 渲染控制台发生异常: ${escapeHtml(err.message)}</div>`;
+    }
 }
 
 /**
