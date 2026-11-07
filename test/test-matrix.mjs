@@ -66,6 +66,9 @@ import {
     saveSettingsImmediately,
     updateScene,
     addMemory,
+    updateMemory,
+    exportMemoryData,
+    importMemoryData,
     setMemoryLifecycle,
     batchUpdate,
     saveCurrentState
@@ -586,6 +589,69 @@ async function runTests() {
             assert.strictEqual(state.memories[0].id, 'valid_mem');
             assert.strictEqual(state.memories[0].content, '正常完好的记忆');
         });
+    });
+
+    // ─────────────────────────────────────────────────────────────
+    // T21: updateMemory 规范化更新与行内编辑保护
+    // ─────────────────────────────────────────────────────────────
+    test('T21: updateMemory 规范化更新内容与触发词，强制限制150字符与类型校验', () => {
+        const state = getState();
+        state.memories = [];
+        const mem = addMemory({ content: '原始记忆内容', type: 'statement', scope: 'world' });
+        assert(mem);
+
+        // 1. 超长文本截断至 150 字符
+        const superLongText = 'A'.repeat(300);
+        const updated = updateMemory(mem.id, {
+            content: superLongText,
+            trigger_keys: [' 关键词1 ', '  ', '关键词2']
+        });
+        assert.strictEqual(updated.content.length, 150);
+        assert.deepStrictEqual(updated.trigger_keys, ['关键词1', '关键词2']);
+
+        // 2. 空白内容拒绝覆盖原内容
+        updateMemory(mem.id, { content: '   ' });
+        const check1 = state.memories.find(m => m.id === mem.id);
+        assert.strictEqual(check1.content.length, 150, '空白内容不应覆盖有效内容');
+
+        // 3. 非法类型更新被拒绝
+        updateMemory(mem.id, { type: 'invalid_type_xss' });
+        const check2 = state.memories.find(m => m.id === mem.id);
+        assert.strictEqual(check2.type, 'statement', '非法类型不得修改原类型');
+    });
+
+    // ─────────────────────────────────────────────────────────────
+    // T22: 记忆数据导出结构完备性与导入智能去重合并
+    // ─────────────────────────────────────────────────────────────
+    test('T22: exportMemoryData 结构完备性与 importMemoryData 去重合并不受脏数据污染', () => {
+        const state = getState();
+        state.memories = [];
+        state.scene = { location: '神殿大厅', in_scene_characters: ['角色A'] };
+        addMemory({ content: '神殿深处的誓言', type: 'statement', scope: 'character', character: '角色A' });
+
+        // 导出
+        const exported = exportMemoryData();
+        assert.strictEqual(exported.plugin, MODULE_NAME);
+        assert.strictEqual(exported.memories.length, 1);
+        assert.strictEqual(exported.scene.location, '神殿大厅');
+
+        // 模拟外部导入包：包含重复项、全新项、损坏项
+        const externalData = {
+            scene: { time: '黄昏' },
+            memories: [
+                null,
+                {}, // 空损坏
+                { content: '神殿深处的誓言', type: 'statement' }, // 完全相同内容 (去重)
+                { id: 'ext_mem_1', content: '藏在壁画后的地图', type: 'fact', scope: 'shared', known_by: ['角色A', '角色B'] }
+            ]
+        };
+
+        const res = importMemoryData(externalData, 'merge');
+        assert.strictEqual(res.success, true);
+        assert.strictEqual(res.count, 1, '重复项与损坏项跳过，仅导入1条全新有效记忆');
+        assert.strictEqual(state.memories.length, 2, '当前总记忆数应为 2');
+        assert.strictEqual(state.memories[1].content, '藏在壁画后的地图');
+        assert.strictEqual(state.memories[1].scope, 'shared');
     });
 
     console.log(`\n======================================================`);

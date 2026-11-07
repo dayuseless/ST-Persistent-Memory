@@ -1,9 +1,9 @@
 /**
- * 记忆状态管理器 (v0.1.10)
- * 严格落实 state_revision 状态修订号、L0 三态 PATCH 语义、真正原子回滚事务、严格知情集合隔离与健壮防御迁移
+ * 记忆状态管理器 (v0.1.11)
+ * 严格落实 state_revision 状态修订号、L0 三态 PATCH 语义、真正原子回滚事务、严格知情集合隔离、行内编辑与导入导出
  */
 
-import { MODULE_NAME, DEFAULT_SETTINGS, DEFAULT_STATE, MEMORY_STATUS, MEMORY_LIFECYCLE, MEMORY_TYPES, MEMORY_SCOPE } from './config.js';
+import { MODULE_NAME, EXTENSION_VERSION, DEFAULT_SETTINGS, DEFAULT_STATE, MEMORY_STATUS, MEMORY_LIFECYCLE, MEMORY_TYPES, MEMORY_SCOPE } from './config.js';
 
 let stateCache = null;
 const stateChangeListeners = new Set();
@@ -650,16 +650,164 @@ export function addMemory(item) {
 }
 
 export function updateMemory(id, patch) {
+    if (!patch || typeof patch !== 'object') return null;
     const s = getState();
     const idx = s.memories.findIndex(m => m.id === id);
-    if (idx !== -1) {
-        s.memories[idx] = {
-            ...s.memories[idx],
-            ...patch,
-            updated_at: new Date().toISOString()
-        };
-        saveCurrentState();
+    if (idx === -1) return null;
+
+    const current = s.memories[idx];
+    const updated = { ...current };
+
+    if (typeof patch.content === 'string') {
+        const trimmed = patch.content.trim().slice(0, 150);
+        if (trimmed) {
+            updated.content = trimmed;
+        }
     }
+
+    if (Array.isArray(patch.trigger_keys)) {
+        updated.trigger_keys = patch.trigger_keys
+            .filter(k => typeof k === 'string' && k.trim())
+            .map(k => k.trim());
+    }
+
+    if (patch.type) {
+        const VALID_TYPES = new Set(Object.values(MEMORY_TYPES));
+        if (VALID_TYPES.has(patch.type)) {
+            updated.type = patch.type;
+        }
+    }
+
+    if (patch.status) {
+        const VALID_STATUSES = new Set(Object.values(MEMORY_STATUS));
+        if (VALID_STATUSES.has(patch.status)) {
+            updated.status = patch.status;
+        }
+    }
+
+    if (patch.lifecycle) {
+        const VALID_LIFECYCLES = new Set(Object.values(MEMORY_LIFECYCLE));
+        if (VALID_LIFECYCLES.has(patch.lifecycle)) {
+            updated.lifecycle = patch.lifecycle;
+        }
+    }
+
+    updated.updated_at = new Date().toISOString();
+    s.memories[idx] = updated;
+    saveCurrentState();
+    return updated;
+}
+
+/**
+ * 导出记忆与现场数据对象 (供备份与跨会话迁移)
+ */
+export function exportMemoryData() {
+    const s = getState();
+    const c = getContext();
+    return {
+        plugin: MODULE_NAME,
+        version: EXTENSION_VERSION,
+        exported_at: new Date().toISOString(),
+        character_name: c?.name2 || 'Character',
+        chat_id: c?.chatId || '',
+        scene: JSON.parse(JSON.stringify(s.scene || {})),
+        memories: JSON.parse(JSON.stringify(s.memories || []))
+    };
+}
+
+/**
+ * 导入并合并记忆数据
+ * 支持策略：'merge' (合并去重) | 'replace' (全量覆盖)
+ */
+export function importMemoryData(data, strategy = 'merge') {
+    if (!data || typeof data !== 'object') {
+        throw new Error('无效的导入数据：根对象不存在');
+    }
+    if (!Array.isArray(data.memories)) {
+        throw new Error('无效的导入数据：缺失 memories 列表');
+    }
+
+    const c = getContext();
+    const VALID_TYPES = new Set(Object.values(MEMORY_TYPES));
+    const VALID_SCOPES = new Set(Object.values(MEMORY_SCOPE));
+    const VALID_LIFECYCLES = new Set(Object.values(MEMORY_LIFECYCLE));
+    const VALID_STATUSES = new Set(Object.values(MEMORY_STATUS));
+
+    const sanitizeId = (id) => {
+        if (typeof id === 'string' && /^[a-zA-Z0-9_\-\.]+$/.test(id.trim())) {
+            return id.trim();
+        }
+        return 'mem-' + Date.now().toString(36) + '-' + Math.random().toString(36).substring(2, 6);
+    };
+
+    // 严格清洗与归一化导入条目
+    const validMemories = data.memories
+        .filter(m => m && typeof m === 'object' && typeof m.content === 'string' && m.content.trim().length > 0)
+        .map(m => {
+            const content = m.content.trim().slice(0, 150);
+            const type = VALID_TYPES.has(m.type) ? m.type : MEMORY_TYPES.FACT;
+            const scope = VALID_SCOPES.has(m.scope) ? m.scope : MEMORY_SCOPE.CHARACTER;
+            const lifecycle = VALID_LIFECYCLES.has(m.lifecycle) ? m.lifecycle : MEMORY_LIFECYCLE.ACTIVE;
+            const status = VALID_STATUSES.has(m.status) ? m.status : MEMORY_STATUS.TRIGGERED;
+            const character = typeof m.character === 'string' && m.character.trim() ? m.character.trim() : (c?.name2 || 'Character');
+            let knownBy = Array.isArray(m.known_by)
+                ? m.known_by.filter(k => typeof k === 'string' && k.trim()).map(k => k.trim())
+                : [character];
+            if (scope === MEMORY_SCOPE.WORLD) knownBy = [];
+            const triggerKeys = Array.isArray(m.trigger_keys)
+                ? m.trigger_keys.filter(k => typeof k === 'string' && k.trim()).map(k => k.trim())
+                : [];
+
+            return {
+                id: sanitizeId(m.id),
+                content,
+                type,
+                status,
+                lifecycle,
+                scope,
+                character,
+                known_by: knownBy,
+                trigger_keys: triggerKeys,
+                floor: Number(m.floor) || 0,
+                created_at: m.created_at || new Date().toISOString(),
+                updated_at: new Date().toISOString()
+            };
+        });
+
+    return batchUpdate(() => {
+        const s = getState();
+        let importedCount = 0;
+
+        if (strategy === 'replace') {
+            s.memories = validMemories;
+            importedCount = validMemories.length;
+            if (data.scene && typeof data.scene === 'object' && !Array.isArray(data.scene)) {
+                s.scene = { ...s.scene, ...data.scene };
+            }
+        } else {
+            // merge: 按内容与 ID 进行保守去重
+            const existingIds = new Set(s.memories.map(m => m.id));
+            const existingContents = new Set(s.memories.map(m => m.content.trim().toLowerCase()));
+
+            for (const item of validMemories) {
+                if (existingContents.has(item.content.trim().toLowerCase())) {
+                    continue; // 相同文本条目自动跳过
+                }
+                if (existingIds.has(item.id)) {
+                    item.id = 'mem-' + Date.now().toString(36) + '-' + Math.random().toString(36).substring(2, 6);
+                }
+                s.memories.push(item);
+                existingIds.add(item.id);
+                existingContents.add(item.content.trim().toLowerCase());
+                importedCount++;
+            }
+            if (data.scene && typeof data.scene === 'object' && (!s.scene.location || s.scene.location === '现场未知')) {
+                s.scene = { ...s.scene, ...data.scene };
+            }
+        }
+
+        return { success: true, count: importedCount, total: s.memories.length };
+    });
 }
 
 export function deleteMemory(id) {

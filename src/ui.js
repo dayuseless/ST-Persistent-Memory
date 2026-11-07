@@ -1,10 +1,10 @@
 /**
- * UI 管理器 (v0.1.10)：原生扩展抽屉集成、屏幕快捷悬浮按钮（支持自由拖拽与持久化）与 HUD 侧边控制台
- * 全面升级：选项卡式现代工业风界面、大号高对比度数字显示、独立 API 完整配置与连通性测试
+ * UI 管理器 (v0.1.11)：原生扩展抽屉集成、屏幕快捷悬浮按钮（支持自由拖拽与持久化）与 HUD 侧边控制台
+ * 全面升级：行内即时编辑、记忆数据独立导出/导入迁移、大号高对比度数字显示、独立 API 完整配置
  */
 
 import { MODULE_NAME, MEMORY_STATUS, MEMORY_LIFECYCLE, MEMORY_SCOPE } from './config.js';
-import { getState, getSettings, updateSettings, saveSettingsImmediately, updateScene, addMemory, deleteMemory, cycleMemoryStatus, cycleMemoryType, onStateChange } from './state.js';
+import { getState, getSettings, updateSettings, saveSettingsImmediately, updateScene, addMemory, updateMemory, deleteMemory, cycleMemoryStatus, cycleMemoryType, exportMemoryData, importMemoryData, onStateChange } from './state.js';
 import { triggerAsyncDigest, testCustomApiConnection } from './extractor.js';
 
 let panelEl = null;
@@ -1002,6 +1002,25 @@ function renderPanelContent() {
                         <i class="fa-solid fa-floppy-disk"></i> 保存并生效全部配置
                     </button>
                 </div>
+
+                <!-- 记忆数据备份与跨会话迁移 -->
+                <div class="pm-section-card pm-mt-12" style="background: #f8fafc; border: 1px solid #e2e8f0; border-radius: 8px; padding: 12px; margin-top: 14px;">
+                    <div style="font-weight: 600; font-size: 13px; color: #1e293b; margin-bottom: 4px; display: flex; align-items: center; gap: 6px;">
+                        <i class="fa-solid fa-file-export" style="color: #2563eb;"></i> 记忆数据备份与迁移
+                    </div>
+                    <div style="font-size: 12px; color: #64748b; margin-bottom: 10px; line-height: 1.4;">
+                        可将当前会话的现场快照与全部记忆库导出为标准 JSON 备份文件，或导入外部备份进行智能合并。
+                    </div>
+                    <div style="display: flex; gap: 8px; flex-wrap: wrap;">
+                        <button id="pm-export-memories-btn" class="pm-btn-secondary" style="cursor: pointer;">
+                            <i class="fa-solid fa-download"></i> 导出记忆数据 (JSON)
+                        </button>
+                        <button id="pm-import-memories-btn" class="pm-btn-secondary" style="cursor: pointer;">
+                            <i class="fa-solid fa-upload"></i> 导入/合并记忆 (JSON)
+                        </button>
+                        <input type="file" id="pm-import-file-input" accept=".json" style="display: none;">
+                    </div>
+                </div>
             </div>
         `;
     }
@@ -1074,11 +1093,21 @@ export function renderMemoryCard(mem) {
                 <span class="pm-scope-badge ${scopeClass}">${scopeLabel}</span>
                 ${lifecycleBadge}
                 <div class="pm-card-actions">
+                    <button class="pm-edit-btn" title="编辑记忆内容与触发词" data-action="edit"><i class="fa-solid fa-pen-to-square"></i></button>
                     <button class="pm-del-btn" title="删除此条记忆" data-action="delete"><i class="fa-solid fa-trash-can"></i></button>
                 </div>
             </div>
-            <div class="pm-card-content">${escapeHtml(mem.content)}</div>
-            ${keysHtml ? `<div class="pm-card-keys">${keysHtml}</div>` : ''}
+            <div class="pm-card-content" data-role="view-content">${escapeHtml(mem.content)}</div>
+            ${keysHtml ? `<div class="pm-card-keys" data-role="view-keys">${keysHtml}</div>` : ''}
+            <!-- 行内即时编辑表单 (默认隐藏) -->
+            <div class="pm-card-edit-box" data-role="edit-box" style="display: none; margin-top: 8px;">
+                <textarea class="pm-input pm-edit-content-input" rows="2" maxlength="150" placeholder="记忆正文 (上限150字)" style="width: 100%; box-sizing: border-box; font-size: 13px; margin-bottom: 6px; resize: vertical; line-height: 1.4;">${escapeHtml(mem.content)}</textarea>
+                <input type="text" class="pm-input pm-edit-keys-input" placeholder="触发关键词 (逗号分隔，如: 约定, 礼物)" value="${escapeHtml((mem.trigger_keys || []).join(', '))}" style="width: 100%; box-sizing: border-box; font-size: 12px; margin-bottom: 8px;">
+                <div style="display: flex; gap: 6px; justify-content: flex-end;">
+                    <button class="pm-btn-primary pm-edit-save-btn" data-action="save-edit" style="width: auto; padding: 4px 12px; font-size: 12px; background: #059669; border-color: #047857;"><i class="fa-solid fa-check"></i> 保存</button>
+                    <button class="pm-btn-secondary pm-edit-cancel-btn" data-action="cancel-edit" style="padding: 4px 10px; font-size: 12px;"><i class="fa-solid fa-xmark"></i> 取消</button>
+                </div>
+            </div>
         </div>
     `;
 }
@@ -1347,7 +1376,7 @@ function bindPanelEvents(container) {
         if (targetInput) targetInput.value = '';
     });
 
-    // 卡片动作 (点击切换状态 / 点击切换类型 / 删除)
+    // 卡片动作 (点击切换状态 / 点击切换类型 / 行内编辑 / 删除)
     container.querySelectorAll('.pm-card').forEach(card => {
         const id = card.getAttribute('data-id');
         card.querySelector('[data-action="cycle"]')?.addEventListener('click', () => {
@@ -1359,5 +1388,105 @@ function bindPanelEvents(container) {
         card.querySelector('[data-action="delete"]')?.addEventListener('click', () => {
             deleteMemory(id);
         });
+
+        // 行内编辑切换
+        const viewContent = card.querySelector('[data-role="view-content"]');
+        const viewKeys = card.querySelector('[data-role="view-keys"]');
+        const editBox = card.querySelector('[data-role="edit-box"]');
+        const editContentInput = card.querySelector('.pm-edit-content-input');
+        const editKeysInput = card.querySelector('.pm-edit-keys-input');
+
+        card.querySelector('[data-action="edit"]')?.addEventListener('click', () => {
+            if (editBox) {
+                const isEditing = editBox.style.display !== 'none';
+                if (isEditing) {
+                    editBox.style.display = 'none';
+                    if (viewContent) viewContent.style.display = 'block';
+                    if (viewKeys) viewKeys.style.display = 'block';
+                } else {
+                    editBox.style.display = 'block';
+                    if (viewContent) viewContent.style.display = 'none';
+                    if (viewKeys) viewKeys.style.display = 'none';
+                    editContentInput?.focus();
+                }
+            }
+        });
+
+        card.querySelector('[data-action="cancel-edit"]')?.addEventListener('click', () => {
+            if (editBox) {
+                editBox.style.display = 'none';
+                if (viewContent) viewContent.style.display = 'block';
+                if (viewKeys) viewKeys.style.display = 'block';
+            }
+        });
+
+        card.querySelector('[data-action="save-edit"]')?.addEventListener('click', () => {
+            const newContent = editContentInput?.value?.trim();
+            if (!newContent) {
+                window.toastr?.warning?.('记忆正文不可为空', '持续记忆');
+                return;
+            }
+            const rawKeys = editKeysInput?.value || '';
+            const newKeys = rawKeys.split(/[,，]/).map(k => k.trim()).filter(Boolean);
+
+            const updated = updateMemory(id, {
+                content: newContent,
+                trigger_keys: newKeys
+            });
+            if (updated) {
+                window.toastr?.success?.('记忆已成功修改！', '持续记忆');
+            }
+        });
+    });
+
+    // ─────────────────────────────────────────────────────────────────────────
+    // 记忆数据导出与导入 (JSON 备份与跨会话迁移)
+    // ─────────────────────────────────────────────────────────────────────────
+    container.querySelector('#pm-export-memories-btn')?.addEventListener('click', () => {
+        try {
+            const data = exportMemoryData();
+            const jsonStr = JSON.stringify(data, null, 2);
+            const blob = new Blob([jsonStr], { type: 'application/json' });
+            const url = URL.createObjectURL(blob);
+            const a = document.createElement('a');
+            const charName = data.character_name || 'Chat';
+            const safeName = charName.replace(/[^a-zA-Z0-9_\-\u4e00-\u9fa5]/g, '_');
+            const dateStr = new Date().toISOString().slice(0, 10);
+            a.href = url;
+            a.download = `ST-Memory-${safeName}-${dateStr}.json`;
+            document.body.appendChild(a);
+            a.click();
+            document.body.removeChild(a);
+            URL.revokeObjectURL(url);
+            window.toastr?.success?.(`已成功导出 ${data.memories.length} 条记忆数据！`, '持续记忆');
+        } catch (err) {
+            console.error('[st_persistent_memory] 导出记忆失败:', err);
+            window.toastr?.error?.('导出记忆失败: ' + err.message, '持续记忆');
+        }
+    });
+
+    const fileInput = container.querySelector('#pm-import-file-input');
+    container.querySelector('#pm-import-memories-btn')?.addEventListener('click', () => {
+        fileInput?.click();
+    });
+
+    fileInput?.addEventListener('change', (e) => {
+        const file = e.target.files?.[0];
+        if (!file) return;
+
+        const reader = new FileReader();
+        reader.onload = (event) => {
+            try {
+                const parsed = JSON.parse(event.target.result);
+                const res = importMemoryData(parsed, 'merge');
+                window.toastr?.success?.(`成功导入 ${res.count} 条新记忆 (当前总数: ${res.total})`, '持续记忆');
+            } catch (err) {
+                console.error('[st_persistent_memory] 导入记忆数据失败:', err);
+                window.toastr?.error?.('导入失败: ' + (err.message || '文件格式畸形'), '持续记忆');
+            } finally {
+                fileInput.value = '';
+            }
+        };
+        reader.readAsText(file);
     });
 }

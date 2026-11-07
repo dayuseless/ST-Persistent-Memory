@@ -1,6 +1,6 @@
 # SillyTavern 持续记忆插件 (ST-Persistent-Memory)
 
-[![Version](https://img.shields.io/badge/version-v0.1.10-blue.svg)](https://github.com/dayuseless/ST-Persistent-Memory)
+[![Version](https://img.shields.io/badge/version-v0.1.11-blue.svg)](https://github.com/dayuseless/ST-Persistent-Memory)
 [![SillyTavern](https://img.shields.io/badge/SillyTavern-1.12.0+-purple.svg)](https://github.com/SillyTavern/SillyTavern)
 [![License](https://img.shields.io/badge/license-MIT-green.svg)](LICENSE)
 
@@ -65,7 +65,7 @@
 
 ### 方式二：手动离线包安装
 
-1. 从 [Releases 页面](https://github.com/dayuseless/ST-Persistent-Memory/releases) 下载 `ST-Persistent-Memory-v0.1.10.zip`。
+1. 从 [Releases 页面](https://github.com/dayuseless/ST-Persistent-Memory/releases) 下载 `ST-Persistent-Memory-v0.1.11.zip`。
 2. 解压到 SillyTavern 的扩展目录中：
    ```text
    SillyTavern/public/scripts/extensions/third-party/ST-Persistent-Memory/
@@ -146,6 +146,12 @@ window.__persistentMemory.digestNow();
 ---
 
 ## 📝 版本历史
+
+### v0.1.11 (用户体验升级：卡片行内即时编辑与数据备份迁移)
+
+- **卡片原位即时编辑 (Inline Text & Keywords Editing)**：记忆卡片顶部新增编辑按钮（铅笔图标 ✏️），支持就地快速修改记忆正文与触发词，具备 150 字符安全限制与即时保存/取消能力，改错字更无需删库重加。
+- **记忆数据备份与跨会话迁移 (JSON Export & Import)**：在设置面板新增一键导出当前会话的现场快照与全部记忆库为标准 JSON 文件，并支持选择外部备份文件进行智能合并导入（自动跳过重复内容、重塑冲突 ID、校验清洗字段）。
+- **测试矩阵扩展至 22 项 (T1-T22 全绿)**：新增针对行内编辑规范化校验 (T21) 与数据导出/去重合并 (T22) 的自动化测试覆盖。
 
 ### v0.1.10 (ACL权限边界校验、XSS免疫、容错迁移与20项验证矩阵)
 

@@ -602,6 +602,23 @@
 
 .pm-card-actions {
     margin-left: auto;
+    display: flex;
+    align-items: center;
+    gap: 4px;
+}
+
+.pm-edit-btn {
+    background: transparent;
+    border: none;
+    color: #94a3b8;
+    cursor: pointer;
+    padding: 3px 5px;
+    font-size: 13px;
+    transition: color 0.15s;
+}
+
+.pm-edit-btn:hover {
+    color: #2563eb;
 }
 
 .pm-del-btn {
@@ -616,6 +633,28 @@
 
 .pm-del-btn:hover {
     color: #ef4444;
+}
+
+.pm-btn-secondary {
+    background: #f1f5f9;
+    color: #334155 !important;
+    border: 1px solid #cbd5e1;
+    padding: 6px 12px;
+    border-radius: 6px;
+    font-size: 12px;
+    font-weight: 500;
+    cursor: pointer;
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    gap: 6px;
+    transition: background 0.15s, border-color 0.15s, color 0.15s;
+}
+
+.pm-btn-secondary:hover {
+    background: #e2e8f0;
+    border-color: #94a3b8;
+    color: #0f172a !important;
 }
 
 /* ─────────────────────────────────────────────────────────────────────────────
