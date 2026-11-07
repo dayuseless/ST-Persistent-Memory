@@ -67,6 +67,7 @@ import {
     updateScene,
     addMemory,
     updateMemory,
+    purgeArchivedMemories,
     exportMemoryData,
     importMemoryData,
     setMemoryLifecycle,
@@ -85,7 +86,10 @@ import {
     validateExtractedPayload,
     extractAndApplySyncTag,
     filterMemoriesForDigest,
-    withTimeout
+    withTimeout,
+    buildConsolidationCandidateGroups,
+    validateConsolidatedPayload,
+    triggerMemoryConsolidation
 } from '../src/extractor.js';
 import { renderMemoryCard } from '../src/ui.js';
 
@@ -652,6 +656,131 @@ async function runTests() {
         assert.strictEqual(state.memories.length, 2, '当前总记忆数应为 2');
         assert.strictEqual(state.memories[1].content, '藏在壁画后的地图');
         assert.strictEqual(state.memories[1].scope, 'shared');
+    });
+
+    // ─────────────────────────────────────────────────────────────
+    // T23: 记忆长程归并分组隔离与常驻/终态保护 (P0 核心架构)
+    // ─────────────────────────────────────────────────────────────
+    test('T23: buildConsolidationCandidateGroups 严格基于权限边界隔离分组，拒绝跨越不同知情范围混同', () => {
+        const memories = [
+            { id: 'w1', content: '世界事件1', scope: 'world', lifecycle: 'active', status: 'triggered' },
+            { id: 'w2', content: '世界事件2', scope: 'world', lifecycle: 'active', status: 'triggered' },
+            { id: 'w3_comp', content: '已结项世界事件', scope: 'world', lifecycle: 'completed', status: 'archived' }, // 结项不参与
+            { id: 'ca1', content: '角色A私事1', scope: 'character', character: '角色A', lifecycle: 'active', status: 'triggered' },
+            { id: 'ca2', content: '角色A私事2', scope: 'character', character: '角色A', lifecycle: 'active', status: 'triggered' },
+            { id: 'ca_pinned', content: '角色A常驻锚点', scope: 'character', character: '角色A', lifecycle: 'active', status: 'pinned' }, // 常驻不参与
+            { id: 'cb1', content: '角色B独占事件', scope: 'character', character: '角色B', lifecycle: 'active', status: 'triggered' }, // 仅1条不满足>=2
+            { id: 'sh1', content: '共知事件1', scope: 'shared', known_by: ['角色A', '玩家'], lifecycle: 'active', status: 'triggered' },
+            { id: 'sh2', content: '共知事件2', scope: 'shared', known_by: ['玩家', '角色A'], lifecycle: 'active', status: 'triggered' }
+        ];
+
+        const groups = buildConsolidationCandidateGroups(memories);
+        assert.strictEqual(groups.length, 3, '应且仅应产生 3 个有效分组');
+
+        const worldGroup = groups.find(g => g.key === 'world');
+        assert(worldGroup);
+        assert.strictEqual(worldGroup.items.length, 2, '仅 active 且非 pinned 的两项纳入');
+
+        const charAGroup = groups.find(g => g.key === 'character:角色A');
+        assert(charAGroup);
+        assert.strictEqual(charAGroup.items.length, 2, '常驻项 ca_pinned 被排除');
+
+        const sharedGroup = groups.find(g => g.scope === 'shared');
+        assert(sharedGroup);
+        assert.strictEqual(sharedGroup.items.length, 2, '已知角色排序归一化后正确合并为同一分组');
+    });
+
+    // ─────────────────────────────────────────────────────────────
+    // T24: 模型归并输出的权限越权、跨组拼凑与 Schema 校验
+    // ─────────────────────────────────────────────────────────────
+    test('T24: validateConsolidatedPayload 拦截越权提权、跨组拼凑与未授权知情者，并保证 supersedes 准确性', () => {
+        const mems = [
+            { id: 'm1', content: '角色A在山谷迷路', scope: 'character', character: '角色A', lifecycle: 'active', status: 'triggered' },
+            { id: 'm2', content: '角色A采摘灵芝', scope: 'character', character: '角色A', lifecycle: 'active', status: 'triggered' },
+            { id: 'm3', content: '世界公告天气大雪', scope: 'world', lifecycle: 'active', status: 'triggered' }
+        ];
+
+        // 1. 尝试跨越不同权限记忆进行拼凑 (m1 私知 + m3 世界公共)
+        const badPayload1 = {
+            consolidated: [
+                {
+                    content: '角色A在大雪天采摘了灵芝',
+                    type: 'fact',
+                    scope: 'world',
+                    supersedes: ['m1', 'm3']
+                }
+            ]
+        };
+        const val1 = validateConsolidatedPayload(badPayload1, mems);
+        assert.strictEqual(val1, null, '跨知情范围拼凑必须被全量拦截');
+
+        // 2. 尝试借归并提权 (将私知 m1+m2 变造为 world)
+        const badPayload2 = {
+            consolidated: [
+                {
+                    content: '角色A不仅迷路还采了灵芝',
+                    type: 'fact',
+                    scope: 'world', // 越权提权
+                    supersedes: ['m1', 'm2']
+                }
+            ]
+        };
+        const val2 = validateConsolidatedPayload(badPayload2, mems);
+        assert.strictEqual(val2, null, '归并新记忆试图篡改原知情范围必须被拦截');
+
+        // 3. 尝试 supersedes 仅包含 1 条或不存在的 ID
+        const badPayload3 = {
+            consolidated: [
+                {
+                    content: '单条无需归并',
+                    type: 'fact',
+                    scope: 'character',
+                    supersedes: ['m1']
+                }
+            ]
+        };
+        const val3 = validateConsolidatedPayload(badPayload3, mems);
+        assert.strictEqual(val3, null, '单条记忆替代不能构成归并');
+
+        // 4. 正确合法归并
+        const goodPayload = {
+            consolidated: [
+                {
+                    content: '角色A在山谷迷路期间采获一株珍稀灵芝',
+                    type: 'fact',
+                    scope: 'character',
+                    character: '角色A',
+                    trigger_keys: ['灵芝', '山谷'],
+                    supersedes: ['m1', 'm2']
+                }
+            ]
+        };
+        const valGood = validateConsolidatedPayload(goodPayload, mems);
+        assert(valGood);
+        assert.strictEqual(valGood.consolidated.length, 1);
+        assert.strictEqual(valGood.consolidated[0].scope, 'character');
+        assert.strictEqual(valGood.consolidated[0].character, '角色A');
+        assert.deepStrictEqual(valGood.consolidated[0].supersedes, ['m1', 'm2']);
+    });
+
+    // ─────────────────────────────────────────────────────────────
+    // T25: 终态记忆归档箱垃圾回收 (Purge)
+    // ─────────────────────────────────────────────────────────────
+    test('T25: purgeArchivedMemories 仅清理 completed/superseded/refuted 终态条目，完好保留 active 与 pinned', () => {
+        const state = getState();
+        state.memories = [
+            { id: 'p1', content: '置顶关键事实', status: 'pinned', lifecycle: 'active' },
+            { id: 'act1', content: '当前活跃待办', status: 'triggered', lifecycle: 'active' },
+            { id: 'comp1', content: '已完成的约定', status: 'archived', lifecycle: 'completed' },
+            { id: 'sup1', content: '已被替代的历史细节', status: 'archived', lifecycle: 'superseded' },
+            { id: 'ref1', content: '已被推翻的猜想', status: 'archived', lifecycle: 'refuted' }
+        ];
+
+        const res = purgeArchivedMemories();
+        assert.strictEqual(res.success, true);
+        assert.strictEqual(res.removed, 3, '应清理 3 条终态记忆');
+        assert.strictEqual(res.remaining, 2, '剩余 2 条正常记忆');
+        assert.deepStrictEqual(state.memories.map(m => m.id), ['p1', 'act1'], '仅置顶与活跃记忆完好保留');
     });
 
     console.log(`\n======================================================`);

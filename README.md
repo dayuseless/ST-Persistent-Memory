@@ -1,6 +1,6 @@
 # SillyTavern 持续记忆插件 (ST-Persistent-Memory)
 
-[![Version](https://img.shields.io/badge/version-v0.1.11-blue.svg)](https://github.com/dayuseless/ST-Persistent-Memory)
+[![Version](https://img.shields.io/badge/version-v0.1.12-blue.svg)](https://github.com/dayuseless/ST-Persistent-Memory)
 [![SillyTavern](https://img.shields.io/badge/SillyTavern-1.12.0+-purple.svg)](https://github.com/SillyTavern/SillyTavern)
 [![License](https://img.shields.io/badge/license-MIT-green.svg)](LICENSE)
 
@@ -65,7 +65,7 @@
 
 ### 方式二：手动离线包安装
 
-1. 从 [Releases 页面](https://github.com/dayuseless/ST-Persistent-Memory/releases) 下载 `ST-Persistent-Memory-v0.1.11.zip`。
+1. 从 [Releases 页面](https://github.com/dayuseless/ST-Persistent-Memory/releases) 下载 `ST-Persistent-Memory-v0.1.12.zip`。
 2. 解压到 SillyTavern 的扩展目录中：
    ```text
    SillyTavern/public/scripts/extensions/third-party/ST-Persistent-Memory/
@@ -146,6 +146,14 @@ window.__persistentMemory.digestNow();
 ---
 
 ## 📝 版本历史
+
+### v0.1.12 (记忆周期演进：长程宏观归并、归档抽屉与终态垃圾回收)
+
+- **长程记忆高阶归并 (Memory Consolidation Engine)**：支持将多条阶段性、细节性历史事件一键/自动浓缩为一条宏观概括事实，被涵盖的旧记忆自动流转为 `superseded`（已被迭代）退出日常上下文注入，极大降低长文本 Token 占用。
+- **严格归并权限边界安全 (Consolidation ACL Invariants)**：强制基于知情范围与角色分组归并，严禁将私密记忆与公共常识混同，新归并事实强制继承源条目的权限边界，杜绝越权提权。
+- **记忆视图三态过滤 (All / Active / Archived)**：记忆列表支持按“活跃”、“归档/终态”、“全部”一键切换查看，不再被长历史拉垮界面。
+- **终态记忆垃圾回收 (Purge Terminal Memories)**：在归档视图提供一键彻底清理已履约 (`completed`)、已迭代 (`superseded`)、已证伪 (`refuted`) 终态历史的功能。
+- **测试矩阵扩展至 25 项 (T1-T25 全绿)**：新增归并候选分组隔离 (T23)、跨组提权拦截与 Schema 校验 (T24)、终态垃圾回收 (T25) 的自动化测试覆盖。
 
 ### v0.1.11 (用户体验升级：卡片行内即时编辑与数据备份迁移)
 

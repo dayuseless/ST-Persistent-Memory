@@ -1,6 +1,6 @@
 /**
- * 提炼引擎 (v0.1.10)
- * 严格落实：状态版本并发保护 (state_revision)、独立API/generateRaw自包含请求、严格拒绝型 Schema 验证、知情者权威名单白名单核验、显式生命周期流转、知情范围隔离与请求超时保护
+ * 提炼引擎 (v0.1.12)
+ * 严格落实：状态版本并发保护 (state_revision)、独立API/generateRaw自包含请求、严格拒绝型 Schema 验证、知情者权威名单白名单核验、显式生命周期流转、知情范围隔离与高阶宏观归并 (Consolidation)
  */
 
 import { MODULE_NAME, MEMORY_TYPES, MEMORY_STATUS, MEMORY_LIFECYCLE, MEMORY_SCOPE } from './config.js';
@@ -757,6 +757,16 @@ ${conversationText}
                 currentState.last_digest_error = null;
             });
             console.log(`[${MODULE_NAME}] [Async] 提炼原子提交落盘 (会话: ${startChatId}, rev.${currentState.state_revision}): ${currentState.last_digest_summary}`);
+
+            // 检查是否达到长程记忆归并阈值 (由后台异步触发，不阻塞当前响应)
+            if (settings.autoConsolidate !== false) {
+                setTimeout(() => {
+                    triggerMemoryConsolidation(false).catch(err => {
+                        console.error(`[${MODULE_NAME}] [Auto-Consolidate] 自动归并异常:`, err);
+                    });
+                }, 1000);
+            }
+
             return { success: true, summary: currentState.last_digest_summary };
         } else {
             console.warn(`[${MODULE_NAME}] [Async] 提炼内容未通过数据完整性校验，已安全丢弃`);
@@ -848,4 +858,255 @@ function applyExtractedData(payload, floor = 0) {
 
         return parts.join(' | ');
     });
+}
+
+/**
+ * 筛选并构建可供宏观归并的记忆候选分组
+ * 约束：仅活跃、非常驻且处于同一权限边界（同一 scope、同一归属角色/知情者）的分组方可合并
+ */
+export function buildConsolidationCandidateGroups(memories) {
+    if (!Array.isArray(memories)) return [];
+
+    const activeList = memories.filter(m =>
+        m && m.lifecycle === MEMORY_LIFECYCLE.ACTIVE && m.status !== MEMORY_STATUS.PINNED
+    );
+
+    const groupMap = new Map();
+
+    for (const mem of activeList) {
+        let groupKey = '';
+        if (mem.scope === MEMORY_SCOPE.WORLD) {
+            groupKey = 'world';
+        } else if (mem.scope === MEMORY_SCOPE.CHARACTER) {
+            groupKey = `character:${mem.character || 'unknown'}`;
+        } else if (mem.scope === MEMORY_SCOPE.SHARED) {
+            const known = Array.isArray(mem.known_by) ? mem.known_by.slice().sort().join('|') : (mem.character || 'unknown');
+            groupKey = `shared:${known}`;
+        } else {
+            continue;
+        }
+
+        if (!groupMap.has(groupKey)) {
+            groupMap.set(groupKey, {
+                key: groupKey,
+                scope: mem.scope,
+                character: mem.character || '',
+                known_by: Array.isArray(mem.known_by) ? [...mem.known_by] : (mem.character ? [mem.character] : []),
+                items: []
+            });
+        }
+        groupMap.get(groupKey).items.push(mem);
+    }
+
+    // 仅保留候选数量 >= 2 的分组 (单条无归并必要)
+    return Array.from(groupMap.values()).filter(g => g.items.length >= 2);
+}
+
+/**
+ * 校验模型归并产出的 Schema 与权限边界 (Fail-Closed 拒绝越权与跨组拼凑)
+ */
+export function validateConsolidatedPayload(raw, currentMemories = [], allowedParticipants = null) {
+    if (!raw || typeof raw !== 'object' || !Array.isArray(raw.consolidated)) {
+        return null;
+    }
+
+    const memMap = new Map((Array.isArray(currentMemories) ? currentMemories : []).map(m => [m.id, m]));
+    const VALID_TYPES = new Set(Object.values(MEMORY_TYPES));
+    const VALID_SCOPES = new Set(Object.values(MEMORY_SCOPE));
+
+    const trustedParticipants = allowedParticipants instanceof Set
+        ? allowedParticipants
+        : (Array.isArray(allowedParticipants) ? new Set(allowedParticipants) : null);
+
+    const validConsolidated = [];
+
+    for (const item of raw.consolidated) {
+        if (!item || typeof item !== 'object') continue;
+        const content = typeof item.content === 'string' ? item.content.trim().slice(0, 100) : '';
+        if (!content) continue;
+
+        const type = VALID_TYPES.has(item.type) ? item.type : MEMORY_TYPES.FACT;
+        const supersedes = Array.isArray(item.supersedes)
+            ? Array.from(new Set(item.supersedes.filter(id => typeof id === 'string' && id.trim()).map(id => id.trim())))
+            : [];
+
+        // 归并必须替代至少 2 条既有记忆
+        if (supersedes.length < 2) {
+            console.warn(`[${MODULE_NAME}] [Consolidate 拦截] 条目 supersedes 少于 2 条记忆，拒绝归并`);
+            continue;
+        }
+
+        // 检查所有被替代的源条目是否存在且同属于一个权限分组
+        const sourceMems = supersedes.map(id => memMap.get(id)).filter(Boolean);
+        if (sourceMems.length !== supersedes.length) {
+            console.warn(`[${MODULE_NAME}] [Consolidate 拦截] supersedes 包含不存在的记忆 ID，拒绝归并`);
+            continue;
+        }
+
+        // 严禁归并已结项或常驻条目
+        const hasInvalidSource = sourceMems.some(m => m.lifecycle !== MEMORY_LIFECYCLE.ACTIVE || m.status === MEMORY_STATUS.PINNED);
+        if (hasInvalidSource) {
+            console.warn(`[${MODULE_NAME}] [Consolidate 拦截] 被替代记忆中包含非 active 或常驻条目，拒绝归并`);
+            continue;
+        }
+
+        // 核心权限边界不变式：源记忆必须全部具备完全相同的知情范围
+        const baseScope = sourceMems[0].scope;
+        const baseChar = sourceMems[0].character || '';
+        const baseKnown = Array.isArray(sourceMems[0].known_by) ? sourceMems[0].known_by.slice().sort().join('|') : '';
+
+        const scopeMismatch = sourceMems.some(m => {
+            const mKnown = Array.isArray(m.known_by) ? m.known_by.slice().sort().join('|') : '';
+            return m.scope !== baseScope || (m.character || '') !== baseChar || mKnown !== baseKnown;
+        });
+
+        if (scopeMismatch) {
+            console.warn(`[${MODULE_NAME}] [Consolidate 拦截] 严禁跨越不同权限/角色的记忆进行拼凑归并，拒绝入库`);
+            continue;
+        }
+
+        // 新条目必须继承源分组的 scope 与权限，严禁越权提权
+        const targetScope = VALID_SCOPES.has(item.scope) ? item.scope : baseScope;
+        if (targetScope !== baseScope) {
+            console.warn(`[${MODULE_NAME}] [Consolidate 拦截] 归并产生的新记忆试图修改知情范围 (${targetScope} != ${baseScope})，拒绝提权`);
+            continue;
+        }
+
+        let targetChar = baseChar;
+        let targetKnown = Array.isArray(sourceMems[0].known_by) ? [...sourceMems[0].known_by] : [];
+
+        // 验证参与者可信性
+        if (trustedParticipants && trustedParticipants.size > 0) {
+            if (targetScope === MEMORY_SCOPE.CHARACTER && targetChar && !trustedParticipants.has(targetChar)) {
+                continue;
+            }
+            if (targetScope === MEMORY_SCOPE.SHARED && targetKnown.some(k => !trustedParticipants.has(k))) {
+                continue;
+            }
+        }
+
+        validConsolidated.push({
+            content,
+            type,
+            scope: targetScope,
+            character: targetChar,
+            known_by: targetKnown,
+            trigger_keys: sanitizeTriggerKeys(item.trigger_keys),
+            supersedes: supersedes
+        });
+    }
+
+    return validConsolidated.length > 0 ? { consolidated: validConsolidated } : null;
+}
+
+let isConsolidating = false;
+
+/**
+ * 触发长程记忆高阶归并
+ */
+export async function triggerMemoryConsolidation(force = false) {
+    const c = getContext();
+    const settings = getSettings();
+    if (!c || !settings.enabled) return { success: false, reason: '插件未启用' };
+    if (isConsolidating) return { success: false, reason: '归并任务进行中' };
+
+    const state = getState();
+    const candidateGroups = buildConsolidationCandidateGroups(state.memories);
+    const totalCandidates = candidateGroups.reduce((acc, g) => acc + g.items.length, 0);
+
+    const threshold = Math.max(5, Number(settings.consolidateThreshold) || 20);
+    if (!force && totalCandidates < threshold) {
+        return { success: false, reason: `当前候选记忆 ${totalCandidates} 条未达归并阈值 (${threshold})` };
+    }
+
+    if (candidateGroups.length === 0) {
+        return { success: false, reason: '暂无可归并的记忆分组' };
+    }
+
+    isConsolidating = true;
+    console.log(`[${MODULE_NAME}] [Consolidate] 启动高阶记忆归并 (共 ${candidateGroups.length} 个候选分组, ${totalCandidates} 条候选细节)...`);
+
+    try {
+        let groupsPromptText = '';
+        candidateGroups.slice(0, 3).forEach((g, idx) => {
+            groupsPromptText += `\n【分组 ${idx + 1}】(知情范围: ${g.scope}, 关联角色: ${g.character || '公共'}, 知情者: ${g.known_by.join(', ') || '全员'})\n`;
+            g.items.slice(0, 6).forEach(m => {
+                groupsPromptText += `- (ID: ${m.id}) [${m.type}] ${m.content}\n`;
+            });
+        });
+
+        const prompt = `你是一个严谨的角色扮演剧情记忆长程归并专家。
+你的任务是将多条零散、细节性或已被新进展涵盖的历史事件，归纳浓缩为高阶、宏观的概括性长期事实记忆。
+
+### 核心归并守则：
+1. 【严格同组内归并】：只能在同一个【分组】内部归并记忆，绝不可跨越分组组合。新记忆必须保留该分组完全相同的 scope、character 与 known_by。
+2. 【宏观浓缩】：保留剧情关键因果与长期结果（如“双方在黑石林爆发激战并两败俱伤，最终撤回营地休整”），略去动作琐屑。每条归并事实必须在一句话内精炼表达（≤80字）。
+3. 【指明被替代条目 (supersedes)】：每条新归并必须在 supersedes 数组中明确列出被其涵盖替代的旧记忆 ID（至少 2 个旧 ID）。这些旧记忆将被标为 superseded (已被迭代)，从而退出日常提示词注入。
+4. 【无合适浓缩时输出空数组】：若某分组内条目各自独立、互不相关或无法概括，不要强行凑合，consolidated 输出空数组 []。
+
+待归并的记忆分组：
+${groupsPromptText}
+
+请直接输出且只输出一个合法的 JSON 纯文本对象（不要 markdown 标记，不要多余解释），格式如下：
+{
+  "consolidated": [
+    {
+      "content": "归纳后的一句话宏观事实（≤80字）",
+      "type": "fact",
+      "scope": "与原分组一致",
+      "character": "与原分组一致",
+      "known_by": ["与原分组一致"],
+      "trigger_keys": ["核心词1", "核心词2"],
+      "supersedes": ["旧ID1", "旧ID2"]
+    }
+  ]
+}`;
+
+        const response = await executeDigestRequest(c, prompt, settings);
+        if (!response) {
+            return { success: false, reason: '模型未返回有效归并结果' };
+        }
+
+        const raw = cleanAndParseJson(response);
+        const participants = getContextParticipants(c, state);
+        const validated = validateConsolidatedPayload(raw, state.memories, participants);
+
+        if (!validated || !Array.isArray(validated.consolidated) || validated.consolidated.length === 0) {
+            console.log(`[${MODULE_NAME}] [Consolidate] 经校验无可应用的高阶归并项 (情境各自独立或未通过安全核验)`);
+            return { success: true, count: 0, superseded: 0 };
+        }
+
+        return batchUpdate(() => {
+            let newCount = 0;
+            let supersededCount = 0;
+
+            for (const item of validated.consolidated) {
+                const added = addMemory({
+                    type: item.type,
+                    content: item.content,
+                    scope: item.scope,
+                    character: item.character,
+                    known_by: item.known_by,
+                    trigger_keys: item.trigger_keys,
+                    status: MEMORY_STATUS.TRIGGERED
+                });
+
+                if (added) {
+                    newCount++;
+                    for (const oldId of item.supersedes) {
+                        setMemoryLifecycle(oldId, MEMORY_LIFECYCLE.SUPERSEDED);
+                        supersededCount++;
+                    }
+                }
+            }
+
+            console.log(`[${MODULE_NAME}] [Consolidate] 记忆高阶归并原子提交：新增 ${newCount} 条宏观事实，归档/替代 ${supersededCount} 条历史琐碎条目`);
+            return { success: true, count: newCount, superseded: supersededCount };
+        });
+    } catch (err) {
+        console.error(`[${MODULE_NAME}] [Consolidate] 记忆归并异常:`, err);
+        return { success: false, error: err.message || String(err) };
+    } finally {
+        isConsolidating = false;
+    }
 }

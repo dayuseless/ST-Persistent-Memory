@@ -1,8 +1,8 @@
 /**
- * 持续记忆插件配置与常量定义 (v0.1.11)
+ * 持续记忆插件配置与常量定义 (v0.1.12)
  */
 
-export const EXTENSION_VERSION = '0.1.11';
+export const EXTENSION_VERSION = '0.1.12';
 export const MODULE_NAME = 'st_persistent_memory';
 export const INJECT_KEY = 'PERSISTENT_MEMORY_INJECT';
 
@@ -53,7 +53,11 @@ export const DEFAULT_SETTINGS = {
     useCustomApi: false,       // 是否启用独立提取 API
     customApiUrl: '',          // 自定义 Base URL (例如 https://api.openai.com/v1 或 http://localhost:11434/v1)
     customApiKey: '',          // 自定义 API Key
-    customApiModel: 'gpt-4o-mini' // 自定义提炼模型名称 (如 gpt-4o-mini, deepseek-chat, qwen-turbo 等)
+    customApiModel: 'gpt-4o-mini', // 自定义提炼模型名称 (如 gpt-4o-mini, deepseek-chat, qwen-turbo 等)
+
+    // 记忆生命周期演进与高阶归并
+    autoConsolidate: true,     // 是否在活跃记忆达到阈值时自动触发宏观归并压缩
+    consolidateThreshold: 20   // 触发宏观归并的活跃记忆条数阈值 (10~50)
 };
 
 export const DEFAULT_STATE = {

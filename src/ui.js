@@ -1,14 +1,15 @@
 /**
- * UI 管理器 (v0.1.11)：原生扩展抽屉集成、屏幕快捷悬浮按钮（支持自由拖拽与持久化）与 HUD 侧边控制台
- * 全面升级：行内即时编辑、记忆数据独立导出/导入迁移、大号高对比度数字显示、独立 API 完整配置
+ * UI 管理器 (v0.1.12)：原生扩展抽屉集成、屏幕快捷悬浮按钮（支持自由拖拽与持久化）与 HUD 侧边控制台
+ * 全面升级：行内即时编辑、记忆数据独立导出/导入迁移、长程宏观归并 (Consolidation)、终态记忆过滤与归档清理抽屉
  */
 
 import { MODULE_NAME, MEMORY_STATUS, MEMORY_LIFECYCLE, MEMORY_SCOPE } from './config.js';
-import { getState, getSettings, updateSettings, saveSettingsImmediately, updateScene, addMemory, updateMemory, deleteMemory, cycleMemoryStatus, cycleMemoryType, exportMemoryData, importMemoryData, onStateChange } from './state.js';
-import { triggerAsyncDigest, testCustomApiConnection } from './extractor.js';
+import { getState, getSettings, updateSettings, saveSettingsImmediately, updateScene, addMemory, updateMemory, deleteMemory, purgeArchivedMemories, cycleMemoryStatus, cycleMemoryType, exportMemoryData, importMemoryData, onStateChange } from './state.js';
+import { triggerAsyncDigest, triggerMemoryConsolidation, testCustomApiConnection } from './extractor.js';
 
 let panelEl = null;
 let currentTab = 'memories'; // 'memories' | 'scene' | 'settings'
+let memoryFilter = 'active'; // 'active' | 'archived' | 'all'
 
 function escapeHtml(str) {
     if (!str || typeof str !== 'string') return '';
@@ -696,13 +697,22 @@ function renderPanelContent() {
         `;
     }
 
+    const isTerminalOrArchived = m => m.status === MEMORY_STATUS.ARCHIVED || (m.lifecycle && m.lifecycle !== MEMORY_LIFECYCLE.ACTIVE);
+    const activeCount = memories.filter(m => !isTerminalOrArchived(m)).length;
+    const archivedOrTerminalCount = memories.filter(isTerminalOrArchived).length;
     const pinnedCount = memories.filter(m => m.status === MEMORY_STATUS.PINNED).length;
-    const triggeredCount = memories.filter(m => m.status === MEMORY_STATUS.TRIGGERED).length;
-    const archivedCount = memories.filter(m => m.status === MEMORY_STATUS.ARCHIVED).length;
+    const triggeredCount = memories.filter(m => m.status === MEMORY_STATUS.TRIGGERED && m.lifecycle === MEMORY_LIFECYCLE.ACTIVE).length;
+
+    // 根据当前筛选状态选择要渲染的卡片列表
+    const filteredMemories = memories.filter(m => {
+        if (memoryFilter === 'active') return !isTerminalOrArchived(m);
+        if (memoryFilter === 'archived') return isTerminalOrArchived(m);
+        return true; // 'all'
+    });
 
     // 粗估活跃记忆的 Token 占用
     let activeTokenEstimate = 0;
-    memories.filter(m => m.status !== MEMORY_STATUS.ARCHIVED).forEach(m => {
+    memories.filter(m => !isTerminalOrArchived(m)).forEach(m => {
         activeTokenEstimate += estimateTokens(m.content) + 12;
     });
 
@@ -712,9 +722,9 @@ function renderPanelContent() {
     // TAB 1: 记忆流 (Memories)
     // ─────────────────────────────────────────────────────────────────────────
     if (currentTab === 'memories') {
-        const memCardsHtml = memories.length > 0
-            ? memories.map(renderMemoryCard).join('')
-            : '<div class="pm-empty-hint"><i class="fa-solid fa-box-open" style="font-size: 24px; margin-bottom: 6px; display: block; opacity: 0.5;"></i>记忆库暂无条目，等待对话提炼或从下方快速添加</div>';
+        const memCardsHtml = filteredMemories.length > 0
+            ? filteredMemories.map(renderMemoryCard).join('')
+            : `<div class="pm-empty-hint"><i class="fa-solid fa-box-open" style="font-size: 24px; margin-bottom: 6px; display: block; opacity: 0.5;"></i>${memoryFilter === 'archived' ? '暂无归档或已结项记忆' : (memoryFilter === 'active' ? '暂无活跃记忆' : '记忆库暂无条目')}</div>`;
 
         tabHtml = `
             <!-- 统计数据横幅 (大号清晰数字) -->
@@ -747,9 +757,27 @@ function renderPanelContent() {
 
             <!-- 记忆列表 -->
             <div class="pm-section-card" style="flex: 1; display: flex; flex-direction: column;">
-                <div class="pm-section-header">
-                    <span class="pm-section-title"><i class="fa-solid fa-list-check"></i> 记忆条目清单 (${memories.length})</span>
-                    <span style="font-size: 11px; color: #94a3b8;">归档 ${archivedCount} 条</span>
+                <div class="pm-section-header" style="flex-wrap: wrap; gap: 8px; justify-content: space-between;">
+                    <div style="display: flex; gap: 4px; align-items: center;">
+                        <button class="pm-filter-pill ${memoryFilter === 'active' ? 'pm-filter-active' : ''}" data-action="filter-mem" data-filter="active">
+                            活跃 (${activeCount})
+                        </button>
+                        <button class="pm-filter-pill ${memoryFilter === 'archived' ? 'pm-filter-active' : ''}" data-action="filter-mem" data-filter="archived">
+                            <i class="fa-solid fa-box-archive"></i> 归档/终态 (${archivedOrTerminalCount})
+                        </button>
+                        <button class="pm-filter-pill ${memoryFilter === 'all' ? 'pm-filter-active' : ''}" data-action="filter-mem" data-filter="all">
+                            全部 (${memories.length})
+                        </button>
+                    </div>
+                    <div style="display: flex; gap: 6px; align-items: center;">
+                        <button id="pm-consolidate-now-btn" class="pm-btn-secondary" style="padding: 3px 8px; font-size: 11px;" title="智能将多条历史细节记忆浓缩为宏观长期事实">
+                            <i class="fa-solid fa-compress" style="color: #2563eb;"></i> 宏观归并
+                        </button>
+                        ${archivedOrTerminalCount > 0 ? `
+                        <button id="pm-purge-archived-btn" class="pm-btn-secondary" style="padding: 3px 8px; font-size: 11px; color: #dc2626;" title="永久清理已结项或迭代的废弃记忆">
+                            <i class="fa-solid fa-trash-can"></i> 清理终态
+                        </button>` : ''}
+                    </div>
                 </div>
                 <div class="pm-mem-list" id="pm-mem-list-container">
                     ${memCardsHtml}
@@ -997,6 +1025,20 @@ function renderPanelContent() {
                     </div>
                 </div>
 
+                <div class="pm-grid-2col pm-mb-8">
+                    <div class="pm-input-row">
+                        <label class="pm-input-label">长程宏观自动归并：</label>
+                        <select id="pm-setting-auto-consolidate" class="pm-input" style="cursor: pointer;">
+                            <option value="1" ${settings.autoConsolidate !== false ? 'selected' : ''}>启用 (达到阈值后台自动压缩)</option>
+                            <option value="0" ${settings.autoConsolidate === false ? 'selected' : ''}>停用 (仅允许手动触发)</option>
+                        </select>
+                    </div>
+                    <div class="pm-input-row">
+                        <label class="pm-input-label">归并触发阈值 (条数):</label>
+                        <input type="number" id="pm-setting-consolidate-threshold" class="pm-input" min="5" max="50" value="${settings.consolidateThreshold || 20}">
+                    </div>
+                </div>
+
                 <div class="pm-mt-8">
                     <button id="pm-save-all-settings-btn" class="pm-btn-primary" style="padding: 10px 14px; font-size: 13px; background: #059669; border-color: #047857;">
                         <i class="fa-solid fa-floppy-disk"></i> 保存并生效全部配置
@@ -1155,6 +1197,15 @@ function bindPanelEvents(container) {
     container.querySelector('#pm-setting-inject-depth')?.addEventListener('change', (e) => {
         const val = Math.max(0, Math.min(20, parseInt(e.target.value) || 2));
         updateSettings({ injectionDepth: val });
+    });
+
+    container.querySelector('#pm-setting-auto-consolidate')?.addEventListener('change', (e) => {
+        updateSettings({ autoConsolidate: e.target.value === '1' });
+    });
+
+    container.querySelector('#pm-setting-consolidate-threshold')?.addEventListener('change', (e) => {
+        const val = Math.max(5, Math.min(50, parseInt(e.target.value) || 20));
+        updateSettings({ consolidateThreshold: val });
     });
 
     // 全局插件启用
@@ -1437,6 +1488,51 @@ function bindPanelEvents(container) {
                 window.toastr?.success?.('记忆已成功修改！', '持续记忆');
             }
         });
+    });
+
+    // 记忆列表视图筛选 (活跃 / 归档 / 全部)
+    container.querySelectorAll('[data-action="filter-mem"]').forEach(btn => {
+        btn.addEventListener('click', () => {
+            const filter = btn.getAttribute('data-filter');
+            if (filter) {
+                memoryFilter = filter;
+                renderPanelContent();
+            }
+        });
+    });
+
+    // 手动立即触发宏观记忆归并
+    container.querySelector('#pm-consolidate-now-btn')?.addEventListener('click', async () => {
+        const btn = container.querySelector('#pm-consolidate-now-btn');
+        if (btn) btn.disabled = true;
+        window.toastr?.info?.('正在执行记忆高阶归并与浓缩，请稍候...', '持续记忆');
+        try {
+            const res = await triggerMemoryConsolidation(true);
+            if (res.success) {
+                if (res.count > 0) {
+                    window.toastr?.success?.(`成功生成 ${res.count} 条宏观记忆，已将 ${res.superseded} 条旧条目转入迭代状态！`, '持续记忆');
+                } else {
+                    window.toastr?.info?.(res.reason || '当前候选记忆各自独立，无需归并', '持续记忆');
+                }
+            } else {
+                window.toastr?.warning?.(res.reason || res.error || '未产生归并变更', '持续记忆');
+            }
+        } catch (err) {
+            window.toastr?.error?.('归并失败: ' + err.message, '持续记忆');
+        } finally {
+            if (btn) btn.disabled = false;
+        }
+    });
+
+    // 清理已结项与废弃归档记忆
+    container.querySelector('#pm-purge-archived-btn')?.addEventListener('click', () => {
+        const confirmed = confirm('确定要永久清理所有已结项 (completed)、已迭代 (superseded)、已证伪 (refuted) 及已归档的记忆吗？\n注意：此操作不可撤销！');
+        if (confirmed) {
+            const res = purgeArchivedMemories();
+            if (res.success) {
+                window.toastr?.success?.(`已清理 ${res.removed} 条终态记忆 (剩余 ${res.remaining} 条)`, '持续记忆');
+            }
+        }
     });
 
     // ─────────────────────────────────────────────────────────────────────────

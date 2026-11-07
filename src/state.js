@@ -1,6 +1,6 @@
 /**
- * 记忆状态管理器 (v0.1.11)
- * 严格落实 state_revision 状态修订号、L0 三态 PATCH 语义、真正原子回滚事务、严格知情集合隔离、行内编辑与导入导出
+ * 记忆状态管理器 (v0.1.12)
+ * 严格落实 state_revision 状态修订号、L0 三态 PATCH 语义、真正原子回滚事务、严格知情集合隔离、行内编辑与高阶归并演进
  */
 
 import { MODULE_NAME, EXTENSION_VERSION, DEFAULT_SETTINGS, DEFAULT_STATE, MEMORY_STATUS, MEMORY_LIFECYCLE, MEMORY_TYPES, MEMORY_SCOPE } from './config.js';
@@ -817,6 +817,26 @@ export function deleteMemory(id) {
     if (s.memories.length !== initialLen) {
         saveCurrentState();
     }
+}
+
+/**
+ * 清理终态或归档记忆 (完成已结项或迭代条目的垃圾回收)
+ */
+export function purgeArchivedMemories() {
+    return batchUpdate(() => {
+        const s = getState();
+        const before = s.memories.length;
+        s.memories = s.memories.filter(m => {
+            if (m.status === MEMORY_STATUS.PINNED) return true;
+            const isTerminal = m.lifecycle === MEMORY_LIFECYCLE.COMPLETED ||
+                               m.lifecycle === MEMORY_LIFECYCLE.SUPERSEDED ||
+                               m.lifecycle === MEMORY_LIFECYCLE.REFUTED;
+            const isArchived = m.status === MEMORY_STATUS.ARCHIVED;
+            return !isTerminal && !isArchived;
+        });
+        const removed = before - s.memories.length;
+        return { success: true, removed, remaining: s.memories.length };
+    });
 }
 
 /**
