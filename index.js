@@ -50,10 +50,17 @@ function waitForAppReady(c) {
     });
 }
 
+let isInitialized = false;
+
 /**
  * 主初始化函数
  */
 async function init() {
+    if (isInitialized) {
+        console.log(`[${MODULE_NAME}] 插件已完成初始化，跳过重复初始化`);
+        return;
+    }
+    isInitialized = true;
     console.log(`[${MODULE_NAME}] 正在初始化持续记忆插件 (v${EXTENSION_VERSION})...`);
     const c = await waitForContext();
     await waitForAppReady(c);
