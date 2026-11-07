@@ -753,7 +753,11 @@ export function importMemoryData(data, strategy = 'merge') {
             let knownBy = Array.isArray(m.known_by)
                 ? m.known_by.filter(k => typeof k === 'string' && k.trim()).map(k => k.trim())
                 : [character];
-            if (scope === MEMORY_SCOPE.WORLD) knownBy = [];
+            if (scope === MEMORY_SCOPE.CHARACTER) {
+                knownBy = [character];
+            } else if (scope === MEMORY_SCOPE.WORLD) {
+                knownBy = [];
+            }
             const triggerKeys = Array.isArray(m.trigger_keys)
                 ? m.trigger_keys.filter(k => typeof k === 'string' && k.trim()).map(k => k.trim())
                 : [];
@@ -820,7 +824,7 @@ export function deleteMemory(id) {
 }
 
 /**
- * 清理终态或归档记忆 (完成已结项或迭代条目的垃圾回收)
+ * 清理终态记忆 (完成已结项、已迭代或已证伪条目的垃圾回收，保护 active 活跃与常驻记忆)
  */
 export function purgeArchivedMemories() {
     return batchUpdate(() => {
@@ -828,11 +832,11 @@ export function purgeArchivedMemories() {
         const before = s.memories.length;
         s.memories = s.memories.filter(m => {
             if (m.status === MEMORY_STATUS.PINNED) return true;
+            // 严格基于生命周期判定终态，严禁误删仅处于 status=archived 检索休眠但事实仍有效的条目
             const isTerminal = m.lifecycle === MEMORY_LIFECYCLE.COMPLETED ||
                                m.lifecycle === MEMORY_LIFECYCLE.SUPERSEDED ||
                                m.lifecycle === MEMORY_LIFECYCLE.REFUTED;
-            const isArchived = m.status === MEMORY_STATUS.ARCHIVED;
-            return !isTerminal && !isArchived;
+            return !isTerminal;
         });
         const removed = before - s.memories.length;
         return { success: true, removed, remaining: s.memories.length };

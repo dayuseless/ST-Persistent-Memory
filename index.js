@@ -1,5 +1,5 @@
 /**
- * SillyTavern 插件入口: 持续记忆 (Persistent Memory) v0.1.12
+ * SillyTavern 插件入口: 持续记忆 (Persistent Memory) v0.1.13
  * 遵循现场快照 (L0 Resume) 与事件驱动记忆架构
  */
 

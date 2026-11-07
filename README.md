@@ -1,6 +1,6 @@
 # SillyTavern 持续记忆插件 (ST-Persistent-Memory)
 
-[![Version](https://img.shields.io/badge/version-v0.1.12-blue.svg)](https://github.com/dayuseless/ST-Persistent-Memory)
+[![Version](https://img.shields.io/badge/version-v0.1.13-blue.svg)](https://github.com/dayuseless/ST-Persistent-Memory)
 [![SillyTavern](https://img.shields.io/badge/SillyTavern-1.12.0+-purple.svg)](https://github.com/SillyTavern/SillyTavern)
 [![License](https://img.shields.io/badge/license-MIT-green.svg)](LICENSE)
 
@@ -146,6 +146,15 @@ window.__persistentMemory.digestNow();
 ---
 
 ## 📝 版本历史
+
+### v0.1.13 (归并时序安全、跨会话竞态拦截与生命周期边界自洽)
+
+- **归并执行时序反转安全 (Consolidation Sequencing Fix)**：修复归并入库与旧条目废弃的时序隐患。先将 `supersedes` 关联的旧条目置为 `superseded`，再执行新概括条目入库，彻底杜绝由于文本高相似度（$\ge 0.70$）误触发同库合并导致新记忆被误吞并随同旧条目连带归档失踪的逻辑缺陷。
+- **长程归并跨会话隔离拦截 (Cross-Session Async Guard)**：在异步归并请求完成返回后，严格比对 `finishChatId === startChatId`，若检测到用户在模型生成等待期间切换了聊天会话，立即安全丢弃该归并提交，防止归并结果污染新会话或破坏旧会话生命周期。
+- **检索休眠记忆隔离防护 (Hibernated Memory Isolation)**：修正归并候选集收集规则，严格限定候选记忆为 `status === triggered`，防止用户主动设置为 `archived`（检索休眠）但事实仍然有效的核心条目被误纳入归并并被意外废弃。
+- **终态回收与休眠检索严格解耦 (Terminal Lifecycle Purge Fix)**：`purgeArchivedMemories` 垃圾回收严格依据生命周期终态（`completed` / `superseded` / `refuted`）执行过滤，保护所有 `lifecycle === 'active'` 的条目（即使其处于 `status === 'archived'` 检索休眠状态），确保事实真实性与检索激活状态的严格正交解耦。
+- **外部数据导入知情范围归一化 (Import Scope Normalization)**：导入 `character` 私密记忆时强制规整知情者名单为当前单一角色，杜绝从外部备份恢复时出现权限范围模糊或知情者脏数据。
+- **测试矩阵扩展至 27 项 (T1-T27 全绿)**：新增归并时序反转与相似隔离 (T26) 及异步切换会话安全拦截 (T27) 的完整自动化测试断言。
 
 ### v0.1.12 (记忆周期演进：长程宏观归并、归档抽屉与终态垃圾回收)
 

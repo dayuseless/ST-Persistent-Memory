@@ -868,7 +868,7 @@ export function buildConsolidationCandidateGroups(memories) {
     if (!Array.isArray(memories)) return [];
 
     const activeList = memories.filter(m =>
-        m && m.lifecycle === MEMORY_LIFECYCLE.ACTIVE && m.status !== MEMORY_STATUS.PINNED
+        m && m.lifecycle === MEMORY_LIFECYCLE.ACTIVE && m.status === MEMORY_STATUS.TRIGGERED
     );
 
     const groupMap = new Map();
@@ -1010,6 +1010,9 @@ export async function triggerMemoryConsolidation(force = false) {
     if (!c || !settings.enabled) return { success: false, reason: '插件未启用' };
     if (isConsolidating) return { success: false, reason: '归并任务进行中' };
 
+    const startChatId = getChatIdentifier(c);
+    if (!startChatId) return { success: false, reason: '无法获取有效会话标识' };
+
     const state = getState();
     const candidateGroups = buildConsolidationCandidateGroups(state.memories);
     const totalCandidates = candidateGroups.reduce((acc, g) => acc + g.items.length, 0);
@@ -1024,7 +1027,7 @@ export async function triggerMemoryConsolidation(force = false) {
     }
 
     isConsolidating = true;
-    console.log(`[${MODULE_NAME}] [Consolidate] 启动高阶记忆归并 (共 ${candidateGroups.length} 个候选分组, ${totalCandidates} 条候选细节)...`);
+    console.log(`[${MODULE_NAME}] [Consolidate] 启动高阶记忆归并 (会话: ${startChatId}, 共 ${candidateGroups.length} 个候选分组, ${totalCandidates} 条候选细节)...`);
 
     try {
         let groupsPromptText = '';
@@ -1067,9 +1070,17 @@ ${groupsPromptText}
             return { success: false, reason: '模型未返回有效归并结果' };
         }
 
+        // 会话一致性检查
+        const finishChatId = getChatIdentifier(c);
+        if (finishChatId !== startChatId) {
+            console.warn(`[${MODULE_NAME}] [会话隔离拦截] 检测到用户在归并期间切换了会话 (${startChatId} -> ${finishChatId})，已安全丢弃！`);
+            return { success: false, reason: '归并期间会话发生切换，已丢弃' };
+        }
+
         const raw = cleanAndParseJson(response);
-        const participants = getContextParticipants(c, state);
-        const validated = validateConsolidatedPayload(raw, state.memories, participants);
+        const latestState = getState();
+        const participants = getContextParticipants(c, latestState);
+        const validated = validateConsolidatedPayload(raw, latestState.memories, participants);
 
         if (!validated || !Array.isArray(validated.consolidated) || validated.consolidated.length === 0) {
             console.log(`[${MODULE_NAME}] [Consolidate] 经校验无可应用的高阶归并项 (情境各自独立或未通过安全核验)`);
@@ -1081,6 +1092,13 @@ ${groupsPromptText}
             let supersededCount = 0;
 
             for (const item of validated.consolidated) {
+                // 1. 先将所有被替代的旧记忆置为 superseded，使其脱离 active 状态
+                for (const oldId of item.supersedes) {
+                    setMemoryLifecycle(oldId, MEMORY_LIFECYCLE.SUPERSEDED);
+                    supersededCount++;
+                }
+
+                // 2. 随后入库全新的宏观概括记忆 (此时旧条目已脱离 active，绝不会与新条目发生错误的同库相似冲突融合)
                 const added = addMemory({
                     type: item.type,
                     content: item.content,
@@ -1093,10 +1111,6 @@ ${groupsPromptText}
 
                 if (added) {
                     newCount++;
-                    for (const oldId of item.supersedes) {
-                        setMemoryLifecycle(oldId, MEMORY_LIFECYCLE.SUPERSEDED);
-                        supersededCount++;
-                    }
                 }
             }
 

@@ -666,6 +666,7 @@ async function runTests() {
             { id: 'w1', content: '世界事件1', scope: 'world', lifecycle: 'active', status: 'triggered' },
             { id: 'w2', content: '世界事件2', scope: 'world', lifecycle: 'active', status: 'triggered' },
             { id: 'w3_comp', content: '已结项世界事件', scope: 'world', lifecycle: 'completed', status: 'archived' }, // 结项不参与
+            { id: 'w_hib', content: '检索休眠但事实有效事件', scope: 'world', lifecycle: 'active', status: 'archived' }, // 检索休眠不参与归并
             { id: 'ca1', content: '角色A私事1', scope: 'character', character: '角色A', lifecycle: 'active', status: 'triggered' },
             { id: 'ca2', content: '角色A私事2', scope: 'character', character: '角色A', lifecycle: 'active', status: 'triggered' },
             { id: 'ca_pinned', content: '角色A常驻锚点', scope: 'character', character: '角色A', lifecycle: 'active', status: 'pinned' }, // 常驻不参与
@@ -679,7 +680,7 @@ async function runTests() {
 
         const worldGroup = groups.find(g => g.key === 'world');
         assert(worldGroup);
-        assert.strictEqual(worldGroup.items.length, 2, '仅 active 且非 pinned 的两项纳入');
+        assert.strictEqual(worldGroup.items.length, 2, '仅 active 且 triggered 的两项纳入，常驻与休眠均被排除');
 
         const charAGroup = groups.find(g => g.key === 'character:角色A');
         assert(charAGroup);
@@ -771,6 +772,7 @@ async function runTests() {
         state.memories = [
             { id: 'p1', content: '置顶关键事实', status: 'pinned', lifecycle: 'active' },
             { id: 'act1', content: '当前活跃待办', status: 'triggered', lifecycle: 'active' },
+            { id: 'hib1', content: '用户休眠但事实仍有效', status: 'archived', lifecycle: 'active' },
             { id: 'comp1', content: '已完成的约定', status: 'archived', lifecycle: 'completed' },
             { id: 'sup1', content: '已被替代的历史细节', status: 'archived', lifecycle: 'superseded' },
             { id: 'ref1', content: '已被推翻的猜想', status: 'archived', lifecycle: 'refuted' }
@@ -779,8 +781,91 @@ async function runTests() {
         const res = purgeArchivedMemories();
         assert.strictEqual(res.success, true);
         assert.strictEqual(res.removed, 3, '应清理 3 条终态记忆');
-        assert.strictEqual(res.remaining, 2, '剩余 2 条正常记忆');
-        assert.deepStrictEqual(state.memories.map(m => m.id), ['p1', 'act1'], '仅置顶与活跃记忆完好保留');
+        assert.strictEqual(res.remaining, 3, '剩余 3 条有效记忆 (含检索休眠)');
+        assert.deepStrictEqual(state.memories.map(m => m.id), ['p1', 'act1', 'hib1'], '仅置顶、活跃与休眠有效记忆完好保留');
+    });
+
+    // ─────────────────────────────────────────────────────────────
+    // T26: 归并执行先废弃旧条目(superseded)再入库新条目，规避相似冲突误吞与失踪
+    // ─────────────────────────────────────────────────────────────
+    test('T26: 归并执行先废弃旧条目(superseded)再入库新条目，规避相似冲突误吞与失踪', () => {
+        const state = getState();
+        state.memories = [
+            { id: 'old1', content: '角色A在山谷中偶然采摘到一株千年灵芝', scope: 'character', character: '角色A', lifecycle: 'active', status: 'triggered', trigger_keys: ['灵芝'] },
+            { id: 'old2', content: '角色A获知灵芝可以解除天下奇毒', scope: 'character', character: '角色A', lifecycle: 'active', status: 'triggered', trigger_keys: ['灵芝', '解毒'] }
+        ];
+
+        // 模拟合法归并 payload，其内容与 old1 相似度超过 0.70
+        const consolidatedItem = {
+            type: 'fact',
+            content: '角色A在山谷中偶然采摘到一株千年灵芝并探明其可解天下奇毒',
+            scope: 'character',
+            character: '角色A',
+            trigger_keys: ['灵芝', '解毒', '山谷'],
+            supersedes: ['old1', 'old2']
+        };
+
+        // 验证执行逻辑：先置 superseded，再 addMemory
+        for (const oldId of consolidatedItem.supersedes) {
+            setMemoryLifecycle(oldId, MEMORY_LIFECYCLE.SUPERSEDED);
+        }
+        const added = addMemory({
+            type: consolidatedItem.type,
+            content: consolidatedItem.content,
+            scope: consolidatedItem.scope,
+            character: consolidatedItem.character,
+            known_by: [consolidatedItem.character],
+            trigger_keys: consolidatedItem.trigger_keys,
+            status: MEMORY_STATUS.TRIGGERED
+        });
+
+        assert(added && added.id, '新归并条目必须成功独立入库并拥有有效 ID');
+        const activeMems = state.memories.filter(m => m.lifecycle === MEMORY_LIFECYCLE.ACTIVE);
+        assert.strictEqual(activeMems.length, 1, '必须恰好保留 1 条活跃的新归并记忆');
+        assert.strictEqual(activeMems[0].content, consolidatedItem.content);
+
+        const supersededMems = state.memories.filter(m => m.lifecycle === MEMORY_LIFECYCLE.SUPERSEDED);
+        assert.strictEqual(supersededMems.length, 2, '两项旧条目均已被安全标记为 superseded 终态');
+    });
+
+    // ─────────────────────────────────────────────────────────────
+    // T27: 归并异步期间用户切换会话 (chatId 变化)，拦截落盘并安全丢弃
+    // ─────────────────────────────────────────────────────────────
+    await testAsync('T27: 归并异步期间用户切换会话 (chatId 变化)，拦截落盘并安全丢弃', async () => {
+        mockContext.chatId = 'chat_session_alpha';
+        const state = getState();
+        state.memories = [
+            { id: 'alpha_m1', content: 'Alpha会话关键事件1', scope: 'world', lifecycle: 'active', status: 'triggered' },
+            { id: 'alpha_m2', content: 'Alpha会话关键事件2', scope: 'world', lifecycle: 'active', status: 'triggered' }
+        ];
+
+        // 模拟原生大模型调用期间，用户点击切换了会话窗口 (chatId 发生突变)
+        mockContext.generateRaw = async () => {
+            mockContext.chatId = 'chat_session_beta';
+            return JSON.stringify({
+                consolidated: [
+                    {
+                        content: 'Alpha会话归纳事实',
+                        type: 'fact',
+                        scope: 'world',
+                        trigger_keys: ['Alpha'],
+                        supersedes: ['alpha_m1', 'alpha_m2']
+                    }
+                ]
+            });
+        };
+
+        const res = await triggerMemoryConsolidation(true);
+        assert.strictEqual(res.success, false);
+        assert(res.reason.includes('归并期间会话发生切换'), '必须精准拦截并丢弃');
+
+        // 验证原会话数据未受破坏
+        const m1 = state.memories.find(m => m.id === 'alpha_m1');
+        assert.strictEqual(m1.lifecycle, MEMORY_LIFECYCLE.ACTIVE, 'Alpha 记忆未被错误标记为 superseded');
+        assert.strictEqual(state.memories.length, 2, 'Beta 会话未被 Alpha 的归并结果污染');
+
+        delete mockContext.generateRaw;
+        mockContext.chatId = 'chat_test_001';
     });
 
     console.log(`\n======================================================`);
