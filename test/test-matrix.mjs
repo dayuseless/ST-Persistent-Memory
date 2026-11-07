@@ -86,6 +86,10 @@ import {
 } from '../src/injector.js';
 
 import {
+    cleanAndParseJson,
+    repairTruncatedJson,
+    unwrapJsonPayload,
+    isQuietDigestPayload,
     validateExtractedPayload,
     extractAndApplySyncTag,
     filterMemoriesForDigest,
@@ -1649,6 +1653,68 @@ async function runTests() {
         assert.strictEqual(cleaned3, '好的。');
         const state3 = getState();
         assert.strictEqual(state3.memories.length, 1, '相同记忆内容应被相似度去重融合，记忆总数保持 1 条');
+    });
+
+    // ──────────────────────────────────────────────────────────
+    // T44: JSON 截断自动修复与外层包装解包测试 (Token 耗尽截断自愈)
+    // ──────────────────────────────────────────────────────────
+    test('T44: cleanAndParseJson 与 repairTruncatedJson 能自愈因 Token 耗尽被腰斩截断的 JSON 并成功解包', () => {
+        // 场景 1: 在字符串中间因 Token 耗尽被腰斩
+        const truncatedString = '{"scene": {"location": "破庙遗迹"}, "new_memories": [{"type": "fact", "content": "张三在二十年前曾受过重伤';
+        const repaired1 = cleanAndParseJson(truncatedString);
+        assert.ok(repaired1, '应成功修复并解析截断字符串');
+        assert.strictEqual(repaired1.scene.location, '破庙遗迹');
+        assert.strictEqual(repaired1.new_memories[0].content, '张三在二十年前曾受过重伤');
+
+        // 场景 2: 在数组或对象键处被腰斩 (悬空逗号与键名)
+        const truncatedKey = '{"scene": {"location": "古道"}, "new_memories": [{"type": "fact", "content": "队伍已出发", "trigger_';
+        const repaired2 = cleanAndParseJson(truncatedKey);
+        assert.ok(repaired2, '应成功修复带悬空键名的截断 JSON');
+        assert.strictEqual(repaired2.scene.location, '古道');
+        assert.strictEqual(repaired2.new_memories[0].content, '队伍已出发');
+
+        // 场景 3: 外层被 API 包装加壳 (如 { data: { ... } })
+        const wrappedJson = {
+            data: {
+                scene: { location: '王府正厅' },
+                new_memories: [{ type: 'fact', content: '王爷下达了封城令', scope: 'world' }]
+            }
+        };
+        const unwrapped = unwrapJsonPayload(wrappedJson);
+        assert.strictEqual(unwrapped.scene.location, '王府正厅');
+        const validated = validateExtractedPayload(wrappedJson, [], new Set());
+        assert.ok(validated, 'validateExtractedPayload 应能自动解包外层 data');
+        assert.strictEqual(validated.scene.location, '王府正厅');
+        assert.strictEqual(validated.new_memories[0].content, '王爷下达了封城令');
+    });
+
+    // ──────────────────────────────────────────────────────────
+    // T45: 良性静默提炼轮次 (isQuietDigestPayload / Benign No-Op) 测试
+    // ──────────────────────────────────────────────────────────
+    test('T45: 模型在无实质进展时返回空摘要或静默状态，被识别为良性静默而非格式错误', () => {
+        // 常见静默返回 1: 仅有 summary
+        const quietPayload1 = { summary: '双方日常闲聊，场景未改变，无关键新记忆沉淀' };
+        assert.strictEqual(isQuietDigestPayload(quietPayload1), true, '纯 summary 应判定为良性静默');
+
+        // 常见静默返回 2: new_memories 为空数组且 scene 为 null
+        const quietPayload2 = {
+            summary: '情境平稳',
+            scene: null,
+            new_memories: [],
+            lifecycle_updates: []
+        };
+        assert.strictEqual(isQuietDigestPayload(quietPayload2), true, '空数组+空快照应判定为良性静默');
+
+        // 常见静默返回 3: 带有 status: "no_change"
+        const quietPayload3 = { status: 'no_change', note: '无状态变迁' };
+        assert.strictEqual(isQuietDigestPayload(quietPayload3), true, 'no_change 声明应判定为良性静默');
+
+        // 反例: 包含实质新记忆的正常 payload 不得判定为静默
+        const activePayload = {
+            scene: { location: '密道' },
+            new_memories: [{ type: 'fact', content: '发现暗门' }]
+        };
+        assert.strictEqual(isQuietDigestPayload(activePayload), false, '含实质内容的 payload 不得判定为静默');
     });
 
     console.log(`\n======================================================`);

@@ -80,6 +80,107 @@ export function getChatIdentifier(c) {
 }
 
 /**
+ * 智能缝合与修复被截断的 JSON 字符串 (Auto-Repair Truncated JSON)
+ * 当模型因 Token 耗尽或生成中断在末尾截断时，抢救截断前已完整输出的有效节点
+ */
+export function repairTruncatedJson(str) {
+    if (!str || typeof str !== 'string') return null;
+    let s = str.trim();
+    let inString = false;
+    let isEscaped = false;
+    const stack = [];
+
+    for (let i = 0; i < s.length; i++) {
+        const char = s[i];
+        if (inString) {
+            if (isEscaped) {
+                isEscaped = false;
+            } else if (char === '\\') {
+                isEscaped = true;
+            } else if (char === '"') {
+                inString = false;
+            }
+        } else {
+            if (char === '"') {
+                inString = true;
+            } else if (char === '{') {
+                stack.push('}');
+            } else if (char === '[') {
+                stack.push(']');
+            } else if (char === '}' || char === ']') {
+                if (stack.length > 0 && stack[stack.length - 1] === char) {
+                    stack.pop();
+                }
+            }
+        }
+    }
+
+    // 若末尾仍处于未闭合的字符串中，先闭合字符串
+    if (inString) {
+        if (s.endsWith('\\')) {
+            s = s.slice(0, -1);
+        }
+        s += '"';
+    }
+
+    // 清理尾部悬空的无效未完成结构 (例如未完成的键、悬空逗号冒号)
+    s = s.replace(/,\s*"(?:[^"\\]|\\.)*"\s*:\s*$/g, '');
+    s = s.replace(/,\s*"(?:[^"\\]|\\.)*"\s*$/g, '');
+    s = s.replace(/:\s*$/g, ': null');
+    s = s.replace(/,\s*$/g, '');
+
+    // 按栈逆序补齐所有缺失的闭合括号
+    while (stack.length > 0) {
+        s += stack.pop();
+    }
+    return s;
+}
+
+/**
+ * 自动解包常见的顶层包装对象 (如 { data: ... }, { result: ... }, { response: ... })
+ */
+export function unwrapJsonPayload(obj) {
+    if (!obj || typeof obj !== 'object' || Array.isArray(obj)) return obj;
+    const wrapperKeys = ['data', 'result', 'response', 'output', 'state', 'payload'];
+    for (const key of wrapperKeys) {
+        if (obj[key] && typeof obj[key] === 'object' && !Array.isArray(obj[key])) {
+            const inner = obj[key];
+            if (inner.scene !== undefined || inner.new_memories !== undefined || inner.lifecycle_updates !== undefined || inner.consolidated !== undefined || inner.summary !== undefined) {
+                return inner;
+            }
+        }
+    }
+    return obj;
+}
+
+/**
+ * 判定模型返回是否为良性的“静默/无变化”提炼轮次 (Benign Quiet No-Op)
+ * 很多高阶模型在日常闲聊轮次会明确返回无新记忆沉淀，这属于健康状态，绝不能判定为 Schema 错误
+ */
+export function isQuietDigestPayload(raw) {
+    if (!raw || typeof raw !== 'object' || Array.isArray(raw)) return false;
+    const unwrapped = unwrapJsonPayload(raw);
+
+    const hasNewMemories = Array.isArray(unwrapped.new_memories) && unwrapped.new_memories.length > 0;
+    const hasLifecycleUpdates = Array.isArray(unwrapped.lifecycle_updates) && unwrapped.lifecycle_updates.length > 0;
+    const hasSceneChanges = unwrapped.scene && typeof unwrapped.scene === 'object' && Object.keys(unwrapped.scene).length > 0;
+
+    // 如果没有任何增量记忆或状态变更
+    if (!hasNewMemories && !hasLifecycleUpdates) {
+        if (typeof unwrapped.summary === 'string' && unwrapped.summary.trim()) {
+            return true;
+        }
+        if (unwrapped.status === 'no_change' || unwrapped.no_change === true) {
+            return true;
+        }
+        if ((!hasSceneChanges || unwrapped.scene === null) && Array.isArray(unwrapped.new_memories) && unwrapped.new_memories.length === 0) {
+            return true;
+        }
+    }
+    return false;
+}
+
+/**
  * 鲁棒的 JSON 清洗与边界解析器
  */
 export function cleanAndParseJson(raw) {
@@ -90,37 +191,67 @@ export function cleanAndParseJson(raw) {
     // 1. 剥离思考链标签 (如 DeepSeek R1 / Claude thinking，兼容未闭合的 <think>)
     text = text.replace(/<think>[\s\S]*?(?:<\/think>|$)/gi, '').trim();
 
-    // 2. 优先提取 Markdown 代码块内部内容 (```json ... ```)
+    // 2. 优先提取 Markdown 代码块内部内容 (```json ... ```)，兼容截断未闭合的代码块
     const codeBlockMatch = text.match(/```(?:json)?\s*([\s\S]*?)\s*```/i);
     if (codeBlockMatch) {
         text = codeBlockMatch[1].trim();
+    } else {
+        const unclosedBlockMatch = text.match(/```(?:json)?\s*([\s\S]*)$/i);
+        if (unclosedBlockMatch) {
+            text = unclosedBlockMatch[1].trim();
+        }
     }
 
     // 3. 定位最外层的 JSON 对象边界
     const firstBrace = text.indexOf('{');
-    const lastBrace = text.lastIndexOf('}');
-    if (firstBrace === -1 || lastBrace === -1 || lastBrace <= firstBrace) {
-        console.warn(`[${MODULE_NAME}] 未能在模型回复中找到合法的 JSON 对象:`, raw.slice(0, 200));
+    if (firstBrace === -1) {
+        console.warn(`[${MODULE_NAME}] 未能在模型回复中找到合法的 JSON 起始括号:`, raw.slice(0, 200));
         return null;
     }
-    text = text.substring(firstBrace, lastBrace + 1);
 
-    // 4. 清理常见的非法尾部逗号
-    text = text.replace(/,\s*([}\]])/g, '$1');
+    const candidate = text.substring(firstBrace).trim();
+    const lastBrace = candidate.lastIndexOf('}');
+    const boundedText = lastBrace > 0 ? candidate.substring(0, lastBrace + 1) : candidate;
 
+    const cleanTrailingCommas = (str) => str.replace(/,\s*([}\]])/g, '$1');
+
+    // 尝试阶段 1: 直接标准解析
     try {
-        return JSON.parse(text);
-    } catch (e) {
+        return JSON.parse(cleanTrailingCommas(boundedText));
+    } catch (e1) {
+        // 尝试阶段 2: 处理行内未转义换行符
         try {
-            const sanitized = text
+            const sanitized = boundedText
                 .replace(/(?:\r\n|\r|\n)/g, ' ')
                 .replace(/,\s*([}\]])/g, '$1');
             return JSON.parse(sanitized);
-        } catch (err) {
-            console.warn(`[${MODULE_NAME}] JSON 解析失败:`, err, '原始片段:', text.slice(0, 160));
-            return null;
+        } catch (e2) {
+            // 尝试阶段 3: 执行断尾修复引擎 (解决 Token 耗尽导致的截断)
+            try {
+                const repaired = repairTruncatedJson(candidate);
+                if (repaired) {
+                    const parsed = JSON.parse(cleanTrailingCommas(repaired));
+                    console.log(`[${MODULE_NAME}] [Auto-Repair] 成功通过断尾修复引擎挽回截断的 JSON 数据`);
+                    return parsed;
+                }
+            } catch (e3) {
+                // 尝试阶段 4: 对行内换行清洗后再次执行修复引擎
+                try {
+                    const sanitizedCandidate = candidate.replace(/(?:\r\n|\r|\n)/g, ' ');
+                    const repairedSanitized = repairTruncatedJson(sanitizedCandidate);
+                    if (repairedSanitized) {
+                        const parsed = JSON.parse(cleanTrailingCommas(repairedSanitized));
+                        console.log(`[${MODULE_NAME}] [Auto-Repair] 成功通过清洗换行+断尾修复引擎挽回截断的 JSON 数据`);
+                        return parsed;
+                    }
+                } catch (e4) {
+                    console.warn(`[${MODULE_NAME}] JSON 解析与自动修复均失败:`, e4.message, '原始片段:', candidate.slice(-160));
+                    return null;
+                }
+            }
         }
     }
+    return null;
 }
 
 /**
@@ -133,6 +264,8 @@ export function validateExtractedPayload(raw, currentMemories = [], allowedParti
         return null;
     }
 
+    const target = unwrapJsonPayload(raw);
+
     // 权威可信参与者名单解析
     const trustedParticipants = allowedParticipants instanceof Set
         ? allowedParticipants
@@ -141,12 +274,12 @@ export function validateExtractedPayload(raw, currentMemories = [], allowedParti
             : (typeof getContext === 'function' ? getContextParticipants(getContext(), getState?.()) : null));
 
     // 必须至少包含有效 scene 或 new_memories 或 lifecycle_updates 之一，否则拒绝整个 payload
-    const hasScene = raw.scene && typeof raw.scene === 'object' && !Array.isArray(raw.scene);
-    const hasMemories = Array.isArray(raw.new_memories);
-    const hasUpdates = Array.isArray(raw.lifecycle_updates) || Array.isArray(raw.resolved_memory_ids);
+    const hasScene = target.scene && typeof target.scene === 'object' && !Array.isArray(target.scene);
+    const hasMemories = Array.isArray(target.new_memories);
+    const hasUpdates = Array.isArray(target.lifecycle_updates) || Array.isArray(target.resolved_memory_ids);
 
     if (!hasScene && !hasMemories && !hasUpdates) {
-        console.warn(`[${MODULE_NAME}] [Schema 拦截] Payload 缺少核心结构，整包拒绝`);
+        console.warn(`[${MODULE_NAME}] [Schema 拦截] Payload 缺少核心结构 (scene / new_memories / lifecycle_updates)，整包拒绝`);
         return null;
     }
 
@@ -158,7 +291,7 @@ export function validateExtractedPayload(raw, currentMemories = [], allowedParti
 
     // 1. 校验 scene 结构 (支持显式清空语义: 允许空字符串和空数组)
     if (hasScene) {
-        const sc = raw.scene;
+        const sc = target.scene;
         validated.scene = {};
 
         const sanitizeString = (val, maxLen) => {
@@ -195,7 +328,7 @@ export function validateExtractedPayload(raw, currentMemories = [], allowedParti
     const validScopes = new Set(Object.values(MEMORY_SCOPE));
 
     if (hasMemories) {
-        for (const item of raw.new_memories) {
+        for (const item of target.new_memories) {
             if (!item || typeof item !== 'object') continue;
 
             const content = typeof item.content === 'string' ? item.content.trim() : '';
@@ -316,8 +449,8 @@ export function validateExtractedPayload(raw, currentMemories = [], allowedParti
     // 3. 校验 lifecycle_updates (确认 ID 真实存在于当前记忆库中)
     const existingIds = new Set(currentMemories.map(m => m.id));
 
-    if (Array.isArray(raw.lifecycle_updates)) {
-        for (const up of raw.lifecycle_updates) {
+    if (Array.isArray(target.lifecycle_updates)) {
+        for (const up of target.lifecycle_updates) {
             if (!up || typeof up !== 'object') continue;
             const id = String(up.id || '').trim();
             if (!existingIds.has(id)) {
@@ -335,9 +468,9 @@ export function validateExtractedPayload(raw, currentMemories = [], allowedParti
                 lifecycle: up.lifecycle
             });
         }
-    } else if (Array.isArray(raw.resolved_memory_ids)) {
+    } else if (Array.isArray(target.resolved_memory_ids)) {
         // 向后兼容旧格式
-        for (const id of raw.resolved_memory_ids) {
+        for (const id of target.resolved_memory_ids) {
             const trimmed = String(id || '').trim();
             if (existingIds.has(trimmed)) {
                 validated.lifecycle_updates.push({
@@ -483,6 +616,7 @@ async function executeDigestRequest(c, digestPrompt, settings) {
                     messages: [
                         { role: 'user', content: digestPrompt }
                     ],
+                    max_tokens: 2048,
                     temperature: 0.1
                 }),
                 signal: controller.signal
@@ -507,19 +641,19 @@ async function executeDigestRequest(c, digestPrompt, settings) {
         }
     }
 
-    // 方案 B: 优先使用 generateRaw (单轮独立 Prompt，不附带历史会话与缺失的 reasoning_content)
+    // 方案 B: 优先使用 generateRaw (单轮独立 Prompt，显式指定 responseLength 脱钩前端对话长度限制)
     if (typeof c.generateRaw === 'function') {
         return await withTimeout(
-            () => c.generateRaw({ prompt: digestPrompt }),
+            () => c.generateRaw({ prompt: digestPrompt, responseLength: 2048 }),
             DIGEST_REQUEST_TIMEOUT_MS,
             '原生 generateRaw 提炼请求'
         );
     }
 
-    // 方案 C: 兜底调用 generateQuietPrompt
+    // 方案 C: 兜底调用 generateQuietPrompt (显式剥离 reasoning 并指定输出长度)
     if (typeof c.generateQuietPrompt === 'function') {
         return await withTimeout(
-            () => c.generateQuietPrompt({ quietPrompt: digestPrompt }),
+            () => c.generateQuietPrompt({ quietPrompt: digestPrompt, responseLength: 2048, removeReasoning: true }),
             DIGEST_REQUEST_TIMEOUT_MS,
             '原生 generateQuietPrompt 提炼请求'
         );
@@ -735,6 +869,9 @@ export async function triggerAsyncDigest(force = false) {
 8. 【世界书条目动态关联 (World Info Linking)】：若提炼的事实是针对已知世界书条目的状态推移、破坏、占领、所有权转移或动态补充设定，请在记忆对象中添加：
    "lorebook_ref": { "entry_uid": <条目UID或null>, "entry_name": "<条目名称>", "book": "<世界书名或空>" }
    若与世界书条目无直接关联，填 "lorebook_ref": null。
+9. 【严格标准 JSON 与双引号防破坏】：
+   - 输出必须是严格合法的标准 JSON，不得有末尾多余逗号。
+   - content、action 等字符串内部如果出现角色台词或对话引用，务必使用中文全角引号（“...”）或反斜杠转义（\"），严禁输出未转义的双引号破坏 JSON 语法结构。
 
 【已有现场状态】：
 ${currentScene}
@@ -803,6 +940,29 @@ ${conversationText}
 
         const participants = getContextParticipants(c, currentState);
         const rawPayload = cleanAndParseJson(response);
+
+        if (!rawPayload) {
+            const rawSnippet = String(response || '').trim().replace(/[\r\n]+/g, ' ').slice(0, 100);
+            const parseErr = `模型返回无法解析为有效 JSON (可能因上下文膨胀或思考耗尽 Token 被腰斩截断)。片段: "${rawSnippet}..."`;
+            console.warn(`[${MODULE_NAME}] [Async] ${parseErr}`);
+            currentState.last_digest_error = parseErr;
+            saveCurrentState();
+            return { success: false, error: parseErr };
+        }
+
+        // 检查是否为模型输出的良性“无变化/空摘要”轮次
+        if (isQuietDigestPayload(rawPayload)) {
+            const quietSummary = unwrapJsonPayload(rawPayload)?.summary || '情境平稳，本轮对话无关键新记忆沉淀';
+            batchUpdate(() => {
+                currentState.last_digest_floor = currentTurn;
+                currentState.last_digest_time = new Date().toLocaleTimeString();
+                currentState.last_digest_summary = quietSummary;
+                currentState.last_digest_error = null;
+            });
+            console.log(`[${MODULE_NAME}] [Async] 识别为良性静默提炼 (${quietSummary})，状态保持平稳`);
+            return { success: true, summary: quietSummary };
+        }
+
         const payload = validateExtractedPayload(rawPayload, currentState.memories || [], participants);
 
         if (payload) {
@@ -827,7 +987,7 @@ ${conversationText}
             return { success: true, summary: currentState.last_digest_summary };
         } else {
             console.warn(`[${MODULE_NAME}] [Async] 提炼内容未通过数据完整性校验，已安全丢弃`);
-            const schemaErr = '模型返回的内容未通过 Schema 格式校验';
+            const schemaErr = '模型返回字段缺失或记忆知情权限未通过 (Schema 校验未通过)';
             currentState.last_digest_error = schemaErr;
             saveCurrentState();
             return { success: false, error: schemaErr };
@@ -964,7 +1124,8 @@ export function buildConsolidationCandidateGroups(memories) {
  * 校验模型归并产出的 Schema 与权限边界 (Fail-Closed 拒绝越权与跨组拼凑)
  */
 export function validateConsolidatedPayload(raw, currentMemories = [], allowedParticipants = null) {
-    if (!raw || typeof raw !== 'object' || !Array.isArray(raw.consolidated)) {
+    const target = unwrapJsonPayload(raw);
+    if (!target || typeof target !== 'object' || !Array.isArray(target.consolidated)) {
         return null;
     }
 
@@ -978,7 +1139,7 @@ export function validateConsolidatedPayload(raw, currentMemories = [], allowedPa
 
     const validConsolidated = [];
 
-    for (const item of raw.consolidated) {
+    for (const item of target.consolidated) {
         if (!item || typeof item !== 'object') continue;
         const content = typeof item.content === 'string' ? item.content.trim().slice(0, 100) : '';
         if (!content) continue;
@@ -1365,6 +1526,7 @@ export async function triggerBacklogDigest(options = {}) {
 3. 【生命周期精准流转】：发现此前已履约、迭代或被证伪的记忆，在 lifecycle_updates 中流转为 completed / superseded / refuted。
 4. 【知情范围隔离】：明确区分 character 私知、shared 共享 (列全 known_by) 与 world 公共。
 5. 【世界书动态关联】：若推进或改变了已知世界书条目设定，添加 lorebook_ref。
+6. 【严格标准 JSON 与双引号防破坏】：输出必须是严格合法的标准 JSON，不得有末尾多余逗号。content、action 等字符串内部如果出现角色台词或对话引用，务必使用中文全角引号（“...”）或反斜杠转义（\"），严禁输出未转义的双引号破坏 JSON 语法结构。
 
 【上一阶段现场状态】：
 ${currentScene}
@@ -1420,6 +1582,27 @@ ${conversationText}
 
             const participants = getContextParticipants(c, curState);
             const rawPayload = cleanAndParseJson(response);
+
+            if (!rawPayload) {
+                console.warn(`[${MODULE_NAME}] [Backlog] 批次 ${i + 1} 模型返回无法解析为有效 JSON (可能因上下文膨胀或截断)，跳过本批`);
+                continue;
+            }
+
+            if (isQuietDigestPayload(rawPayload)) {
+                const turnAtBatchEnd = getChatTurnCount(chat.slice(0, batch.end));
+                const quietSummary = unwrapJsonPayload(rawPayload)?.summary || '阶段情境平稳，无新增记忆';
+                batchUpdate(() => {
+                    curState.last_digest_floor = turnAtBatchEnd;
+                    curState.last_digest_time = new Date().toLocaleTimeString();
+                    curState.last_digest_summary = `历史回溯 (${i + 1}/${batches.length}): ${quietSummary}`;
+                    curState.last_digest_error = null;
+                });
+                batchesProcessed++;
+                const percent = Math.round(((i + 1) / batches.length) * 100);
+                console.log(`[${MODULE_NAME}] [Backlog] 批次 ${i + 1}/${batches.length} 完成 (${percent}%): ${quietSummary}`);
+                continue;
+            }
+
             const payload = validateExtractedPayload(rawPayload, curState.memories || [], participants);
 
             if (payload) {
