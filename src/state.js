@@ -651,6 +651,7 @@ export function addMemory(item) {
             }
 
             existing.floor = item.floor || existing.floor;
+            existing.last_activated_floor = item.floor || existing.last_activated_floor || existing.floor;
             existing.updated_at = new Date().toISOString();
 
             saveCurrentState();
@@ -672,6 +673,7 @@ export function addMemory(item) {
         known_by: knownBy,
         lorebook_ref: sanitizeLorebookRef(item.lorebook_ref),
         floor: item.floor || 0,
+        last_activated_floor: item.floor || 0,
         created_at: new Date().toISOString(),
         updated_at: new Date().toISOString()
     };
@@ -902,6 +904,40 @@ export function purgeArchivedMemories() {
         const removed = before - s.memories.length;
         return { success: true, removed, remaining: s.memories.length };
     });
+}
+
+/**
+ * 记忆长周期衰减与自动沉睡巡检引擎 (Inactivity Dormancy Engine)
+ * 当某些细节记忆经历多轮对话 (autoSleepTurns) 从未被上下文提及或激活，
+ * 自动将其置为 MEMORY_STATUS.ARCHIVED (沉睡休眠)，退出日常活跃池。
+ */
+export function applyInactivitySleep(currentTurn, overrideSettings = null) {
+    const settings = overrideSettings || getSettings();
+    if (settings.autoSleepEnabled === false) return { sleptCount: 0 };
+
+    const sleepTurns = Math.max(5, Number(settings.autoSleepTurns) || 20);
+    const s = getState();
+    let sleptCount = 0;
+
+    for (const mem of s.memories) {
+        // 仅处理处于 active 生命周期且 status 为 triggered 的非常驻条目
+        if (mem.lifecycle === MEMORY_LIFECYCLE.ACTIVE && mem.status === MEMORY_STATUS.TRIGGERED) {
+            const lastActive = Number.isInteger(mem.last_activated_floor)
+                ? mem.last_activated_floor
+                : (Number.isInteger(mem.floor) ? mem.floor : 0);
+            if (currentTurn - lastActive >= sleepTurns) {
+                mem.status = MEMORY_STATUS.ARCHIVED;
+                mem.updated_at = new Date().toISOString();
+                sleptCount++;
+                console.log(`[${MODULE_NAME}] [Auto-Sleep] 记忆 [${mem.id}] 超过 ${sleepTurns} 轮未命中 (最后活跃: 楼层 ${lastActive}, 当前: 楼层 ${currentTurn})，已自动转入沉睡休眠`);
+            }
+        }
+    }
+
+    if (sleptCount > 0) {
+        saveCurrentState();
+    }
+    return { sleptCount };
 }
 
 /**

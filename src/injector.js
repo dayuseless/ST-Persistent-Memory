@@ -8,7 +8,7 @@
  */
 
 import { MODULE_NAME, INJECT_KEY, MEMORY_STATUS, MEMORY_LIFECYCLE, MEMORY_SCOPE, MEMORY_TYPES } from './config.js';
-import { getState, getSettings } from './state.js';
+import { getState, getSettings, saveCurrentState } from './state.js';
 import { buildQueryContext, calculateHybridMemoryScore } from './semantic.js';
 
 function getContext() {
@@ -226,6 +226,7 @@ export function buildAndInjectMemoryPrompt() {
     const pinnedCandidates = [];
     const triggeredCandidates = [];
     const VALID_SCOPES = new Set(Object.values(MEMORY_SCOPE));
+    const currentTurn = Array.isArray(c?.chat) ? c.chat.filter(m => !m.is_user).length : 0;
 
     for (const mem of memories) {
         // 规则 A：生命周期过滤——已完成、已被取代、已被证伪的条目绝不主动注入
@@ -233,8 +234,10 @@ export function buildAndInjectMemoryPrompt() {
             continue;
         }
 
-        // 规则 B：归档状态绝不主动注入
-        if (mem.status === MEMORY_STATUS.ARCHIVED) {
+        // 规则 B：归档状态绝不常规注入 (除非处于活跃生命周期且启用沉睡唤醒)
+        const isArchived = mem.status === MEMORY_STATUS.ARCHIVED;
+        const allowDormantRecall = settings.autoSleepEnabled !== false && isArchived && (!mem.lifecycle || mem.lifecycle === MEMORY_LIFECYCLE.ACTIVE);
+        if (isArchived && !allowDormantRecall) {
             continue;
         }
 
@@ -299,11 +302,13 @@ export function buildAndInjectMemoryPrompt() {
             continue;
         }
 
-        // 条件激活项 (Triggered) - 结合关键词词法与密集向量相似度的混合检索
-        if (mem.status === MEMORY_STATUS.TRIGGERED) {
+        // 条件激活项 (Triggered) 与 沉睡记忆联想唤醒 (Dormant Recall)
+        if (mem.status === MEMORY_STATUS.TRIGGERED || allowDormantRecall) {
             const score = calculateHybridMemoryScore(mem, queryContext, settings);
-            if (score > 0) {
-                triggeredCandidates.push({ mem, score, line: formattedLine, tokens: itemTokens });
+            // 沉睡记忆需要更高的相关性门槛才被联想唤醒 (防止被低分杂音惊醒)
+            const minScore = isArchived ? 0.60 : 0;
+            if (score > minScore) {
+                triggeredCandidates.push({ mem, score, line: formattedLine, tokens: itemTokens, wasArchived: isArchived });
             }
         }
     }
@@ -327,6 +332,7 @@ export function buildAndInjectMemoryPrompt() {
     // 6. 激活项装载 (按相关度打分降序，在剩余 remainingTokens 下原子装载，遇满即停，严禁腰斩单条记忆)
     const maxTriggered = Math.max(1, Number(settings.maxTriggeredCount) || 5);
     const selectedTriggeredLines = [];
+    let hasMemoryStateMutated = false;
 
     triggeredCandidates.sort((a, b) => {
         if (b.score !== a.score) return b.score - a.score;
@@ -340,10 +346,25 @@ export function buildAndInjectMemoryPrompt() {
             selectedTriggeredLines.push(item.line);
             remainingTokens -= requiredTokens;
             memorySectionReserved = true;
+
+            // 活跃度刷新与沉睡唤醒 (Wake Up)
+            if (item.wasArchived) {
+                item.mem.status = MEMORY_STATUS.TRIGGERED;
+                hasMemoryStateMutated = true;
+                console.log(`[${MODULE_NAME}] [Wake-Up] 沉睡记忆 [${item.mem.id}] 被高匹配度重新唤醒: "${item.mem.content}"`);
+            }
+            if (item.mem.last_activated_floor !== currentTurn) {
+                item.mem.last_activated_floor = currentTurn;
+                hasMemoryStateMutated = true;
+            }
         } else {
             // 预算已满，整条截断，不再塞入不完整的后文
             break;
         }
+    }
+
+    if (hasMemoryStateMutated) {
+        saveCurrentState();
     }
 
     // 7. 组装记忆条目文本

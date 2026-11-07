@@ -75,7 +75,8 @@ import {
     batchUpdate,
     saveCurrentState,
     getActiveWorldBookInfo,
-    syncMemoryDeltaToWorldInfo
+    syncMemoryDeltaToWorldInfo,
+    applyInactivitySleep
 } from '../src/state.js';
 
 import {
@@ -1715,6 +1716,93 @@ async function runTests() {
             new_memories: [{ type: 'fact', content: '发现暗门' }]
         };
         assert.strictEqual(isQuietDigestPayload(activePayload), false, '含实质内容的 payload 不得判定为静默');
+    });
+
+    // ──────────────────────────────────────────────────────────
+    // T46: 记忆长周期衰减与超时沉睡巡检引擎 (Inactivity Dormancy Engine)
+    // ──────────────────────────────────────────────────────────
+    test('T46: 连续多轮未命中的记忆自动转入沉睡休眠 (ARCHIVED)，常驻项 (PINNED) 豁免', () => {
+        mockContext.chatMetadata = {};
+        loadCurrentState();
+
+        // 添加 3 条记忆：
+        // 1. 第 5 楼创建的琐碎记忆 (最后活跃第 5 楼)
+        const mem1 = addMemory({
+            content: '李四在集市买了一匹黑马',
+            type: MEMORY_TYPES.FACT,
+            scope: MEMORY_SCOPE.WORLD,
+            floor: 5
+        });
+        // 2. 第 5 楼创建但设为 PINNED 的核心记忆
+        const mem2 = addMemory({
+            content: '两家曾在三十年前订下血契',
+            type: MEMORY_TYPES.FACT,
+            scope: MEMORY_SCOPE.WORLD,
+            floor: 5,
+            status: MEMORY_STATUS.PINNED
+        });
+        // 3. 第 28 楼创建的新记忆
+        const mem3 = addMemory({
+            content: '队伍刚刚抵达玉门关城楼',
+            type: MEMORY_TYPES.FACT,
+            scope: MEMORY_SCOPE.WORLD,
+            floor: 28
+        });
+
+        assert.strictEqual(mem1.status, MEMORY_STATUS.TRIGGERED);
+        assert.strictEqual(mem2.status, MEMORY_STATUS.PINNED);
+        assert.strictEqual(mem3.status, MEMORY_STATUS.TRIGGERED);
+
+        // 当前对话推进至第 30 楼，执行沉睡衰减巡检 (默认 autoSleepTurns = 20)
+        // mem1: 30 - 5 = 25 >= 20 轮，应当沉睡！
+        // mem2: PINNED，常驻免除沉睡！
+        // mem3: 30 - 28 = 2 < 20 轮，仍然保持激活活跃！
+        const res = applyInactivitySleep(30, { autoSleepEnabled: true, autoSleepTurns: 20 });
+        assert.strictEqual(res.sleptCount, 1, '应有 1 条记忆进入沉睡');
+
+        const state = getState();
+        const updated1 = state.memories.find(m => m.id === mem1.id);
+        const updated2 = state.memories.find(m => m.id === mem2.id);
+        const updated3 = state.memories.find(m => m.id === mem3.id);
+
+        assert.strictEqual(updated1.status, MEMORY_STATUS.ARCHIVED, '超期未激活记忆应自动转入 ARCHIVED 沉睡');
+        assert.strictEqual(updated2.status, MEMORY_STATUS.PINNED, '常驻置顶记忆绝不自动沉睡');
+        assert.strictEqual(updated3.status, MEMORY_STATUS.TRIGGERED, '近期活跃记忆保持 TRIGGERED 状态');
+    });
+
+    // ──────────────────────────────────────────────────────────
+    // T47: 沉睡记忆联想唤醒 (Associative Wake-Up / Recall) 测试
+    // ──────────────────────────────────────────────────────────
+    test('T47: 沉睡休眠的记忆在遇到强相关语义或关键词重新被激活时，能自动唤醒并刷新活跃楼层', () => {
+        mockContext.chatMetadata = {};
+        loadCurrentState();
+
+        // 构造一条已处于沉睡状态的记忆
+        const dormantMem = addMemory({
+            content: '李四佩戴的古玉刻有玄武纹章',
+            type: MEMORY_TYPES.FACT,
+            scope: MEMORY_SCOPE.WORLD,
+            floor: 2,
+            trigger_keys: ['古玉', '玄武纹章', '李四']
+        });
+        dormantMem.status = MEMORY_STATUS.ARCHIVED;
+        dormantMem.last_activated_floor = 2;
+        saveCurrentState();
+
+        // 构造包含强相关上下文的对话情境 (第 50 楼重新提及玄武纹章)
+        mockContext.chat = [
+            { is_user: true, mes: '你看李四身上那块古玉，上面的玄武纹章似乎有些眼熟。' },
+            { is_user: false, name: '角色A', mes: '确实，这正是玄武门的信物！' }
+        ];
+
+        // 触发提示词注入
+        const injected = buildAndInjectMemoryPrompt();
+        assert.ok(injected.includes('古玉刻有玄武纹章'), '沉睡记忆应被高相关上下文联想召回并注入');
+
+        const state = getState();
+        const awakenedMem = state.memories.find(m => m.id === dormantMem.id);
+        assert.strictEqual(awakenedMem.status, MEMORY_STATUS.TRIGGERED, '被召回的沉睡记忆应自动唤醒为 TRIGGERED 活跃状态');
+        assert.ok(awakenedMem.last_activated_floor >= 1, '活跃楼层指针应被同步刷新');
     });
 
     console.log(`\n======================================================`);

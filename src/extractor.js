@@ -4,7 +4,7 @@
  */
 
 import { MODULE_NAME, MEMORY_TYPES, MEMORY_STATUS, MEMORY_LIFECYCLE, MEMORY_SCOPE } from './config.js';
-import { getState, getSettings, updateScene, addMemory, setMemoryLifecycle, saveCurrentState, batchUpdate, getActiveWorldBookInfo } from './state.js';
+import { getState, getSettings, updateScene, addMemory, setMemoryLifecycle, saveCurrentState, batchUpdate, getActiveWorldBookInfo, applyInactivitySleep } from './state.js';
 
 function getContext() {
     return window.SillyTavern?.getContext?.() ?? null;
@@ -959,6 +959,7 @@ ${conversationText}
                 currentState.last_digest_summary = quietSummary;
                 currentState.last_digest_error = null;
             });
+            applyInactivitySleep(currentTurn, settings);
             console.log(`[${MODULE_NAME}] [Async] 识别为良性静默提炼 (${quietSummary})，状态保持平稳`);
             return { success: true, summary: quietSummary };
         }
@@ -974,6 +975,9 @@ ${conversationText}
                 currentState.last_digest_error = null;
             });
             console.log(`[${MODULE_NAME}] [Async] 提炼原子提交落盘 (会话: ${startChatId}, rev.${currentState.state_revision}): ${currentState.last_digest_summary}`);
+
+            // 执行超期未激活记忆自动沉睡巡检
+            applyInactivitySleep(currentTurn, settings);
 
             // 检查是否达到长程记忆归并阈值 (由后台异步触发，不阻塞当前响应)
             if (settings.autoConsolidate !== false) {
@@ -1243,7 +1247,7 @@ export async function triggerMemoryConsolidation(force = false) {
     const candidateGroups = buildConsolidationCandidateGroups(state.memories);
     const totalCandidates = candidateGroups.reduce((acc, g) => acc + g.items.length, 0);
 
-    const threshold = Math.max(5, Number(settings.consolidateThreshold) || 20);
+    const threshold = Math.max(5, Number(settings.consolidateThreshold) || 10);
     if (!force && totalCandidates < threshold) {
         return { success: false, reason: `当前候选记忆 ${totalCandidates} 条未达归并阈值 (${threshold})` };
     }
@@ -1643,10 +1647,18 @@ ${conversationText}
         finalState.last_digest_summary = `全量历史提炼完成：共消化 ${batchesProcessed}/${batches.length} 批次，当前共 ${finalState.memories.length} 条记忆`;
         saveCurrentState();
 
-        // 检查是否达到长程记忆归并阈值
-        if (settings.autoConsolidate !== false && finalState.memories.length >= (settings.consolidateThreshold || 20)) {
+        // 历史回溯消化完成后：
+        // 1. 执行未命中记忆沉睡巡检
+        const lastTurn = getChatTurnCount(chat);
+        applyInactivitySleep(lastTurn, settings);
+
+        // 2. 自动链式触发高阶宏观归并 (固化压缩琐碎细节)
+        if (settings.autoConsolidate !== false) {
+            console.log(`[${MODULE_NAME}] [Backlog] 全量提炼完成，链式启动宏观归并固化...`);
             setTimeout(() => {
-                triggerMemoryConsolidation(false).catch(() => {});
+                triggerMemoryConsolidation(true).catch(err => {
+                    console.error(`[${MODULE_NAME}] [Backlog] 归并异常:`, err);
+                });
             }, 1000);
         }
 
