@@ -1,6 +1,6 @@
 # SillyTavern 持续记忆插件 (ST-Persistent-Memory)
 
-[![Version](https://img.shields.io/badge/version-v0.1.15-blue.svg)](https://github.com/dayuseless/ST-Persistent-Memory)
+[![Version](https://img.shields.io/badge/version-v0.1.16-blue.svg)](https://github.com/dayuseless/ST-Persistent-Memory)
 [![SillyTavern](https://img.shields.io/badge/SillyTavern-1.12.0+-purple.svg)](https://github.com/SillyTavern/SillyTavern)
 [![License](https://img.shields.io/badge/license-MIT-green.svg)](LICENSE)
 
@@ -77,7 +77,7 @@
 
 ### 方式二：手动离线包安装
 
-1. 从 [Releases 页面](https://github.com/dayuseless/ST-Persistent-Memory/releases) 下载 `ST-Persistent-Memory-v0.1.15.zip`。
+1. 从 [Releases 页面](https://github.com/dayuseless/ST-Persistent-Memory/releases) 下载 `ST-Persistent-Memory-v0.1.16.zip`。
 2. 解压到 SillyTavern 的扩展目录中：
    ```text
    SillyTavern/public/scripts/extensions/third-party/ST-Persistent-Memory/
@@ -158,6 +158,14 @@ window.__persistentMemory.digestNow();
 ---
 
 ## 📝 版本历史
+
+### v0.1.16 (世界书深度协同：设定复合筛选、安全差量写回钩子与全流程防重矩阵)
+
+- **按关联世界书条目复合筛选 (Lorebook & Lifecycle Filter)**：在 HUD 记忆流控制台顶部引入设定筛选选择器，支持按“全部设定”、“未关联设定”以及各个具体关联条目（如 `📖 断钢圣剑 (3)`）快速筛选聚合记忆。与既有的生命周期筛选（活跃/归档/全部）无缝组合，大幅提升长程复杂跑团中某项专属设定的演进回溯体验。
+- **安全事实差量写回机制 (Write-Back Hook)**：记忆卡片新增“写入设定 / 已入册”快捷操作。支持将长程剧情中沉淀的动态客观事实（例如“圣剑在第三章折断”），一键安全写回至静态世界书文件的对应条目末尾，实现从“动态记忆差量”到“静态设定常驻”的安全沉淀闭环。
+- **差异预览与用户二次确认 (Dry-Run Preview & Confirmation Modal)**：严格遵循用户知情权原则，写回操作前自动发起 Dry-Run 校验并弹出差异预览浮层，清晰展示目标世界书、条目 UID、条目名以及拟追加的带日期标记事实差量；提供“同步后将本记忆置为【履约/办结】”可选开关，杜绝静默隐式修改。
+- **强幂等防重与安全边界防护**：内置严格幂等防重检查，当目标条目正文已包含该记忆内容时拒绝重复写入；对角色卡内置只读世界书（Embedded Character Book）提供只读拦截与安全提示；自动自愈更新条目的 `file_name` 与 `entry_uid` 绑定信息。
+- **测试矩阵扩展至 39 项 (T1-T39 全绿)**：新增针对双维复合筛选规则 (T38) 与写回钩子完整流程（预览、提交、生命周期流转、幂等防重及只读拦截）(T39) 的自动化测试覆盖。
 
 ### v0.1.15 (世界书关联与协同：会话级设定提取、动态差量注入、双路加权与权限边界锁)
 

@@ -74,7 +74,8 @@ import {
     reindexAllMemories,
     batchUpdate,
     saveCurrentState,
-    getActiveWorldBookInfo
+    getActiveWorldBookInfo,
+    syncMemoryDeltaToWorldInfo
 } from '../src/state.js';
 
 import {
@@ -1286,6 +1287,159 @@ async function runTests() {
         assert(reloaded, '导入后条目应存在');
         assert(reloaded.lorebook_ref, '导入后应完好保留 lorebook_ref');
         assert.strictEqual(reloaded.lorebook_ref.entry_name, '精灵之森');
+    });
+
+    // ─────────────────────────────────────────────────────────────
+    // T38: 世界书条目与生命周期双维复合筛选 (Lorebook & Lifecycle Filter Logic)
+    // ─────────────────────────────────────────────────────────────
+    test('T38: 世界书条目与生命周期双维复合筛选逻辑 (UI 筛选规则)', () => {
+        const isTerminalOrArchived = m => m.status === MEMORY_STATUS.ARCHIVED || (m.lifecycle && m.lifecycle !== MEMORY_LIFECYCLE.ACTIVE);
+
+        const sampleMemories = [
+            { id: '1', content: '精灵之森的露水', status: 'triggered', lifecycle: 'active', lorebook_ref: { entry_name: '精灵之森' } },
+            { id: '2', content: '精灵长老已交出秘符', status: 'archived', lifecycle: 'completed', lorebook_ref: { entry_name: '精灵之森' } },
+            { id: '3', content: '圣剑已由湖中取出', status: 'triggered', lifecycle: 'active', lorebook_ref: { entry_name: '断钢圣剑' } },
+            { id: '4', content: '普通日常对话记录', status: 'triggered', lifecycle: 'active', lorebook_ref: null },
+            { id: '5', content: '旧的无关联废弃记忆', status: 'archived', lifecycle: 'superseded', lorebook_ref: null }
+        ];
+
+        const filterFn = (mems, memFilter, loreFilter) => mems.filter(m => {
+            if (memFilter === 'active' && isTerminalOrArchived(m)) return false;
+            if (memFilter === 'archived' && !isTerminalOrArchived(m)) return false;
+
+            if (loreFilter === '__unlinked__') {
+                if (m.lorebook_ref && m.lorebook_ref.entry_name) return false;
+            } else if (loreFilter) {
+                if (!m.lorebook_ref || m.lorebook_ref.entry_name !== loreFilter) return false;
+            }
+            return true;
+        });
+
+        // 1. 全部设定
+        assert.strictEqual(filterFn(sampleMemories, 'all', '').length, 5, '全部+不限设定');
+        assert.strictEqual(filterFn(sampleMemories, 'active', '').length, 3, '活跃+不限设定');
+        assert.strictEqual(filterFn(sampleMemories, 'archived', '').length, 2, '归档+不限设定');
+
+        // 2. 未关联设定
+        assert.strictEqual(filterFn(sampleMemories, 'all', '__unlinked__').length, 2, '全部+未关联设定');
+        assert.strictEqual(filterFn(sampleMemories, 'active', '__unlinked__').length, 1, '活跃+未关联设定');
+        assert.strictEqual(filterFn(sampleMemories, 'archived', '__unlinked__').length, 1, '归档+未关联设定');
+
+        // 3. 指定设定：精灵之森
+        assert.strictEqual(filterFn(sampleMemories, 'all', '精灵之森').length, 2, '全部+精灵之森');
+        assert.strictEqual(filterFn(sampleMemories, 'active', '精灵之森').length, 1, '活跃+精灵之森');
+        assert.strictEqual(filterFn(sampleMemories, 'archived', '精灵之森').length, 1, '归档+精灵之森');
+
+        // 4. 指定设定：断钢圣剑
+        assert.strictEqual(filterFn(sampleMemories, 'active', '断钢圣剑').length, 1, '活跃+断钢圣剑');
+        assert.strictEqual(filterFn(sampleMemories, 'archived', '断钢圣剑').length, 0, '归档+断钢圣剑');
+    });
+
+    // ─────────────────────────────────────────────────────────────
+    // T39: 世界书安全差量写回机制 (Write-Back Hook: Dry-run, Commit, Idempotency & Guards)
+    // ─────────────────────────────────────────────────────────────
+    await testAsync('T39: 世界书安全差量写回机制 (Write-Back Hook: 预览、提交、幂等防重与安全边界)', async () => {
+        const state = getState();
+        state.memories = [];
+
+        // 准备 Mock 世界书数据
+        const mockLoreEntries = {
+            101: {
+                uid: 101,
+                comment: '断钢圣剑',
+                key: ['圣剑', '断钢'],
+                content: '湖中仙女赠予亚瑟王的绝世神兵。'
+            },
+            102: {
+                uid: 102,
+                comment: '精灵之泉',
+                key: ['泉水'],
+                content: '传说中拥有治愈万物之效的秘泉。'
+            }
+        };
+
+        let savedLoreName = null;
+        let savedLoreData = null;
+
+        mockContext.chatMetadata = { world_info: '王国史诗世界书' };
+        mockContext.loadWorldInfo = async (name) => {
+            if (name === '王国史诗世界书') {
+                return { entries: mockLoreEntries };
+            }
+            return null;
+        };
+        mockContext.saveWorldInfo = async (name, data, imm) => {
+            savedLoreName = name;
+            savedLoreData = JSON.parse(JSON.stringify(data));
+            return true;
+        };
+
+        // 添加一条关联到断钢圣剑的动态记忆
+        const memSword = addMemory({
+            content: '在第三章战斗中圣剑断为两截',
+            type: 'fact',
+            scope: 'world',
+            lorebook_ref: { entry_name: '断钢圣剑', entry_uid: 101 }
+        });
+
+        // 1. 无关记忆写回拦截
+        const memUnlinked = addMemory({
+            content: '普通对话细节',
+            type: 'fact',
+            scope: 'world'
+        });
+        const unlinkedRes = await syncMemoryDeltaToWorldInfo(memUnlinked.id);
+        assert.strictEqual(unlinkedRes.success, false, '未关联世界书的记忆应被拦截');
+        assert(unlinkedRes.reason.includes('未关联任何世界书'), '明确拦截原因');
+
+        // 2. 预览模式 (Dry Run)：只出 diff，绝不修改世界书原始数据
+        const dryRes = await syncMemoryDeltaToWorldInfo(memSword.id, { dryRun: true });
+        assert.strictEqual(dryRes.success, true, 'Dry run 应返回成功');
+        assert.strictEqual(dryRes.dryRun, true, '明确标记 dryRun');
+        assert.strictEqual(dryRes.preview.entryName, '断钢圣剑');
+        assert.strictEqual(dryRes.preview.entryUid, 101);
+        assert(dryRes.preview.newContent.includes('在第三章战斗中圣剑断为两截'), '新内容应包含追加差量');
+        assert(!mockLoreEntries[101].content.includes('在第三章战斗中圣剑断为两截'), 'Dry run 绝不修改原始条目正文');
+        assert.strictEqual(savedLoreData, null, 'Dry run 绝不调用 saveWorldInfo');
+
+        // 3. 正式提交写回 (Commit) 配合 markCompleted
+        const commitRes = await syncMemoryDeltaToWorldInfo(memSword.id, { markCompleted: true });
+        assert.strictEqual(commitRes.success, true, '正式写回应成功');
+        assert.strictEqual(savedLoreName, '王国史诗世界书');
+        assert(mockLoreEntries[101].content.includes('在第三章战斗中圣剑断为两截'), '条目正文应成功追加差量');
+        assert(mockLoreEntries[101].content.includes('[持续事实更新'), '应带有持续事实更新标记');
+
+        // 验证记忆自身的状态更新
+        const updatedMem = state.memories.find(m => m.id === memSword.id);
+        assert.strictEqual(updatedMem.synced_to_world_info, true, '记忆应被标记为已同步入世界书');
+        assert(updatedMem.synced_at, '应记录同步时间戳');
+        assert.strictEqual(updatedMem.lifecycle, 'completed', '勾选 markCompleted 应将生命周期转为 completed');
+
+        // 4. 幂等防重检查：再次写回相同事实应被拦截，杜绝重复污染世界书
+        const dupRes = await syncMemoryDeltaToWorldInfo(memSword.id);
+        assert.strictEqual(dupRes.success, false, '重复写回应被幂等拦截');
+        assert.strictEqual(dupRes.alreadySynced, true, '标记 alreadySynced 为 true');
+        assert(dupRes.reason.includes('无需重复写入'), '明确提示已包含内容');
+
+        // 5. 角色卡内置世界书 (Embedded Character Book) 只读安全拦截
+        mockContext.chatMetadata = {}; // 清空会话世界书
+        mockContext.characterId = 0;
+        mockContext.characters[0].data = {
+            character_book: {
+                name: '角色内置只读设定集',
+                entries: [{ id: 1, name: '精灵之泉', content: '只读' }]
+            }
+        };
+
+        const memEmbedded = addMemory({
+            content: '泉水干涸',
+            type: 'fact',
+            scope: 'world',
+            lorebook_ref: { entry_name: '精灵之泉' }
+        });
+        const embedRes = await syncMemoryDeltaToWorldInfo(memEmbedded.id);
+        assert.strictEqual(embedRes.success, false, '内嵌角色卡世界书应被只读拦截');
+        assert(embedRes.reason.includes('只读卡片资源'), '明确提示内嵌设定属于只读');
     });
 
     console.log(`\n======================================================`);

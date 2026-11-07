@@ -319,6 +319,8 @@ export function loadCurrentState() {
             character: char,
             known_by: knownBy,
             lorebook_ref: lorebookRef,
+            synced_to_world_info: Boolean(m.synced_to_world_info),
+            synced_at: typeof m.synced_at === 'string' ? m.synced_at : null,
             // P1 修复旧记忆迁移语义：旧版无 lifecycle 的 archived 项仅代表检索休眠，绝不擅自篡改为 completed
             lifecycle: m.lifecycle || MEMORY_LIFECYCLE.ACTIVE
         };
@@ -730,6 +732,14 @@ export function updateMemory(id, patch) {
         updated.lorebook_ref = sanitizeLorebookRef(patch.lorebook_ref);
     }
 
+    if (patch.synced_to_world_info !== undefined) {
+        updated.synced_to_world_info = Boolean(patch.synced_to_world_info);
+    }
+
+    if (patch.synced_at !== undefined) {
+        updated.synced_at = typeof patch.synced_at === 'string' ? patch.synced_at : null;
+    }
+
     if (patch.content !== undefined || patch.trigger_keys !== undefined || patch.type !== undefined || patch.lorebook_ref !== undefined) {
         try {
             syncEnsureLocalEmbedding(updated);
@@ -816,6 +826,8 @@ export function importMemoryData(data, strategy = 'merge') {
                 character,
                 known_by: knownBy,
                 lorebook_ref: sanitizeLorebookRef(m.lorebook_ref),
+                synced_to_world_info: Boolean(m.synced_to_world_info),
+                synced_at: typeof m.synced_at === 'string' ? m.synced_at : null,
                 trigger_keys: triggerKeys,
                 floor: Number(m.floor) || 0,
                 created_at: m.created_at || new Date().toISOString(),
@@ -1030,5 +1042,173 @@ export async function getActiveWorldBookInfo() {
     } catch (e) {
         console.warn(`[${MODULE_NAME}] 读取当前会话世界书 "${bookName}" 失败:`, e);
         return { bookName, source: 'chat_or_char', entries: [] };
+    }
+}
+
+/**
+ * 将某条动态记忆的事实差量安全同步写回至关联的世界书条目中 (Write-Back Hook)
+ * @param {string} memId - 记忆 ID
+ * @param {object} [options]
+ * @param {boolean} [options.dryRun=false] - 是否仅计算差量预览而不实际写入
+ * @param {boolean} [options.markCompleted=false] - 成功写回后是否自动将该记忆置为 completed 履约
+ * @param {string} [options.customDelta] - 自定义追加正文 (默认使用 mem.content)
+ * @returns {Promise<{success: boolean, reason?: string, alreadySynced?: boolean, dryRun?: boolean, preview?: object, bookName?: string, entryName?: string, entryUid?: number}>}
+ */
+export async function syncMemoryDeltaToWorldInfo(memId, options = {}) {
+    const c = getContext();
+    if (!c) {
+        return { success: false, reason: '未找到 SillyTavern 运行上下文' };
+    }
+
+    const s = getState();
+    const mem = s.memories.find(m => m.id === memId);
+    if (!mem) {
+        return { success: false, reason: '指定的记忆条目不存在' };
+    }
+
+    if (!mem.lorebook_ref || !mem.lorebook_ref.entry_name) {
+        return { success: false, reason: '该记忆未关联任何世界书条目' };
+    }
+
+    const targetEntryName = mem.lorebook_ref.entry_name.trim();
+    const targetEntryUid = (mem.lorebook_ref.entry_uid !== undefined && mem.lorebook_ref.entry_uid !== null)
+        ? Number(mem.lorebook_ref.entry_uid)
+        : null;
+
+    // 获取目标世界书文件名与类型
+    let targetBookName = mem.lorebook_ref.file_name || null;
+    let isEmbedded = false;
+
+    if (!targetBookName) {
+        const activeInfo = await getActiveWorldBookInfo();
+        if (activeInfo) {
+            targetBookName = activeInfo.bookName;
+            isEmbedded = activeInfo.source === 'character_embedded';
+        }
+    }
+
+    if (isEmbedded) {
+        return { success: false, reason: '当前生效的世界书为角色卡内置设定 (Embedded Character Book)，属于只读卡片资源，暂不支持外部直接反写。' };
+    }
+
+    if (!targetBookName) {
+        return { success: false, reason: '无法确定目标世界书文件名称，请检查当前会话是否已绑定世界书。' };
+    }
+
+    // 加载目标世界书文件
+    let data = null;
+    try {
+        if (typeof c.loadWorldInfo === 'function') {
+            data = await c.loadWorldInfo(targetBookName);
+        } else if (typeof window !== 'undefined' && typeof window.loadWorldInfo === 'function') {
+            data = await window.loadWorldInfo(targetBookName);
+        }
+    } catch (e) {
+        return { success: false, reason: `加载世界书 "${targetBookName}" 异常: ${e.message}` };
+    }
+
+    if (!data || !data.entries || typeof data.entries !== 'object') {
+        return { success: false, reason: `世界书 "${targetBookName}" 未包含有效的条目数据` };
+    }
+
+    // 检索目标条目：优先按 UID，次选按 comment (条目名) 或 key (触发词)
+    let targetEntry = null;
+    if (targetEntryUid !== null && data.entries[targetEntryUid]) {
+        targetEntry = data.entries[targetEntryUid];
+    }
+
+    if (!targetEntry) {
+        for (const entry of Object.values(data.entries)) {
+            if (!entry) continue;
+            const comment = String(entry.comment || '').trim();
+            const keys = Array.isArray(entry.key || entry.keys) ? (entry.key || entry.keys) : [];
+            if (comment === targetEntryName || keys.includes(targetEntryName)) {
+                targetEntry = entry;
+                break;
+            }
+        }
+    }
+
+    if (!targetEntry) {
+        return { success: false, reason: `在世界书 "${targetBookName}" 中未找到名称或关键词为 "${targetEntryName}" 的条目` };
+    }
+
+    const deltaContent = (options.customDelta || mem.content || '').trim();
+    if (!deltaContent) {
+        return { success: false, reason: '要追加的事实差量为空' };
+    }
+
+    const currentContent = String(targetEntry.content || '');
+
+    // 幂等防重检查：如果条目中已经包含了这段事实，避免重复追加
+    if (currentContent.includes(deltaContent)) {
+        return {
+            success: false,
+            alreadySynced: true,
+            reason: `世界书条目【${targetEntry.comment || targetEntryName}】已包含此条记忆内容，无需重复写入`
+        };
+    }
+
+    const stamp = new Date().toISOString().split('T')[0];
+    const appendedText = `\n\n[持续事实更新 ${stamp}] ${deltaContent}`;
+    const newContent = currentContent ? (currentContent + appendedText) : appendedText.trim();
+
+    // 预览模式 (Dry Run)
+    if (options.dryRun) {
+        return {
+            success: true,
+            dryRun: true,
+            preview: {
+                bookName: targetBookName,
+                entryUid: targetEntry.uid,
+                entryName: targetEntry.comment || targetEntryName,
+                originalContent: currentContent,
+                appendedText: appendedText.trim(),
+                newContent: newContent
+            }
+        };
+    }
+
+    // 实际执行写入提交
+    try {
+        targetEntry.content = newContent;
+
+        if (typeof c.saveWorldInfo === 'function') {
+            await c.saveWorldInfo(targetBookName, data, true);
+        } else if (typeof window !== 'undefined' && typeof window.saveWorldInfo === 'function') {
+            await window.saveWorldInfo(targetBookName, data, true);
+        } else {
+            return { success: false, reason: '当前环境中未找到 saveWorldInfo 接口' };
+        }
+
+        // 刷新酒馆原生世界书编辑器（若当前打开）
+        if (typeof c.reloadWorldInfoEditor === 'function') {
+            try { c.reloadWorldInfoEditor(); } catch {}
+        }
+
+        // 更新记忆的同步状态与关联元数据
+        batchUpdate(() => {
+            mem.synced_to_world_info = true;
+            mem.synced_at = new Date().toISOString();
+            if (options.markCompleted) {
+                mem.lifecycle = MEMORY_LIFECYCLE.COMPLETED;
+            }
+            if (!mem.lorebook_ref.file_name) {
+                mem.lorebook_ref.file_name = targetBookName;
+            }
+            if (mem.lorebook_ref.entry_uid === null || mem.lorebook_ref.entry_uid === undefined) {
+                mem.lorebook_ref.entry_uid = targetEntry.uid;
+            }
+        });
+
+        return {
+            success: true,
+            bookName: targetBookName,
+            entryUid: targetEntry.uid,
+            entryName: targetEntry.comment || targetEntryName
+        };
+    } catch (e) {
+        console.error(`[${MODULE_NAME}] 同步写回世界书失败:`, e);
+        return { success: false, reason: `写回世界书文件失败: ${e.message}` };
     }
 }

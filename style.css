@@ -817,6 +817,84 @@
     color: #0369a1;
 }
 
+/* 世界书筛选下拉菜单 */
+.pm-lore-filter-select {
+    font-size: 11px;
+    padding: 2px 6px;
+    height: 24px;
+    max-width: 150px;
+    border-radius: 4px;
+    border: 1px solid #bae6fd;
+    background: #f0f9ff;
+    color: #0369a1;
+    cursor: pointer;
+    outline: none;
+    font-weight: 500;
+}
+.pm-lore-filter-select:hover {
+    border-color: #0284c7;
+}
+
+/* 记忆卡片写入设定按钮 */
+.pm-sync-lore-btn {
+    font-size: 10px;
+    padding: 1px 6px;
+    height: 20px;
+    border-radius: 4px;
+    background: #f0fdf4;
+    border: 1px solid #bbf7d0;
+    color: #16a34a;
+    cursor: pointer;
+    display: inline-flex;
+    align-items: center;
+    gap: 3px;
+    font-weight: 500;
+    transition: all 0.15s ease;
+}
+.pm-sync-lore-btn:hover {
+    background: #dcfce7;
+    border-color: #86efac;
+    color: #15803d;
+}
+.pm-sync-lore-btn.pm-synced {
+    background: #f1f5f9;
+    border-color: #cbd5e1;
+    color: #64748b;
+}
+
+/* 确认模态框 */
+.pm-modal-backdrop {
+    position: fixed;
+    top: 0;
+    left: 0;
+    width: 100vw;
+    height: 100vh;
+    background: rgba(15, 23, 42, 0.45);
+    backdrop-filter: blur(2px);
+    z-index: 9999999;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+}
+.pm-modal-card {
+    background: #ffffff;
+    border-radius: 8px;
+    box-shadow: 0 10px 25px -5px rgba(0, 0, 0, 0.2), 0 8px 10px -6px rgba(0, 0, 0, 0.1);
+    border: 1px solid #e2e8f0;
+    width: 90%;
+    max-width: 440px;
+    padding: 14px 16px;
+    box-sizing: border-box;
+    animation: pmFadeIn 0.15s ease-out;
+}
+.pm-modal-header {
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+    border-bottom: 1px solid #f1f5f9;
+    padding-bottom: 6px;
+}
+
 /* ─────────────────────────────────────────────────────────────────────────────
  * 10. 手机端专属优化 (确保悬浮球永不被输入框遮挡，抽屉全屏沉浸)
  * ───────────────────────────────────────────────────────────────────────────── */

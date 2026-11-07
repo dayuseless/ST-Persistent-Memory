@@ -4,13 +4,14 @@
  */
 
 import { MODULE_NAME, MEMORY_STATUS, MEMORY_LIFECYCLE, MEMORY_SCOPE } from './config.js';
-import { getState, getSettings, updateSettings, saveSettingsImmediately, updateScene, addMemory, updateMemory, deleteMemory, purgeArchivedMemories, cycleMemoryStatus, cycleMemoryType, exportMemoryData, importMemoryData, reindexAllMemories, onStateChange, getActiveWorldBookInfo } from './state.js';
+import { getState, getSettings, updateSettings, saveSettingsImmediately, updateScene, addMemory, updateMemory, deleteMemory, purgeArchivedMemories, cycleMemoryStatus, cycleMemoryType, exportMemoryData, importMemoryData, reindexAllMemories, onStateChange, getActiveWorldBookInfo, syncMemoryDeltaToWorldInfo } from './state.js';
 import { triggerAsyncDigest, triggerMemoryConsolidation, testCustomApiConnection } from './extractor.js';
 import { testEmbeddingApiConnection } from './semantic.js';
 
 let panelEl = null;
 let currentTab = 'memories'; // 'memories' | 'scene' | 'settings'
 let memoryFilter = 'active'; // 'active' | 'archived' | 'all'
+let lorebookFilter = '';    // '' (全部) | '__unlinked__' (未关联) | '<entry_name>'
 
 function escapeHtml(str) {
     if (!str || typeof str !== 'string') return '';
@@ -704,11 +705,26 @@ function renderPanelContent() {
     const pinnedCount = memories.filter(m => m.status === MEMORY_STATUS.PINNED).length;
     const triggeredCount = memories.filter(m => m.status === MEMORY_STATUS.TRIGGERED && m.lifecycle === MEMORY_LIFECYCLE.ACTIVE).length;
 
-    // 根据当前筛选状态选择要渲染的卡片列表
+    // 统计世界书条目分布
+    const uniqueLorebookEntries = Array.from(new Set(
+        memories
+            .filter(m => m.lorebook_ref && m.lorebook_ref.entry_name)
+            .map(m => m.lorebook_ref.entry_name.trim())
+    )).filter(Boolean).sort();
+    const unlinkedCount = memories.filter(m => !m.lorebook_ref || !m.lorebook_ref.entry_name).length;
+
+    // 根据当前筛选状态选择要渲染的卡片列表 (结合生命周期与世界书关联)
     const filteredMemories = memories.filter(m => {
-        if (memoryFilter === 'active') return !isTerminalOrArchived(m);
-        if (memoryFilter === 'archived') return isTerminalOrArchived(m);
-        return true; // 'all'
+        if (memoryFilter === 'active' && isTerminalOrArchived(m)) return false;
+        if (memoryFilter === 'archived' && !isTerminalOrArchived(m)) return false;
+
+        if (lorebookFilter === '__unlinked__') {
+            if (m.lorebook_ref && m.lorebook_ref.entry_name) return false;
+        } else if (lorebookFilter) {
+            if (!m.lorebook_ref || m.lorebook_ref.entry_name !== lorebookFilter) return false;
+        }
+
+        return true;
     });
 
     // 粗估活跃记忆的 Token 占用
@@ -725,7 +741,7 @@ function renderPanelContent() {
     if (currentTab === 'memories') {
         const memCardsHtml = filteredMemories.length > 0
             ? filteredMemories.map(renderMemoryCard).join('')
-            : `<div class="pm-empty-hint"><i class="fa-solid fa-box-open" style="font-size: 24px; margin-bottom: 6px; display: block; opacity: 0.5;"></i>${memoryFilter === 'archived' ? '暂无归档或已结项记忆' : (memoryFilter === 'active' ? '暂无活跃记忆' : '记忆库暂无条目')}</div>`;
+            : `<div class="pm-empty-hint"><i class="fa-solid fa-box-open" style="font-size: 24px; margin-bottom: 6px; display: block; opacity: 0.5;"></i>${lorebookFilter ? `设定【${escapeHtml(lorebookFilter === '__unlinked__' ? '未关联' : lorebookFilter)}】下暂无匹配记忆` : (memoryFilter === 'archived' ? '暂无归档或已结项记忆' : (memoryFilter === 'active' ? '暂无活跃记忆' : '记忆库暂无条目'))}</div>`;
 
         tabHtml = `
             <!-- 统计数据横幅 (大号清晰数字) -->
@@ -759,7 +775,7 @@ function renderPanelContent() {
             <!-- 记忆列表 -->
             <div class="pm-section-card" style="flex: 1; display: flex; flex-direction: column;">
                 <div class="pm-section-header" style="flex-wrap: wrap; gap: 8px; justify-content: space-between;">
-                    <div style="display: flex; gap: 4px; align-items: center;">
+                    <div style="display: flex; gap: 4px; align-items: center; flex-wrap: wrap;">
                         <button class="pm-filter-pill ${memoryFilter === 'active' ? 'pm-filter-active' : ''}" data-action="filter-mem" data-filter="active">
                             活跃 (${activeCount})
                         </button>
@@ -769,6 +785,17 @@ function renderPanelContent() {
                         <button class="pm-filter-pill ${memoryFilter === 'all' ? 'pm-filter-active' : ''}" data-action="filter-mem" data-filter="all">
                             全部 (${memories.length})
                         </button>
+                        ${uniqueLorebookEntries.length > 0 ? `
+                        <div style="display: inline-flex; align-items: center; margin-left: 4px;">
+                            <select id="pm-filter-lorebook" class="pm-lore-filter-select" title="按关联世界书条目筛选">
+                                <option value="" ${!lorebookFilter ? 'selected' : ''}>📖 全部设定 (${memories.length})</option>
+                                <option value="__unlinked__" ${lorebookFilter === '__unlinked__' ? 'selected' : ''}>📄 未关联设定 (${unlinkedCount})</option>
+                                ${uniqueLorebookEntries.map(name => {
+                                    const count = memories.filter(m => m.lorebook_ref && m.lorebook_ref.entry_name === name).length;
+                                    return `<option value="${escapeHtml(name)}" ${lorebookFilter === name ? 'selected' : ''}>📖 ${escapeHtml(name)} (${count})</option>`;
+                                }).join('')}
+                            </select>
+                        </div>` : ''}
                     </div>
                     <div style="display: flex; gap: 6px; align-items: center;">
                         <button id="pm-consolidate-now-btn" class="pm-btn-secondary" style="padding: 3px 8px; font-size: 11px;" title="智能将多条历史细节记忆浓缩为宏观长期事实">
@@ -1255,8 +1282,15 @@ export function renderMemoryCard(mem) {
             <div class="pm-card-content" data-role="view-content">${escapeHtml(mem.content)}</div>
             <div class="pm-card-bottom-row" style="display: flex; justify-content: space-between; align-items: center; margin-top: 4px;">
                 ${keysHtml ? `<div class="pm-card-keys" data-role="view-keys">${keysHtml}</div>` : '<div></div>'}
-                <div style="display: flex; align-items: center; gap: 4px;">
-                    ${mem.lorebook_ref && mem.lorebook_ref.entry_name ? `<span class="pm-lorebook-tag" title="关联世界书: ${escapeHtml(mem.lorebook_ref.book || '')} [UID: ${escapeHtml(String(mem.lorebook_ref.entry_uid ?? ''))}]"><i class="fa-solid fa-book-atlas"></i> ${escapeHtml(mem.lorebook_ref.entry_name)}</span>` : ''}
+                <div style="display: flex; align-items: center; gap: 4px; flex-wrap: wrap;">
+                    ${mem.lorebook_ref && mem.lorebook_ref.entry_name ? `
+                        <span class="pm-lorebook-tag" title="关联世界书: ${escapeHtml(mem.lorebook_ref.file_name || mem.lorebook_ref.book || '')} [UID: ${escapeHtml(String(mem.lorebook_ref.entry_uid ?? ''))}]">
+                            <i class="fa-solid fa-book-atlas"></i> ${escapeHtml(mem.lorebook_ref.entry_name)}
+                        </span>
+                        <button class="pm-sync-lore-btn ${mem.synced_to_world_info ? 'pm-synced' : ''}" data-action="sync-lore" title="${mem.synced_to_world_info ? '已同步写入世界书设定，点击可再次同步' : '点击将此条动态事实安全同步追加至世界书设定'}">
+                            <i class="fa-solid ${mem.synced_to_world_info ? 'fa-check-double' : 'fa-file-arrow-up'}"></i> ${mem.synced_to_world_info ? '已入册' : '写入设定'}
+                        </button>
+                    ` : ''}
                     ${Array.isArray(mem.embedding) && mem.embedding.length > 0 ? `<span class="pm-embedding-tag" title="已缓存 ${mem.embedding.length} 维密集语义向量 (${escapeHtml(mem.embedding_provider || 'local')})"><i class="fa-solid fa-brain"></i></span>` : ''}
                 </div>
             </div>
@@ -1767,6 +1801,41 @@ function bindPanelEvents(container) {
                 window.toastr?.success?.('记忆已成功修改！', '持续记忆');
             }
         });
+
+        // 安全写回世界书条目 (Write-Back Hook)
+        card.querySelector('[data-action="sync-lore"]')?.addEventListener('click', async () => {
+            const syncBtn = card.querySelector('[data-action="sync-lore"]');
+            if (syncBtn) syncBtn.disabled = true;
+
+            try {
+                // 1. Dry run 获取差量与目标信息
+                const previewRes = await syncMemoryDeltaToWorldInfo(id, { dryRun: true });
+                if (!previewRes.success) {
+                    if (previewRes.alreadySynced) {
+                        window.toastr?.info?.(previewRes.reason, '持续记忆');
+                    } else {
+                        window.toastr?.warning?.(previewRes.reason || '无法同步至世界书', '持续记忆');
+                    }
+                    if (syncBtn) syncBtn.disabled = false;
+                    return;
+                }
+
+                // 2. 弹出确认框 (显示 diff 预览与勾选项)
+                showSyncLoreModal(previewRes.preview, async (markCompleted) => {
+                    const commitRes = await syncMemoryDeltaToWorldInfo(id, { markCompleted });
+                    if (commitRes.success) {
+                        window.toastr?.success?.(`已成功将动态事实写回至世界书【${commitRes.bookName} - ${commitRes.entryName}】！`, '持续记忆');
+                        renderPanelContent();
+                    } else {
+                        window.toastr?.error?.(`写回失败: ${commitRes.reason}`, '持续记忆');
+                    }
+                });
+            } catch (err) {
+                window.toastr?.error?.('同步异常: ' + err.message, '持续记忆');
+            } finally {
+                if (syncBtn) syncBtn.disabled = false;
+            }
+        });
     });
 
     // 记忆列表视图筛选 (活跃 / 归档 / 全部)
@@ -1778,6 +1847,12 @@ function bindPanelEvents(container) {
                 renderPanelContent();
             }
         });
+    });
+
+    // 关联世界书条目筛选
+    container.querySelector('#pm-filter-lorebook')?.addEventListener('change', (e) => {
+        lorebookFilter = e.target.value;
+        renderPanelContent();
     });
 
     // 手动立即触发宏观记忆归并
@@ -1863,5 +1938,62 @@ function bindPanelEvents(container) {
             }
         };
         reader.readAsText(file);
+    });
+}
+
+/**
+ * 弹出确认写回世界书条目的安全确认对话框 (Diff 预览与确认)
+ */
+function showSyncLoreModal(preview, onConfirm) {
+    if (typeof document === 'undefined') return;
+
+    // 清理已有模态框
+    document.querySelectorAll('#pm-lore-sync-modal').forEach(el => el.remove());
+
+    const modalHtml = `
+        <div class="pm-modal-backdrop" id="pm-lore-sync-modal">
+            <div class="pm-modal-card">
+                <div class="pm-modal-header">
+                    <span style="font-weight: 700; color: #0284c7; font-size: 13px; display: flex; align-items: center; gap: 6px;">
+                        <i class="fa-solid fa-book-atlas"></i> 同步事实至世界书设定 (Write-Back)
+                    </span>
+                    <button class="pm-modal-close" id="pm-lore-modal-close" style="background: none; border: none; font-size: 18px; cursor: pointer; color: #94a3b8; line-height: 1;">&times;</button>
+                </div>
+                <div class="pm-modal-body" style="padding: 10px 0;">
+                    <div style="font-size: 12px; color: #334155; margin-bottom: 8px;">
+                        目标设定：<b style="color: #0284c7;">${escapeHtml(preview.entryName)}</b> 
+                        <span style="color: #64748b; font-size: 11px;">(世界书: ${escapeHtml(preview.bookName)}${preview.entryUid !== undefined && preview.entryUid !== null ? `, UID: ${preview.entryUid}` : ''})</span>
+                    </div>
+                    <div style="font-size: 11px; color: #64748b; margin-bottom: 4px;">将追加以下动态事实差量至该条目正文末尾：</div>
+                    <div class="pm-diff-preview" style="background: #f8fafc; border: 1px solid #e2e8f0; border-left: 3px solid #0284c7; padding: 8px; border-radius: 4px; font-size: 11px; color: #334155; max-height: 110px; overflow-y: auto; white-space: pre-wrap; font-family: monospace;">${escapeHtml(preview.appendedText)}</div>
+                    <div style="margin-top: 10px;">
+                        <label style="display: flex; align-items: center; gap: 6px; font-size: 12px; color: #334155; cursor: pointer;">
+                            <input type="checkbox" id="pm-sync-mark-completed" checked>
+                            <span>同步后将本记忆标记为<b>【履约/办结】</b>(不再重复作为动态记忆注入)</span>
+                        </label>
+                    </div>
+                </div>
+                <div class="pm-modal-footer" style="display: flex; justify-content: flex-end; gap: 8px; margin-top: 8px;">
+                    <button class="pm-btn-secondary" id="pm-lore-modal-cancel" style="padding: 4px 12px; font-size: 12px;">取消</button>
+                    <button class="pm-btn-primary" id="pm-lore-modal-confirm" style="padding: 4px 14px; font-size: 12px; background: #0284c7; border-color: #0369a1;"><i class="fa-solid fa-file-arrow-up"></i> 确认写回</button>
+                </div>
+            </div>
+        </div>
+    `;
+
+    document.body.insertAdjacentHTML('beforeend', modalHtml);
+    const modalEl = document.getElementById('pm-lore-sync-modal');
+
+    const closeModal = () => modalEl?.remove();
+
+    modalEl.querySelector('#pm-lore-modal-close')?.addEventListener('click', closeModal);
+    modalEl.querySelector('#pm-lore-modal-cancel')?.addEventListener('click', closeModal);
+
+    modalEl.querySelector('#pm-lore-modal-confirm')?.addEventListener('click', () => {
+        const markCompleted = Boolean(modalEl.querySelector('#pm-sync-mark-completed')?.checked);
+        closeModal();
+        if (typeof onConfirm === 'function') {
+            onConfirm(markCompleted);
+        }
     });
 }
