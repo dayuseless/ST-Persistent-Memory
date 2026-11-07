@@ -1,8 +1,8 @@
 /**
- * 持续记忆插件配置与常量定义 (v0.1.17)
+ * 持续记忆插件配置与常量定义 (v0.1.18)
  */
 
-export const EXTENSION_VERSION = '0.1.17';
+export const EXTENSION_VERSION = '0.1.18';
 export const MODULE_NAME = 'st_persistent_memory';
 export const INJECT_KEY = 'PERSISTENT_MEMORY_INJECT';
 

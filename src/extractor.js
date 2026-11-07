@@ -247,20 +247,29 @@ export function validateExtractedPayload(raw, currentMemories = [], allowedParti
                 continue;
             }
 
-            // P0-v0.1.10 核心加固：可信名单校验 (Trusted Participants Boundary)
-            // 严禁模型推断自行突破实际参与者权限边界：known_by 或 character 必须严格属于权威参与者
-            if (trustedParticipants && trustedParticipants.size > 0) {
-                // 1. 若为 character 私密记忆，归属角色必须属于实际参与者名单
-                if (scope === MEMORY_SCOPE.CHARACTER && char && !trustedParticipants.has(char)) {
-                    console.warn(`[${MODULE_NAME}] [ACL 拦截] 私密记忆归属角色 "${char}" 超出当前可信参与者名单，拒绝越权入库`);
-                    continue;
-                }
-                // 2. 若为 shared 共享记忆，known_by 中所有知情者必须全部属于实际参与者名单
-                if (scope === MEMORY_SCOPE.SHARED) {
-                    const unauthorized = knownBy.filter(k => !trustedParticipants.has(k));
-                    if (unauthorized.length > 0) {
-                        console.warn(`[${MODULE_NAME}] [ACL 拦截] 共享记忆知情者 "${unauthorized.join(', ')}" 超出当前可信参与者名单，拒绝越权入库`);
+            // P0-v0.1.18 核心加固：可信名单校验 (Trusted Participants Boundary)
+            // 严禁模型推断自行突破实际参与者权限边界：
+            // 1. 若提供了参与者名单且名单为空（size === 0）：对受限范围（character/shared）记忆执行 Fail-Closed 严格拒绝入库！
+            // 2. 若提供了非空名单：known_by 或 character 必须严格属于权威参与者
+            if (trustedParticipants !== null && trustedParticipants !== undefined) {
+                if (trustedParticipants.size === 0) {
+                    if (scope === MEMORY_SCOPE.CHARACTER || scope === MEMORY_SCOPE.SHARED) {
+                        console.warn(`[${MODULE_NAME}] [ACL 拦截] 可信参与者名单为空，受限范围记忆 (${scope}) 无法核验，执行 Fail-Closed 拒绝入库`);
                         continue;
+                    }
+                } else {
+                    // 1. 若为 character 私密记忆，归属角色必须属于实际参与者名单
+                    if (scope === MEMORY_SCOPE.CHARACTER && (!char || !trustedParticipants.has(char))) {
+                        console.warn(`[${MODULE_NAME}] [ACL 拦截] 私密记忆归属角色 "${char}" 超出当前可信参与者名单，拒绝越权入库`);
+                        continue;
+                    }
+                    // 2. 若为 shared 共享记忆，known_by 中所有知情者必须全部属于实际参与者名单
+                    if (scope === MEMORY_SCOPE.SHARED) {
+                        const unauthorized = knownBy.filter(k => !trustedParticipants.has(k));
+                        if (unauthorized.length > 0 || knownBy.length === 0) {
+                            console.warn(`[${MODULE_NAME}] [ACL 拦截] 共享记忆知情者 "${unauthorized.join(', ')}" 超出当前可信参与者名单，拒绝越权入库`);
+                            continue;
+                        }
                     }
                 }
             }
@@ -1024,13 +1033,20 @@ export function validateConsolidatedPayload(raw, currentMemories = [], allowedPa
         let targetChar = baseChar;
         let targetKnown = Array.isArray(sourceMems[0].known_by) ? [...sourceMems[0].known_by] : [];
 
-        // 验证参与者可信性
-        if (trustedParticipants && trustedParticipants.size > 0) {
-            if (targetScope === MEMORY_SCOPE.CHARACTER && targetChar && !trustedParticipants.has(targetChar)) {
-                continue;
-            }
-            if (targetScope === MEMORY_SCOPE.SHARED && targetKnown.some(k => !trustedParticipants.has(k))) {
-                continue;
+        // 验证参与者可信性 (Fail-Closed：空名单严格拒绝受限范围记忆)
+        if (trustedParticipants !== null && trustedParticipants !== undefined) {
+            if (trustedParticipants.size === 0) {
+                if (targetScope === MEMORY_SCOPE.CHARACTER || targetScope === MEMORY_SCOPE.SHARED) {
+                    console.warn(`[${MODULE_NAME}] [Consolidate 拦截] 可信参与者名单为空，受限范围记忆 (${targetScope}) 拒绝入库`);
+                    continue;
+                }
+            } else {
+                if (targetScope === MEMORY_SCOPE.CHARACTER && (!targetChar || !trustedParticipants.has(targetChar))) {
+                    continue;
+                }
+                if (targetScope === MEMORY_SCOPE.SHARED && (!targetKnown.length || targetKnown.some(k => !trustedParticipants.has(k)))) {
+                    continue;
+                }
             }
         }
 

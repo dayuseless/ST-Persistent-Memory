@@ -1,5 +1,5 @@
 /**
- * SillyTavern 插件入口: 持续记忆 (Persistent Memory) v0.1.17
+ * SillyTavern 插件入口: 持续记忆 (Persistent Memory) v0.1.18
  * 遵循现场快照 (L0 Resume) 与事件驱动记忆架构
  */
 
@@ -76,8 +76,28 @@ async function init() {
     }
 
     // 3. 监听切档与聊天载入事件
+    const processedSyncMessages = new Set();
+    const processedAsyncMessages = new Set();
+
+    function markMessageProcessed(set, key, maxItems = 500) {
+        set.add(key);
+        if (set.size > maxItems) {
+            const first = set.values().next().value;
+            set.delete(first);
+        }
+    }
+
+    function getMessageFingerprint(context, mesid, msg) {
+        const chatId = context?.chatId || 'default';
+        const sendDate = msg?.send_date || '';
+        const textLen = typeof msg?.mes === 'string' ? msg.mes.length : 0;
+        return `${chatId}:${mesid}:${sendDate}:${textLen}`;
+    }
+
     const onChatReset = () => {
         console.log(`[${MODULE_NAME}] 会话切换/载入，对齐状态并更新提示词注入`);
+        processedSyncMessages.clear();
+        processedAsyncMessages.clear();
         loadCurrentState();
         if (getSettings().enabled) {
             buildAndInjectMemoryPrompt();
@@ -88,38 +108,47 @@ async function init() {
         c.eventSource.on(c.event_types.CHAT_LOADED, onChatReset);
     }
 
-    // 4. 发送前/生成前多重钩子：确保无论走 OpenAI/Claude/DeepSeek 还是 TextGen，均能百分之百注入提示词
-    const ensurePromptInjected = () => {
-        if (getSettings().enabled) {
-            buildAndInjectMemoryPrompt();
+    // 4. 发送前/生成前精准钩子：确保在提示词组装 (getCombinedPrompt & prepareOpenAIMessages) 之前完成注入
+    // 移除时序过晚的 CHAT_COMPLETION_PROMPT_READY (其触发时 Chat Completion 消息体已定型)
+    // 移除提前量冗余的 GENERATION_STARTED (在斜杠指令前触发)
+    // 采用 GENERATION_AFTER_COMMANDS (斜杠指令处理完成后、组装提示词前) 与 GENERATE_BEFORE_COMBINE_PROMPTS
+    let lastInjectTime = 0;
+    const ensurePromptInjected = (force = false) => {
+        if (!getSettings().enabled) return;
+        const now = Date.now();
+        if (!force && (now - lastInjectTime < 50)) {
+            return;
         }
+        lastInjectTime = now;
+        buildAndInjectMemoryPrompt();
     };
 
-    if (c.event_types.GENERATION_STARTED) {
-        c.eventSource.on(c.event_types.GENERATION_STARTED, ensurePromptInjected);
-    }
     if (c.event_types.GENERATION_AFTER_COMMANDS) {
-        c.eventSource.on(c.event_types.GENERATION_AFTER_COMMANDS, ensurePromptInjected);
+        c.eventSource.on(c.event_types.GENERATION_AFTER_COMMANDS, () => ensurePromptInjected(false));
     }
     if (c.event_types.GENERATE_BEFORE_COMBINE_PROMPTS) {
-        c.eventSource.on(c.event_types.GENERATE_BEFORE_COMBINE_PROMPTS, ensurePromptInjected);
-    }
-    if (c.event_types.CHAT_COMPLETION_PROMPT_READY) {
-        c.eventSource.on(c.event_types.CHAT_COMPLETION_PROMPT_READY, ensurePromptInjected);
+        c.eventSource.on(c.event_types.GENERATE_BEFORE_COMBINE_PROMPTS, () => ensurePromptInjected(false));
     }
     if (c.event_types.MESSAGE_SENT) {
-        c.eventSource.on(c.event_types.MESSAGE_SENT, ensurePromptInjected);
+        c.eventSource.on(c.event_types.MESSAGE_SENT, () => ensurePromptInjected(false));
+    }
+    if (c.event_types.MESSAGE_DELETED) {
+        c.eventSource.on(c.event_types.MESSAGE_DELETED, () => ensurePromptInjected(true));
+    }
+    if (c.event_types.MESSAGE_UPDATED) {
+        c.eventSource.on(c.event_types.MESSAGE_UPDATED, () => ensurePromptInjected(true));
+    }
+    if (c.event_types.MESSAGE_SWIPED) {
+        c.eventSource.on(c.event_types.MESSAGE_SWIPED, () => ensurePromptInjected(true));
     }
 
     // 5. 记忆状态或快照发生变动时，实时对齐注入词
     onStateChange(() => {
-        if (getSettings().enabled) {
-            buildAndInjectMemoryPrompt();
-        }
+        ensurePromptInjected(true);
     });
 
-    // 5. 消息完成与渲染处理 (同步/异步严格分流)
-    // 同步伴随模式：消息渲染与接收双重防线截获伴生标签
+    // 6. 消息完成与渲染处理 (带全链路消息幂等防重守卫)
+    // 同步伴随模式：以 MESSAGE_RECEIVED 为权威数据摄入事件，CHARACTER_MESSAGE_RENDERED 作为前端渲染同步兜底
     c.eventSource.on(c.event_types.CHARACTER_MESSAGE_RENDERED, (mesid) => {
         const settings = getSettings();
         if (!settings.enabled || settings.mode !== 'sync') return;
@@ -128,14 +157,26 @@ async function init() {
         const msg = c.chat?.[id];
         if (!msg || msg.is_user) return;
 
-        const cleaned = extractAndApplySyncTag(msg.mes);
-        if (cleaned !== msg.mes) {
-            msg.mes = cleaned;
-            c?.saveChatDebounced?.();
-            const el = document.querySelector(`#chat > .mes[mesid="${id}"] .mes_text`);
-            if (el) {
-                el.innerHTML = c.markdown(cleaned);
+        const key = getMessageFingerprint(c, id, msg);
+        if (processedSyncMessages.has(key)) {
+            // 已在 MESSAGE_RECEIVED 中完成标签提取与状态入库，直接返回
+            return;
+        }
+
+        // 兜底分支：若渲染事件先于接收事件触发
+        if (typeof msg.mes === 'string' && msg.mes.includes('<!--PERSISTENT_MEMORY')) {
+            const cleaned = extractAndApplySyncTag(msg.mes);
+            markMessageProcessed(processedSyncMessages, key);
+            if (cleaned !== msg.mes) {
+                msg.mes = cleaned;
+                c?.saveChatDebounced?.();
+                const el = document.querySelector(`#chat > .mes[mesid="${id}"] .mes_text`);
+                if (el) {
+                    el.innerHTML = c.markdown(cleaned);
+                }
             }
+        } else {
+            markMessageProcessed(processedSyncMessages, key);
         }
     });
 
@@ -148,16 +189,30 @@ async function init() {
         if (!msg || msg.is_user) return;
 
         if (settings.mode === 'sync') {
-            const cleaned = extractAndApplySyncTag(msg.mes);
-            if (cleaned !== msg.mes) {
-                msg.mes = cleaned;
-                c?.saveChatDebounced?.();
-                const el = document.querySelector(`#chat > .mes[mesid="${id}"] .mes_text`);
-                if (el) {
-                    el.innerHTML = c.markdown(cleaned);
+            const key = getMessageFingerprint(c, id, msg);
+            if (processedSyncMessages.has(key)) {
+                return;
+            }
+            if (typeof msg.mes === 'string' && msg.mes.includes('<!--PERSISTENT_MEMORY')) {
+                const cleaned = extractAndApplySyncTag(msg.mes);
+                markMessageProcessed(processedSyncMessages, key);
+                if (cleaned !== msg.mes) {
+                    msg.mes = cleaned;
+                    c?.saveChatDebounced?.();
+                    const el = document.querySelector(`#chat > .mes[mesid="${id}"] .mes_text`);
+                    if (el) {
+                        el.innerHTML = c.markdown(cleaned);
+                    }
                 }
+            } else {
+                markMessageProcessed(processedSyncMessages, key);
             }
         } else if (settings.mode === 'async') {
+            const asyncKey = `${c?.chatId || 'default'}:${id}`;
+            if (processedAsyncMessages.has(asyncKey)) {
+                return;
+            }
+            markMessageProcessed(processedAsyncMessages, asyncKey);
             await triggerAsyncDigest(false);
         }
     });

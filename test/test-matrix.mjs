@@ -1546,6 +1546,111 @@ async function runTests() {
         assert.strictEqual(rerunResult.batchesProcessed, 0, '无新消息时不应重复执行批次');
     });
 
+    // ─────────────────────────────────────────────────────────────
+    // T42: 可信参与者名单为空时，受限范围记忆严格执行 Fail-Closed 拒绝入库
+    // ─────────────────────────────────────────────────────────────
+    test('T42: 可信名单为空 (Set.size === 0) 时，受限范围记忆 (character/shared) Fail-Closed 拒绝，仅允许公共常识 (world)', () => {
+        const emptyParticipants = new Set([]);
+
+        const payload = {
+            new_memories: [
+                {
+                    content: '角色A的私密计划',
+                    type: 'fact',
+                    scope: 'character',
+                    character: '角色A'
+                },
+                {
+                    content: '角色A和玩家的秘密约定',
+                    type: 'statement',
+                    scope: 'shared',
+                    known_by: ['角色A', '玩家']
+                },
+                {
+                    content: '帝国历342年爆发了大陆战争',
+                    type: 'fact',
+                    scope: 'world',
+                    character: ''
+                }
+            ]
+        };
+
+        const validated = validateExtractedPayload(payload, [], emptyParticipants);
+        assert(validated, '校验器应返回结果');
+        assert.strictEqual(validated.new_memories.length, 1, '名单为空时，私密与共享记忆必须全部被拦截！');
+        assert.strictEqual(validated.new_memories[0].scope, 'world', '仅公共常识允许入库');
+        assert.strictEqual(validated.new_memories[0].content, '帝国历342年爆发了大陆战争');
+
+        // 测试归并路径的名单为空 Fail-Closed 校验
+        const sourceMems = [
+            { id: 'm1', content: '事实1', type: 'fact', scope: 'character', character: '角色A', status: 'triggered', lifecycle: 'active' },
+            { id: 'm2', content: '事实2', type: 'fact', scope: 'character', character: '角色A', status: 'triggered', lifecycle: 'active' },
+            { id: 'w1', content: '公共1', type: 'fact', scope: 'world', status: 'triggered', lifecycle: 'active' },
+            { id: 'w2', content: '公共2', type: 'fact', scope: 'world', status: 'triggered', lifecycle: 'active' }
+        ];
+
+        const consolidateCharPayload = {
+            consolidated: [
+                {
+                    content: '归并角色私密事实',
+                    type: 'fact',
+                    scope: 'character',
+                    character: '角色A',
+                    supersedes: ['m1', 'm2']
+                }
+            ]
+        };
+        const consolidateCharRes = validateConsolidatedPayload(consolidateCharPayload, sourceMems, emptyParticipants);
+        assert.strictEqual(consolidateCharRes, null, '可信名单为空时，角色受限的归并条目必须被拒绝');
+
+        const consolidateWorldPayload = {
+            consolidated: [
+                {
+                    content: '归并公共历史事实',
+                    type: 'fact',
+                    scope: 'world',
+                    supersedes: ['w1', 'w2']
+                }
+            ]
+        };
+        const consolidateWorldRes = validateConsolidatedPayload(consolidateWorldPayload, sourceMems, emptyParticipants);
+        assert(consolidateWorldRes, '公共事实归并不受角色名单限制');
+        assert.strictEqual(consolidateWorldRes.consolidated.length, 1);
+    });
+
+    // ─────────────────────────────────────────────────────────────
+    // T43: 伴随标签同步提取幂等性测试 (保证重复执行不产生重复记忆)
+    // ─────────────────────────────────────────────────────────────
+    test('T43: 伴生标签同步提取幂等性测试 (extractAndApplySyncTag 在重复输入时不产生脏数据)', () => {
+        mockContext.chatMetadata = {};
+        loadCurrentState();
+        mockContext.chat = [
+            { is_user: true, mes: '我们在临街茶楼碰头。' },
+            { is_user: false, mes: '好的。' }
+        ];
+
+        const tagText = '好的。\n<!--PERSISTENT_MEMORY\n{\n  "scene": { "location": "临街茶楼" },\n  "new_memories": [{ "content": "双方在临街茶楼碰头", "type": "fact", "scope": "world" }]\n}\n-->';
+
+        // 第一次提取
+        const cleaned1 = extractAndApplySyncTag(tagText);
+        assert.strictEqual(cleaned1, '好的。', '伴生标签应被剥离');
+        const state1 = getState();
+        assert.strictEqual(state1.scene.location, '临街茶楼');
+        assert.strictEqual(state1.memories.length, 1);
+
+        // 第二次在已清洗的文本上执行（模拟 MESSAGE_RECEIVED 与 CHARACTER_MESSAGE_RENDERED 重复触发）
+        const cleaned2 = extractAndApplySyncTag(cleaned1);
+        assert.strictEqual(cleaned2, '好的。');
+        const state2 = getState();
+        assert.strictEqual(state2.memories.length, 1, '已清洗文本不应触发额外记忆');
+
+        // 再次传入带相同标签的文本（模拟消息重复接收），相似度融合去重保护
+        const cleaned3 = extractAndApplySyncTag(tagText);
+        assert.strictEqual(cleaned3, '好的。');
+        const state3 = getState();
+        assert.strictEqual(state3.memories.length, 1, '相同记忆内容应被相似度去重融合，记忆总数保持 1 条');
+    });
+
     console.log(`\n======================================================`);
     console.log(`  测试结果: 共 ${passed + failed} 项 | \x1b[32m${passed} 通过\x1b[0m | \x1b[31m${failed} 失败\x1b[0m`);
     console.log(`======================================================\n`);
