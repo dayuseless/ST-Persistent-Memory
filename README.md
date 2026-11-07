@@ -1,6 +1,6 @@
 # SillyTavern 持续记忆插件 (ST-Persistent-Memory)
 
-[![Version](https://img.shields.io/badge/version-v0.1.16-blue.svg)](https://github.com/dayuseless/ST-Persistent-Memory)
+[![Version](https://img.shields.io/badge/version-v0.1.17-blue.svg)](https://github.com/dayuseless/ST-Persistent-Memory)
 [![SillyTavern](https://img.shields.io/badge/SillyTavern-1.12.0+-purple.svg)](https://github.com/SillyTavern/SillyTavern)
 [![License](https://img.shields.io/badge/license-MIT-green.svg)](LICENSE)
 
@@ -77,7 +77,7 @@
 
 ### 方式二：手动离线包安装
 
-1. 从 [Releases 页面](https://github.com/dayuseless/ST-Persistent-Memory/releases) 下载 `ST-Persistent-Memory-v0.1.16.zip`。
+1. 从 [Releases 页面](https://github.com/dayuseless/ST-Persistent-Memory/releases) 下载 `ST-Persistent-Memory-v0.1.17.zip`。
 2. 解压到 SillyTavern 的扩展目录中：
    ```text
    SillyTavern/public/scripts/extensions/third-party/ST-Persistent-Memory/
@@ -158,6 +158,14 @@ window.__persistentMemory.digestNow();
 ---
 
 ## 📝 版本历史
+
+### v0.1.17 (全量历史回溯分块提炼：中途启用支持、楼层回退自愈与递进演化状态机)
+
+- **全量与未消化历史回溯提炼管道 (Backlog / Full History Digestion)**：针对长程会话中途启用插件的用户，提供全新的分块滑动窗口回溯提炼引擎（`triggerBacklogDigest`）。将全量历史按时序划分为小步长批次（默认 8 条消息/批，2 条重叠保护语义连续），依次递进演化现场快照与长期认知，彻底解决中途启用用户“前几十轮历史无法被记忆”的空白痛点。
+- **对话轮次回退自愈校准 (Floor Rewind Self-Healing)**：修复用户撤回消息、重载旧分支或删除末尾轮次时导致的提炼“假死”隐患。当检测到当前实际轮次小于历史记录的 `last_digest_floor` 时，自动感知并校准提炼基准楼层，确保后续对话能无缝自动恢复提炼。
+- **中途启用智能引导与交互横幅 (Smart Mid-Chat Onboarding)**：当检测到会话已有较长历史（$\ge 6$ 条消息）但记忆库为空时，HUD 顶部自动展示友好的智能引导横幅，支持一键点击启动全量回溯；控制台顶部新增“回溯提炼”快捷按钮，自由选择“从头全量提炼”或“增量补全未消化历史”。
+- **实时进度反馈与随时安全中止 (Live Progress & Abort Guard)**：回溯执行期间，HUD 实时呈现带旋转动效的百分比进度条、批次计数与已沉淀记忆数；提供一键“中止”按钮与会话切换自动熔断拦截，绝不发生跨会话污染或挂死。
+- **测试矩阵扩展至 41 项 (T1-T41 全绿)**：新增针对对话轮次回退自愈校准 (T40) 与全量历史分块回溯多批次递进提炼 (T41) 的自动化测试覆盖。
 
 ### v0.1.16 (世界书深度协同：设定复合筛选、安全差量写回钩子与全流程防重矩阵)
 

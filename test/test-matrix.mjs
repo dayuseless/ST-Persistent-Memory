@@ -92,7 +92,11 @@ import {
     withTimeout,
     buildConsolidationCandidateGroups,
     validateConsolidatedPayload,
-    triggerMemoryConsolidation
+    triggerMemoryConsolidation,
+    triggerAsyncDigest,
+    triggerBacklogDigest,
+    abortBacklogDigest,
+    findMessageIndexByTurn
 } from '../src/extractor.js';
 import { renderMemoryCard } from '../src/ui.js';
 import {
@@ -1440,6 +1444,106 @@ async function runTests() {
         const embedRes = await syncMemoryDeltaToWorldInfo(memEmbedded.id);
         assert.strictEqual(embedRes.success, false, '内嵌角色卡世界书应被只读拦截');
         assert(embedRes.reason.includes('只读卡片资源'), '明确提示内嵌设定属于只读');
+    });
+
+    // ─────────────────────────────────────────────────────────────
+    // T40: 对话轮次回退时自愈校准提炼楼层 (Floor Rewind Self-Healing)
+    // ─────────────────────────────────────────────────────────────
+    await testAsync('T40: 对话轮次回退时自愈校准提炼楼层 (Floor Rewind Self-Healing)', async () => {
+        const state = getState();
+        state.memories = [];
+        state.last_digest_floor = 30; // 模拟旧状态曾记录到第30轮
+
+        // 模拟用户回滚/删除了消息，当前会话仅剩 10 轮 AI 回复
+        mockContext.chat = [];
+        for (let i = 1; i <= 10; i++) {
+            mockContext.chat.push({ is_user: true, mes: `用户问题 ${i}` });
+            mockContext.chat.push({ is_user: false, name: '角色A', mes: `角色回答 ${i}` });
+        }
+
+        mockContext.generateRaw = async () => JSON.stringify({
+            scene: { location: '自愈测试场景' },
+            new_memories: []
+        });
+
+        // 触发自动提炼 (非强制)
+        await triggerAsyncDigest(false);
+
+        // 应当自愈校准：last_digest_floor 不再是 30，而是根据当前轮次 10 自动回退
+        assert(state.last_digest_floor <= 10, `last_digest_floor 应自动校准至当前轮次以内 (当前值: ${state.last_digest_floor})`);
+    });
+
+    // ─────────────────────────────────────────────────────────────
+    // T41: 全量与历史上下文分块回溯提炼管道 (Full Context Backlog Digestion Pipeline)
+    // ─────────────────────────────────────────────────────────────
+    await testAsync('T41: 全量历史分块回溯提炼管道 (适应中途启用用户从头回溯消化全量上下文)', async () => {
+        const state = getState();
+        state.memories = [];
+        state.last_digest_floor = 0;
+
+        // 构建一个较长的历史会话：共 16 条消息 (8 轮对话)
+        mockContext.chat = [
+            { is_user: true, mes: '听说王城地下藏有先皇密令？' },
+            { is_user: false, name: '角色A', mes: '确有其事，但这需要三把青铜古钥才能开启。' },
+            { is_user: true, mes: '第一把钥匙在哪里？' },
+            { is_user: false, name: '角色A', mes: '就在白马寺的枯井石缝中。我们约定明夜子时去取。' },
+            { is_user: true, mes: '好，那剩下两把呢？' },
+            { is_user: false, name: '角色A', mes: '第二把在北境大将军手中，第三把下落不明。' },
+            { is_user: true, mes: '现在我们到哪里了？' },
+            { is_user: false, name: '角色A', mes: '我们已经抵达白马寺山门前，今夜风雨大作。' },
+            { is_user: true, mes: '准备进入枯井！' },
+            { is_user: false, name: '角色A', mes: '我已起出第一把青铜古钥，密诏地图显示第二把在寒铁关。' },
+            { is_user: true, mes: '小心有埋伏！' },
+            { is_user: false, name: '角色A', mes: '黑衣刺客杀出，我们合力击退了黑衣首领！' },
+            { is_user: true, mes: '你受伤了吗？' },
+            { is_user: false, name: '角色A', mes: '轻微擦伤，我们连夜转移到了隐秘破庙。' },
+            { is_user: true, mes: '休整一下，天亮前往寒铁关。' },
+            { is_user: false, name: '角色A', mes: '遵命，明日启程。' }
+        ];
+
+        let callCount = 0;
+        mockContext.generateRaw = async (opts) => {
+            callCount++;
+            return JSON.stringify({
+                scene: {
+                    location: `历史场景阶段 ${callCount}`,
+                    time: '黑夜暴雨',
+                    action: '寻找古钥与密诏',
+                    tension: '紧张',
+                    unresolved: '古钥下落',
+                    in_scene_characters: ['角色A', '玩家']
+                },
+                new_memories: [
+                    {
+                        type: 'fact',
+                        content: `历史阶段关键记忆第 ${callCount} 项事实`,
+                        scope: 'world',
+                        status: 'triggered'
+                    }
+                ],
+                lifecycle_updates: []
+            });
+        };
+
+        const progressUpdates = [];
+        const result = await triggerBacklogDigest({
+            fromStart: true,
+            chunkSize: 8,
+            overlap: 2,
+            onProgress: (p) => progressUpdates.push(p)
+        });
+
+        assert.strictEqual(result.success, true, '全量回溯提炼应成功完成');
+        assert(result.batchesProcessed >= 2, `16条消息至少应分为2个以上批次递进处理 (实际: ${result.batchesProcessed})`);
+        assert(progressUpdates.length >= 2, '进度回调应被多次调用');
+        assert.strictEqual(progressUpdates[progressUpdates.length - 1].percent, 100, '最终进度百分比应达到 100%');
+        assert(state.memories.length >= 2, '记忆库应成功沉淀多个历史阶段的记忆');
+        assert.strictEqual(state.last_digest_floor, 8, '提炼终止楼层应推进到当前最新轮次 8');
+
+        // 测试再次增量提炼：在无新消息时，再次调用应提示无新增未消化轮次
+        const rerunResult = await triggerBacklogDigest({ fromStart: false });
+        assert.strictEqual(rerunResult.success, true);
+        assert.strictEqual(rerunResult.batchesProcessed, 0, '无新消息时不应重复执行批次');
     });
 
     console.log(`\n======================================================`);

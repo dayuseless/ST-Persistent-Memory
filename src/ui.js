@@ -5,7 +5,7 @@
 
 import { MODULE_NAME, MEMORY_STATUS, MEMORY_LIFECYCLE, MEMORY_SCOPE } from './config.js';
 import { getState, getSettings, updateSettings, saveSettingsImmediately, updateScene, addMemory, updateMemory, deleteMemory, purgeArchivedMemories, cycleMemoryStatus, cycleMemoryType, exportMemoryData, importMemoryData, reindexAllMemories, onStateChange, getActiveWorldBookInfo, syncMemoryDeltaToWorldInfo } from './state.js';
-import { triggerAsyncDigest, triggerMemoryConsolidation, testCustomApiConnection } from './extractor.js';
+import { triggerAsyncDigest, triggerMemoryConsolidation, testCustomApiConnection, triggerBacklogDigest, abortBacklogDigest, isBacklogDigestRunning } from './extractor.js';
 import { testEmbeddingApiConnection } from './semantic.js';
 
 let panelEl = null;
@@ -772,6 +772,34 @@ function renderPanelContent() {
                 <span style="color: #64748b;"> ${escapeHtml(state.last_digest_error)}</span>
             </div>` : ''}
 
+            ${isBacklogDigestRunning() ? `
+            <!-- 全量回溯提炼进度指示器 -->
+            <div id="pm-backlog-progress-wrap" style="background: #f0fdf4; border: 1px solid #bbf7d0; border-radius: 6px; padding: 8px 10px; margin-bottom: 8px;">
+                <div style="display: flex; justify-content: space-between; align-items: center; font-size: 11px; margin-bottom: 4px;">
+                    <span id="pm-backlog-prog-text" style="color: #16a34a; font-weight: 600;"><i class="fa-solid fa-spinner fa-spin"></i> 正在全量回溯提炼历史记忆...</span>
+                    <button id="pm-btn-cancel-backlog" style="background: none; border: 1px solid #fca5a5; color: #dc2626; border-radius: 4px; padding: 1px 6px; font-size: 10px; cursor: pointer;">中止</button>
+                </div>
+                <div style="width: 100%; height: 6px; background: #dcfce7; border-radius: 3px; overflow: hidden;">
+                    <div id="pm-backlog-prog-bar" style="width: 0%; height: 100%; background: #16a34a; transition: width 0.3s ease;"></div>
+                </div>
+            </div>` : ''}
+
+            ${(!isBacklogDigestRunning() && Array.isArray(c?.chat) && c.chat.length >= 6 && (!memories || memories.length === 0)) ? `
+            <!-- 中途启用用户智能引导条 -->
+            <div class="pm-onboarding-card" style="background: linear-gradient(135deg, #f0f9ff 0%, #e0f2fe 100%); border: 1px solid #bae6fd; border-radius: 8px; padding: 10px 12px; margin-bottom: 8px;">
+                <div style="font-weight: 700; color: #0369a1; font-size: 12px; display: flex; align-items: center; gap: 6px;">
+                    <i class="fa-solid fa-sparkles" style="color: #0284c7;"></i> 检测到长程历史会话 (${c.chat.length} 条消息)
+                </div>
+                <div style="font-size: 11px; color: #475569; margin-top: 4px; line-height: 1.4;">
+                    检测到当前会话尚未沉淀任何记忆。点击可一键从头分批回溯提炼，自动沉淀全量历史事实并建立精准的现场快照。
+                </div>
+                <div style="margin-top: 8px;">
+                    <button id="pm-btn-digest-all-start" class="pm-btn-primary" style="padding: 4px 12px; font-size: 11px; background: #0284c7; border-color: #0369a1; width: auto; cursor: pointer;">
+                        <i class="fa-solid fa-play"></i> 从头全量提炼 (${c.chat.length} 条)
+                    </button>
+                </div>
+            </div>` : ''}
+
             <!-- 记忆列表 -->
             <div class="pm-section-card" style="flex: 1; display: flex; flex-direction: column;">
                 <div class="pm-section-header" style="flex-wrap: wrap; gap: 8px; justify-content: space-between;">
@@ -798,6 +826,9 @@ function renderPanelContent() {
                         </div>` : ''}
                     </div>
                     <div style="display: flex; gap: 6px; align-items: center;">
+                        <button id="pm-btn-digest-backlog" class="pm-btn-secondary" style="padding: 3px 8px; font-size: 11px;" title="分批递进提炼历史未消化的上下文对话 (适应中途启用的用户)">
+                            <i class="fa-solid fa-clock-rotate-left" style="color: #0284c7;"></i> 回溯提炼
+                        </button>
                         <button id="pm-consolidate-now-btn" class="pm-btn-secondary" style="padding: 3px 8px; font-size: 11px;" title="智能将多条历史细节记忆浓缩为宏观长期事实">
                             <i class="fa-solid fa-compress" style="color: #2563eb;"></i> 宏观归并
                         </button>
@@ -1887,6 +1918,82 @@ function bindPanelEvents(container) {
                 window.toastr?.success?.(`已清理 ${res.removed} 条终态记忆 (剩余 ${res.remaining} 条)`, '持续记忆');
             }
         }
+    });
+
+    // ─────────────────────────────────────────────────────────────────────────
+    // 全量与历史上下文回溯提炼 (Backlog Digestion UI)
+    // ─────────────────────────────────────────────────────────────────────────
+    async function runBacklogDigestionUI(fromStart = false) {
+        if (isBacklogDigestRunning()) {
+            window.toastr?.info?.('全量提炼任务正在执行中...', '持续记忆');
+            return;
+        }
+
+        const c = getContext();
+        const chatLen = Array.isArray(c?.chat) ? c.chat.length : 0;
+        if (chatLen < 2) {
+            window.toastr?.warning?.('当前对话消息过少，无需回溯提炼', '持续记忆');
+            return;
+        }
+
+        const confirmMsg = fromStart
+            ? `确认从头开始分批回溯提炼当前会话全部 ${chatLen} 条历史消息吗？\n将按时序分批消化并累积沉淀关键记忆。`
+            : `确认对当前未消化的历史消息进行分批回溯提炼吗？`;
+
+        if (!confirm(confirmMsg)) return;
+
+        window.toastr?.info?.('已启动全量历史回溯提炼...', '持续记忆');
+        renderPanelContent();
+
+        try {
+            const res = await triggerBacklogDigest({
+                fromStart: fromStart,
+                chunkSize: 8,
+                overlap: 2,
+                onProgress: (p) => {
+                    const progText = document.getElementById('pm-backlog-prog-text');
+                    const progBar = document.getElementById('pm-backlog-prog-bar');
+                    if (progText) {
+                        progText.innerHTML = `<i class="fa-solid fa-spinner fa-spin"></i> 正在提炼 (${p.percent}%): 第 ${p.currentBatch}/${p.totalBatches} 批 (共沉淀 ${p.memCount} 条)...`;
+                    }
+                    if (progBar) {
+                        progBar.style.width = `${p.percent}%`;
+                    }
+                }
+            });
+
+            if (res.success) {
+                window.toastr?.success?.(`全量提炼完成！共处理 ${res.batchesProcessed} 个批次，当前记忆库共 ${res.totalMemories} 条！`, '持续记忆');
+            } else if (res.aborted) {
+                window.toastr?.warning?.(res.reason || '回溯提炼已中止', '持续记忆');
+            } else {
+                window.toastr?.error?.(`提炼异常: ${res.reason || res.error}`, '持续记忆');
+            }
+        } catch (e) {
+            window.toastr?.error?.('回溯提炼失败: ' + e.message, '持续记忆');
+        } finally {
+            renderPanelContent();
+            renderNativeDrawerContent();
+        }
+    }
+
+    // 中途启用引导：一键从头全量提炼
+    container.querySelector('#pm-btn-digest-all-start')?.addEventListener('click', () => {
+        runBacklogDigestionUI(true);
+    });
+
+    // 头部回溯提炼按钮：支持从头全量或增量补全
+    container.querySelector('#pm-btn-digest-backlog')?.addEventListener('click', () => {
+        const state = getState();
+        const hasMemories = state.memories && state.memories.length > 0;
+        const fromStart = !hasMemories || confirm('是否从第 1 条消息从头全量提炼？\n【确定】从头全量提炼 (推荐中途启用用户)\n【取消】仅补全未提炼的增量楼层');
+        runBacklogDigestionUI(fromStart);
+    });
+
+    // 中止全量回溯
+    container.querySelector('#pm-btn-cancel-backlog')?.addEventListener('click', () => {
+        abortBacklogDigest();
+        window.toastr?.info?.('正在中止全量提炼...', '持续记忆');
     });
 
     // ─────────────────────────────────────────────────────────────────────────
