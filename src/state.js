@@ -8,6 +8,28 @@ import { syncEnsureLocalEmbedding, reindexMemories } from './semantic.js';
 
 let stateCache = null;
 const stateChangeListeners = new Set();
+/**
+ * 校验并规范化世界书关联结构 (lorebook_ref)
+ * 防止对象注入、原型污染与非安全字段
+ */
+export function sanitizeLorebookRef(rawLb) {
+    if (!rawLb || typeof rawLb !== 'object') return null;
+    const entryName = typeof rawLb.entry_name === 'string' ? rawLb.entry_name.trim().slice(0, 80) : '';
+    const bookName = typeof rawLb.book === 'string' ? rawLb.book.trim().slice(0, 80) : '';
+    let uidVal = null;
+    if (Number.isInteger(rawLb.entry_uid)) {
+        uidVal = rawLb.entry_uid;
+    } else if (rawLb.entry_uid !== null && rawLb.entry_uid !== undefined && !isNaN(Number(rawLb.entry_uid))) {
+        uidVal = Number(rawLb.entry_uid);
+    }
+    if (!entryName && uidVal === null) return null;
+    return {
+        book: bookName,
+        entry_uid: uidVal,
+        entry_name: entryName
+    };
+}
+
 let isBatchUpdating = false;
 
 function getContext() {
@@ -287,6 +309,8 @@ export function loadCurrentState() {
             knownBy = [];
         }
 
+        const lorebookRef = sanitizeLorebookRef(m.lorebook_ref);
+
         return {
             ...m,
             id: sanitizeId(m.id),
@@ -294,6 +318,7 @@ export function loadCurrentState() {
             scope: scope,
             character: char,
             known_by: knownBy,
+            lorebook_ref: lorebookRef,
             // P1 修复旧记忆迁移语义：旧版无 lifecycle 的 archived 项仅代表检索休眠，绝不擅自篡改为 completed
             lifecycle: m.lifecycle || MEMORY_LIFECYCLE.ACTIVE
         };
@@ -643,6 +668,7 @@ export function addMemory(item) {
         character: targetChar,
         scope: targetScope,
         known_by: knownBy,
+        lorebook_ref: sanitizeLorebookRef(item.lorebook_ref),
         floor: item.floor || 0,
         created_at: new Date().toISOString(),
         updated_at: new Date().toISOString()
@@ -700,7 +726,11 @@ export function updateMemory(id, patch) {
         }
     }
 
-    if (patch.content !== undefined || patch.trigger_keys !== undefined || patch.type !== undefined) {
+    if (patch.lorebook_ref !== undefined) {
+        updated.lorebook_ref = sanitizeLorebookRef(patch.lorebook_ref);
+    }
+
+    if (patch.content !== undefined || patch.trigger_keys !== undefined || patch.type !== undefined || patch.lorebook_ref !== undefined) {
         try {
             syncEnsureLocalEmbedding(updated);
         } catch {}
@@ -785,6 +815,7 @@ export function importMemoryData(data, strategy = 'merge') {
                 scope,
                 character,
                 known_by: knownBy,
+                lorebook_ref: sanitizeLorebookRef(m.lorebook_ref),
                 trigger_keys: triggerKeys,
                 floor: Number(m.floor) || 0,
                 created_at: m.created_at || new Date().toISOString(),
@@ -926,4 +957,78 @@ export async function reindexAllMemories(force = false, onProgress = null) {
         saveCurrentState();
     }
     return result;
+}
+
+/**
+ * 获取当前会话生效的世界书信息（单会话作用域，不跨会话）
+ * 检索优先级:
+ *   1. 当前聊天绑定的专属世界书 (c.chatMetadata.world_info)
+ *   2. 当前角色绑定的主世界书 (char.data.extensions.world)
+ *   3. 当前角色内置的卡片世界书 (char.data.character_book)
+ * 
+ * @returns {Promise<{ bookName: string, source: string, entries: Array<{ uid: number, comment: string, keys: string[], content: string }> } | null>}
+ */
+export async function getActiveWorldBookInfo() {
+    const c = getContext();
+    if (!c) return null;
+
+    let bookName = null;
+    const metadata = c?.chatMetadata ?? c?.chat_metadata;
+    if (metadata && typeof metadata === 'object' && metadata['world_info']) {
+        bookName = metadata['world_info'];
+    }
+
+    if (!bookName && c.characters && c.characterId !== undefined) {
+        const char = c.characters[c.characterId];
+        bookName = char?.data?.extensions?.world || char?.data?.world_info || null;
+    }
+
+    // 检查角色卡内置世界书 (Embedded Character Book)
+    if (!bookName && c.characters && c.characterId !== undefined) {
+        const char = c.characters[c.characterId];
+        const charBook = char?.data?.character_book;
+        if (charBook && Array.isArray(charBook.entries)) {
+            return {
+                bookName: charBook.name || `${char?.name || 'Character'} Built-in Lore`,
+                source: 'character_embedded',
+                entries: charBook.entries
+                    .filter(e => e && !e.disable)
+                    .map(e => ({
+                        uid: e.uid ?? e.id ?? 0,
+                        comment: String(e.comment || e.name || '').trim(),
+                        keys: Array.isArray(e.keys || e.key) ? (e.keys || e.key) : [],
+                        content: String(e.content || '').slice(0, 300)
+                    }))
+            };
+        }
+    }
+
+    if (!bookName) return null;
+
+    try {
+        let data = null;
+        if (typeof c.loadWorldInfo === 'function') {
+            data = await c.loadWorldInfo(bookName);
+        } else if (typeof window !== 'undefined' && typeof window.loadWorldInfo === 'function') {
+            data = await window.loadWorldInfo(bookName);
+        }
+
+        if (!data || !data.entries) {
+            return { bookName, source: 'chat_or_char', entries: [] };
+        }
+
+        const entries = Object.values(data.entries)
+            .filter(e => e && !e.disable)
+            .map(e => ({
+                uid: Number(e.uid),
+                comment: String(e.comment || '').trim(),
+                keys: Array.isArray(e.key || e.keys) ? (e.key || e.keys) : [],
+                content: String(e.content || '').slice(0, 300)
+            }));
+
+        return { bookName, source: 'chat_or_char', entries };
+    } catch (e) {
+        console.warn(`[${MODULE_NAME}] 读取当前会话世界书 "${bookName}" 失败:`, e);
+        return { bookName, source: 'chat_or_char', entries: [] };
+    }
 }

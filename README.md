@@ -1,6 +1,6 @@
 # SillyTavern 持续记忆插件 (ST-Persistent-Memory)
 
-[![Version](https://img.shields.io/badge/version-v0.1.14-blue.svg)](https://github.com/dayuseless/ST-Persistent-Memory)
+[![Version](https://img.shields.io/badge/version-v0.1.15-blue.svg)](https://github.com/dayuseless/ST-Persistent-Memory)
 [![SillyTavern](https://img.shields.io/badge/SillyTavern-1.12.0+-purple.svg)](https://github.com/SillyTavern/SillyTavern)
 [![License](https://img.shields.io/badge/license-MIT-green.svg)](LICENSE)
 
@@ -40,7 +40,19 @@
   - 在主回复末尾附加隐藏状态标签 `<!--PERSISTENT_MEMORY: ... -->`，由前端无感截获入库并从消息正文中剥离。
   - **零额外 API 调用与请求消耗**，适合 API 额度紧张或不支持多并发连接的环境；异常标签自动保留并提供 HUD 错误排查面板。
 
-### 5. 三重 UI 入口与清爽现代交互
+### 5. 密集向量语义检索与混合召回 (Semantic Retrieval & Hybrid Engine)
+- 🧠 **双路混合召回 (Hybrid Retrieval)**：结合精确关键词词法匹配与密集向量余弦相似度（Dense Cosine Similarity），完美解决同义词或口语转述无法命中的难题（如记忆为“暴雨造成山洪”，对话提及“漫山遍野的泥浆浊流呼啸而下”，零关键词重合仍能精准召回）。
+- ⚡ **零外部依赖本地嵌入 (Local Dense Vectorizer)**：内置专为浏览器与 Node.js 离线环境设计的多尺度字符 N-gram 与 FNV-1a 符号投射 256 维稠密特征向量引擎，毫秒级响应、确定性强、完全不耗费 API 额度与网络流量。
+- 🌐 **通用 OpenAI 兼容外部向量接口**：支持接入外部专用 Embedding 模型（如 `text-embedding-3-small`、`bge-m3`、`nomic-embed-text`），具备超时保护与平滑降级机制。
+- 🛡️ **语义加权绝不穿透知情权限**：任何高相似度得分都无法击穿角色私密经历与知情范围边界，未授权 POV 永远无法借由语义高分探测他人秘密。
+
+### 6. 世界书关联条目与动态情境差量 (World Book / Lorebook Integration)
+- 📖 **世界书动态差量补丁 (Dynamic Lorebook Delta)**：传统世界书多为静态设定（如“王城地下藏有秘宝”），持续记忆支持为记忆条目绑定世界书关联（`lorebook_ref`），将现实推进的差量动态追加在世界书设定之上，提示词注入时自动标注 `[世界书关联: 条目名]`。
+- 🔒 **单会话安全提取 (Session-Scoped Extraction)**：自动读取当前对话绑定的 World Info、角色主世界书以及角色内置嵌合世界书（`character_book`），在提炼时将活跃条目安全提供给提炼模型，严格限制于当前单会话，杜绝跨会话或全局污染。
+- 🚀 **双路检索相关性加成 (Dynamic Retrieval Boost)**：当对话提及世界书条目时，混合检索引擎自动为关联记忆赋予检索加权加成（默认 +0.35），优先将关联动态记忆精准召回至上下文。
+- 🛡️ **严格 ACL 权限铁律与 Fail-Closed 闭环**：关联了世界书的私密或共享记忆，依然严格执行知情范围与生成 POV 过滤；当生成主体无法确认时执行 Fail-Closed 绝不注入，严防通过世界书泄露隐私。
+
+### 7. 三重 UI 入口与清爽现代交互
 - 📱 **屏幕快捷悬浮球**：右下角极简白底脑形气泡，支持触控拖拽、双端独立坐标记忆。
 - 🧩 **顶部扩展快捷菜单**：深度融入酒馆顶部工具栏扩展下拉菜单（拼图/魔棒），随时一键唤起。
 - ⚙️ **原生扩展设置抽屉 & 侧边 HUD 控制台**：
@@ -65,7 +77,7 @@
 
 ### 方式二：手动离线包安装
 
-1. 从 [Releases 页面](https://github.com/dayuseless/ST-Persistent-Memory/releases) 下载 `ST-Persistent-Memory-v0.1.12.zip`。
+1. 从 [Releases 页面](https://github.com/dayuseless/ST-Persistent-Memory/releases) 下载 `ST-Persistent-Memory-v0.1.15.zip`。
 2. 解压到 SillyTavern 的扩展目录中：
    ```text
    SillyTavern/public/scripts/extensions/third-party/ST-Persistent-Memory/
@@ -146,6 +158,16 @@ window.__persistentMemory.digestNow();
 ---
 
 ## 📝 版本历史
+
+### v0.1.15 (世界书关联与协同：会话级设定提取、动态差量注入、双路加权与权限边界锁)
+
+- **世界书条目动态关联架构 (World Book Linking & Delta)**：构建记忆条目与静态世界书 (Lorebook / World Info) 的动态关联链路（`lorebook_ref: { file_name, entry_uid, entry_name }`）。让 AI 在长程剧情推进中，将持续变化的事态演化作为静态世界书的“动态差量补丁”，生成提示词注入时自动标注 `[世界书关联: 条目名]`。
+- **单会话安全提取与上下文协同 (Session-Scoped Lore Extraction)**：严格遵守单会话安全边界（第一阶段不跨会话），安全解析当前会话绑定的聊天世界书 (`chatMetadata.world_info`)、角色主世界书以及角色内置嵌合世界书 (`character_book`)，在提炼请求中以只读安全上下文形式呈现活跃世界书条目，引导模型精准关联而绝不触碰全局文件。
+- **世界书输入防御与原型污染免疫 (Lorebook Ref Sanitization)**：引入 `sanitizeLorebookRef` 校验层，对来自外部导入、旧数据迁移或提炼模型自报的 `lorebook_ref` 执行严格类型过滤、100 字符安全限长与非法原型键剥离，杜绝对象注入与污染。
+- **双路检索世界书激活加成 (Dynamic Retrieval Boost)**：当对话或近期上下文出现世界书条目关键词时，混合检索引擎自动为关联记忆叠加动态激活加权（默认 +0.35），并在向量表征中嵌入世界书标记，使相关动态经历优先召回。
+- **权限边界绝对不穿透 (Fail-Closed ACL & POV Boundary Invariant)**：确立严密的权限铁律——世界书关联绝不能成为绕过知情权限的后门。`character` 私密与 `shared` 共享记忆即使关联了世界书，依然必须经过严格的生成 POV 身份核验；主体无法核实或未授权时严格保守拒绝注入 (Fail-Closed)。
+- **UI 原位交互与控制面板**：卡片头部展示清爽青蓝色 `[📖 条目名]` 徽标，支持卡片原位行内快速修改世界书关联；控制台新增世界书协同控制卡片，支持实时调节激活加成滑块、查看当前绑定的活跃世界书名称与条目数。
+- **测试矩阵扩展至 37 项 (T1-T37 全绿)**：新增针对会话级世界书安全解析 (T33)、输入校验与原型污染防护 (T34)、动态提示词注入与检索加成 (T35)、世界书关联私密记忆 POV 权限绝对拦截 (T36)、行内编辑与导入更新世界书关联 (T37) 的全方位自动化测试。
 
 ### v0.1.14 (语义检索基建：密集向量嵌入、混合检索融合与多源 Embedding 支持)
 

@@ -287,7 +287,10 @@ export function buildAndInjectMemoryPrompt() {
         // scope === MEMORY_SCOPE.WORLD: 世界公共常识，允许任何角色接收
 
         const prefix = getMemoryPrefix(mem);
-        const formattedLine = `- [${prefix}] ${mem.content}${extraWarning}`;
+        const loreTag = (mem.lorebook_ref && typeof mem.lorebook_ref === 'object' && mem.lorebook_ref.entry_name)
+            ? ` [世界书关联: ${mem.lorebook_ref.entry_name}]`
+            : '';
+        const formattedLine = `- [${prefix}]${loreTag} ${mem.content}${extraWarning}`;
         const itemTokens = estimateTokens(formattedLine);
 
         // 常驻项 (Pinned)

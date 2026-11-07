@@ -73,7 +73,8 @@ import {
     setMemoryLifecycle,
     reindexAllMemories,
     batchUpdate,
-    saveCurrentState
+    saveCurrentState,
+    getActiveWorldBookInfo
 } from '../src/state.js';
 
 import {
@@ -1051,6 +1052,240 @@ async function runTests() {
         const parsed = JSON.parse(raw);
         assert.strictEqual(parsed.embeddingApiKey, undefined, 'localStorage 备份中绝不可出现明文 embeddingApiKey！');
         assert.strictEqual(parsed.embeddingApiUrl, 'https://api.openai.com/v1', '非敏感向量配置正常保存');
+    });
+
+    // ─────────────────────────────────────────────────────────────
+    // T33: getActiveWorldBookInfo 单会话世界书动态解析（会话与角色作用域）
+    // ─────────────────────────────────────────────────────────────
+    await testAsync('T33: getActiveWorldBookInfo 正确解析当前聊天专属世界书与角色内置卡片世界书', async () => {
+        // 场景 1: 当前聊天绑定了专属世界书
+        mockContext.chatMetadata = { world_info: '世界书A' };
+        mockContext.characters = [{ name: '角色A' }];
+        mockContext.characterId = 0;
+        mockContext.loadWorldInfo = async (name) => {
+            if (name === '世界书A') {
+                return {
+                    entries: {
+                        '1': { uid: 1, comment: '断钢圣剑', key: ['圣剑', '断钢'], content: '插在巨石中的圣剑' },
+                        '2': { uid: 2, comment: '精灵之森', key: ['精灵', '森林'], content: '封闭千年的妖精领地' }
+                    }
+                };
+            }
+            return null;
+        };
+
+        const wbInfo = await getActiveWorldBookInfo();
+        assert(wbInfo, '应成功解析到当前聊天的世界书');
+        assert.strictEqual(wbInfo.bookName, '世界书A');
+        assert.strictEqual(wbInfo.entries.length, 2);
+        assert.strictEqual(wbInfo.entries[0].comment, '断钢圣剑');
+
+        // 场景 2: 聊天未绑定，但角色卡拥有内置 character_book
+        mockContext.chatMetadata = {};
+        mockContext.characters = [{
+            name: '角色A',
+            data: {
+                character_book: {
+                    name: '卡片内置设定集',
+                    entries: [
+                        { uid: 10, comment: '暗黑魔核', key: ['魔核'], content: '提供无尽能量' }
+                    ]
+                }
+            }
+        }];
+        const wbChar = await getActiveWorldBookInfo();
+        assert(wbChar, '应成功回退解析角色卡内置设定集');
+        assert.strictEqual(wbChar.bookName, '卡片内置设定集');
+        assert.strictEqual(wbChar.entries.length, 1);
+        assert.strictEqual(wbChar.entries[0].comment, '暗黑魔核');
+
+        // 恢复 mock
+        mockContext.chatMetadata = {};
+        mockContext.characters = [{ name: '角色A' }, { name: '角色B' }];
+    });
+
+    // ─────────────────────────────────────────────────────────────
+    // T34: 提取校验 validateExtractedPayload 对 lorebook_ref 严格净化
+    // ─────────────────────────────────────────────────────────────
+    test('T34: validateExtractedPayload 严格校验并净化 lorebook_ref (过滤原型污染与非法字段)', () => {
+        const rawPayload = {
+            scene: { location: '阿瓦隆' },
+            new_memories: [
+                {
+                    type: 'fact',
+                    content: '主角拔出了断钢圣剑',
+                    trigger_keys: ['圣剑'],
+                    scope: 'world',
+                    lorebook_ref: {
+                        entry_uid: 1,
+                        entry_name: '断钢圣剑',
+                        book: '世界书A',
+                        __proto__: { evil: true }
+                    }
+                },
+                {
+                    type: 'fact',
+                    content: '普通对话琐事',
+                    trigger_keys: ['天气'],
+                    scope: 'world',
+                    lorebook_ref: null
+                },
+                {
+                    type: 'fact',
+                    content: '带畸形关联的记忆',
+                    trigger_keys: ['测试'],
+                    scope: 'world',
+                    lorebook_ref: {
+                        entry_uid: 'invalid_not_number',
+                        entry_name: '   '
+                    }
+                }
+            ]
+        };
+
+        const validated = validateExtractedPayload(rawPayload, [], new Set(['User', '角色A']));
+        assert(validated, '校验应成功通过');
+        assert.strictEqual(validated.new_memories.length, 3);
+
+        const m1 = validated.new_memories[0];
+        assert(m1.lorebook_ref, '合法条目保留 lorebook_ref');
+        assert.strictEqual(m1.lorebook_ref.entry_uid, 1);
+        assert.strictEqual(m1.lorebook_ref.entry_name, '断钢圣剑');
+        assert.strictEqual(m1.lorebook_ref.book, '世界书A');
+        assert.strictEqual(m1.lorebook_ref.evil, undefined, '严禁原型污染');
+
+        const m2 = validated.new_memories[1];
+        assert.strictEqual(m2.lorebook_ref, null, '未提供关联的应为 null');
+
+        const m3 = validated.new_memories[2];
+        assert.strictEqual(m3.lorebook_ref, null, '畸形或空条目关联应被清洗为 null');
+    });
+
+    // ─────────────────────────────────────────────────────────────
+    // T35: 关联世界书的记忆注入格式化与动态加权唤醒
+    // ─────────────────────────────────────────────────────────────
+    test('T35: 记忆带有 lorebook_ref 时注入带 [世界书关联: xx] 标识，并享受检索加权唤醒', () => {
+        const state = getState();
+        state.memories = [];
+        updateSettings({
+            enabled: true,
+            mode: 'async',
+            worldBookIntegrationEnabled: true,
+            worldBookBoostScore: 0.35,
+            maxTotalMemoryTokens: 500
+        });
+
+        // 录入一条关联世界书“断钢圣剑”的动态事实
+        addMemory({
+            type: 'fact',
+            content: '主角在第3章拔出了巨石中的圣剑，剑身附带金色裂痕',
+            trigger_keys: ['圣剑拔出'],
+            scope: 'world',
+            status: MEMORY_STATUS.TRIGGERED,
+            lorebook_ref: {
+                entry_uid: 1,
+                entry_name: '断钢圣剑',
+                book: '世界书A'
+            }
+        });
+
+        // 对话语料中提到了条目名称“断钢圣剑”，但没有提到原 trigger_keys “圣剑拔出”
+        mockContext.chat = [
+            { is_user: true, mes: '听说有人见到了断钢圣剑？' },
+            { is_user: false, name: '角色A', mes: '是的，那柄剑确实已经不在巨石上了。' }
+        ];
+
+        const injected = buildAndInjectMemoryPrompt();
+        assert(injected.includes('[世界书关联: 断钢圣剑]'), '注入提示词中必须包含世界书关联标记');
+        assert(injected.includes('金色裂痕'), '关联条目因世界书加权被成功唤醒进入上下文');
+    });
+
+    // ─────────────────────────────────────────────────────────────
+    // T36: 世界书关联绝对无法穿透权限边界 (ACL & POV 免疫)
+    // ─────────────────────────────────────────────────────────────
+    test('T36: 世界书关联记忆若设为 character/shared，未授权角色或未知主体绝对不可获悉 (Fail-Closed)', () => {
+        const state = getState();
+        state.memories = [];
+        updateSettings({
+            enabled: true,
+            mode: 'async',
+            worldBookIntegrationEnabled: true,
+            maxTotalMemoryTokens: 500
+        });
+
+        // 角色A的私密记忆，但关联了公共世界书条目“断钢圣剑”
+        addMemory({
+            type: 'fact',
+            content: '角色A独自知晓圣剑内部藏有一张密信',
+            trigger_keys: ['断钢圣剑'],
+            scope: 'character',
+            character: '角色A',
+            status: MEMORY_STATUS.TRIGGERED,
+            lorebook_ref: {
+                entry_uid: 1,
+                entry_name: '断钢圣剑'
+            }
+        });
+
+        // 语料中出现圣剑
+        mockContext.chat = [
+            { is_user: true, mes: '关于断钢圣剑你了解多少？' }
+        ];
+
+        // 1. 角色B生成时，即便命中世界书条目且余弦相似度极高，绝对严禁注入角色A的私知
+        mockContext.characterId = 1; // 角色B
+        mockContext.this_chid = 1;
+        const promptB = buildAndInjectMemoryPrompt();
+        assert(!promptB.includes('密信'), '角色B生成时严禁注入角色A私密世界书关联记忆！');
+
+        // 2. 旁白/未知主体生成时，Fail-Closed 保守拒绝注入
+        mockContext.characterId = null;
+        mockContext.this_chid = null;
+        mockContext.name2 = null;
+        mockContext.groupId = 'group_123';
+        const promptUnknown = buildAndInjectMemoryPrompt();
+        assert(!promptUnknown.includes('密信'), '主体未知时 Fail-Closed 保守拒绝注入私密世界书关联记忆！');
+
+        // 3. 角色A自身生成时，正常注入
+        mockContext.characterId = 0; // 角色A
+        mockContext.this_chid = 0;
+        mockContext.name2 = '角色A';
+        mockContext.groupId = null;
+        const promptA = buildAndInjectMemoryPrompt();
+        assert(promptA.includes('密信'), '角色A自身生成时应正常注入');
+        assert(promptA.includes('[世界书关联: 断钢圣剑]'), '包含世界书关联标签');
+    });
+
+    // ─────────────────────────────────────────────────────────────
+    // T37: updateMemory 与 importMemoryData 完备保留 lorebook_ref
+    // ─────────────────────────────────────────────────────────────
+    test('T37: updateMemory 与 importMemoryData 完备保留与更新 lorebook_ref', () => {
+        const state = getState();
+        state.memories = [];
+
+        const m = addMemory({
+            content: '初始记忆',
+            type: 'fact',
+            scope: 'world'
+        });
+        assert.strictEqual(m.lorebook_ref, null);
+
+        // 更新增加 lorebook_ref
+        const updated = updateMemory(m.id, {
+            lorebook_ref: { entry_name: '精灵之森', entry_uid: 2, book: '主书' }
+        });
+        assert(updated.lorebook_ref, 'updateMemory 应成功设置 lorebook_ref');
+        assert.strictEqual(updated.lorebook_ref.entry_name, '精灵之森');
+
+        // 导出并导入
+        const exported = exportMemoryData();
+        state.memories = [];
+        importMemoryData(exported, 'replace');
+
+        const reloaded = getState().memories.find(item => item.id === m.id);
+        assert(reloaded, '导入后条目应存在');
+        assert(reloaded.lorebook_ref, '导入后应完好保留 lorebook_ref');
+        assert.strictEqual(reloaded.lorebook_ref.entry_name, '精灵之森');
     });
 
     console.log(`\n======================================================`);

@@ -153,7 +153,10 @@ export function getMemoryEmbeddingText(mem) {
     const content = typeof mem.content === 'string' ? mem.content.trim() : '';
     const keys = Array.isArray(mem.trigger_keys) ? mem.trigger_keys.filter(Boolean).join(' ') : '';
     const typeLabel = mem.type ? `[${mem.type}] ` : '';
-    return `${typeLabel}${content} ${keys}`.trim();
+    const loreLabel = (mem.lorebook_ref && typeof mem.lorebook_ref === 'object' && mem.lorebook_ref.entry_name)
+        ? `[世界书:${mem.lorebook_ref.entry_name}] `
+        : '';
+    return `${typeLabel}${loreLabel}${content} ${keys}`.trim();
 }
 
 /**
@@ -440,6 +443,15 @@ export function calculateHybridMemoryScore(mem, queryContext, settings = {}) {
     const hasKeys = keys.length > 0;
     if (!hasKeys) {
         lexicalHits = Math.max(lexicalHits, 1.0);
+    }
+
+    // 世界书条目关联加权 (若记忆关联了世界书条目，且该条目名称在当前会话语料中出现)
+    if (settings.worldBookIntegrationEnabled !== false && mem.lorebook_ref && typeof mem.lorebook_ref === 'object' && mem.lorebook_ref.entry_name) {
+        const lbNameLower = String(mem.lorebook_ref.entry_name).toLowerCase();
+        if (scanCorpus && scanCorpus.includes(lbNameLower)) {
+            const boost = Number(settings.worldBookBoostScore !== undefined ? settings.worldBookBoostScore : 0.35);
+            lexicalHits += 2.0 + boost;
+        }
     }
 
     // 若未启用语义检索或缺乏查询向量，严格保持历史纯词法逻辑

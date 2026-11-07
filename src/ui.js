@@ -4,7 +4,7 @@
  */
 
 import { MODULE_NAME, MEMORY_STATUS, MEMORY_LIFECYCLE, MEMORY_SCOPE } from './config.js';
-import { getState, getSettings, updateSettings, saveSettingsImmediately, updateScene, addMemory, updateMemory, deleteMemory, purgeArchivedMemories, cycleMemoryStatus, cycleMemoryType, exportMemoryData, importMemoryData, reindexAllMemories, onStateChange } from './state.js';
+import { getState, getSettings, updateSettings, saveSettingsImmediately, updateScene, addMemory, updateMemory, deleteMemory, purgeArchivedMemories, cycleMemoryStatus, cycleMemoryType, exportMemoryData, importMemoryData, reindexAllMemories, onStateChange, getActiveWorldBookInfo } from './state.js';
 import { triggerAsyncDigest, triggerMemoryConsolidation, testCustomApiConnection } from './extractor.js';
 import { testEmbeddingApiConnection } from './semantic.js';
 
@@ -822,6 +822,10 @@ function renderPanelContent() {
                         <input type="text" id="pm-new-mem-target" class="pm-input" placeholder="例如: 武大郎, 潘金莲">
                     </div>
                 </div>
+                <div class="pm-input-row pm-mb-8">
+                    <label class="pm-input-label"><i class="fa-solid fa-book-atlas"></i> 关联世界书条目 (可选):</label>
+                    <input type="text" id="pm-new-mem-lorebook" class="pm-input" placeholder="例如: 断钢圣剑 或 精灵之森 (填条目名称)">
+                </div>
                 <button id="pm-add-mem-btn" class="pm-btn-primary">
                     <i class="fa-solid fa-plus"></i> 录入到记忆库
                 </button>
@@ -1110,6 +1114,44 @@ function renderPanelContent() {
                     </div>
                 </div>
 
+                <!-- 世界书关联与协同 (World Info Integration) - 会话内作用域 -->
+                <div class="pm-section-card pm-mt-8">
+                    <div class="flex-container alignitemscenter wide100p pm-mb-4" style="justify-content: space-between;">
+                        <div style="font-weight: 700; color: #0f172a; font-size: 13px; display: flex; align-items: center; gap: 6px;">
+                            <i class="fa-solid fa-book-atlas" style="color: #0284c7;"></i> 世界书关联与协同 (World Info)
+                            <span class="pm-hero-pill" style="background: rgba(14, 165, 233, 0.15); color: #0284c7; border: 1px solid rgba(14, 165, 233, 0.3);">会话内协同</span>
+                        </div>
+                        <div class="pm-switch">
+                            <input type="checkbox" id="pm-setting-worldbook-enabled" ${settings.worldBookIntegrationEnabled !== false ? 'checked' : ''}>
+                            <span class="pm-slider"></span>
+                        </div>
+                    </div>
+                    <div style="font-size: 12px; color: #64748b; margin-bottom: 10px; line-height: 1.4;">
+                        允许动态记忆与世界书设定条目进行关联，将故事中发生的状态变迁（如神剑拔出、城池失守）作为世界书条目的实时动态补丁协同注入上下文。
+                    </div>
+
+                    <div id="pm-worldbook-settings-block" style="${settings.worldBookIntegrationEnabled !== false ? 'display: block;' : 'display: none;'}">
+                        <div class="pm-grid-2col pm-mb-8">
+                            <div class="pm-input-row" style="margin-bottom: 0;">
+                                <label class="pm-switch-wrapper">
+                                    <span style="font-size: 12px; color: #334155; font-weight: 600;">提炼时参考当前世界书条目：</span>
+                                    <div class="pm-switch" style="margin-left: 8px;">
+                                        <input type="checkbox" id="pm-setting-worldbook-context" ${settings.worldBookContextToExtractor !== false ? 'checked' : ''}>
+                                        <span class="pm-slider"></span>
+                                    </div>
+                                </label>
+                            </div>
+                            <div class="pm-input-row" style="margin-bottom: 0;">
+                                <label class="pm-input-label">世界书条目激活加权 (<span id="pm-val-worldbook-boost">${Number(settings.worldBookBoostScore ?? 0.35).toFixed(2)}</span>):</label>
+                                <input type="range" id="pm-setting-worldbook-boost" min="0.0" max="1.0" step="0.05" value="${settings.worldBookBoostScore ?? 0.35}" style="width: 100%; cursor: pointer;">
+                            </div>
+                        </div>
+                        <div id="pm-active-worldbook-info" style="font-size: 12px; color: #475569; background: #f0f9ff; border: 1px solid #bae6fd; border-radius: 6px; padding: 8px 10px; margin-top: 6px; display: flex; align-items: center; gap: 6px;">
+                            <i class="fa-solid fa-spinner fa-spin" style="color: #0284c7;"></i> 检测当前会话生效的世界书...
+                        </div>
+                    </div>
+                </div>
+
                 <div class="pm-mt-8">
                     <button id="pm-save-all-settings-btn" class="pm-btn-primary" style="padding: 10px 14px; font-size: 13px; background: #059669; border-color: #047857;">
                         <i class="fa-solid fa-floppy-disk"></i> 保存并生效全部配置
@@ -1213,12 +1255,16 @@ export function renderMemoryCard(mem) {
             <div class="pm-card-content" data-role="view-content">${escapeHtml(mem.content)}</div>
             <div class="pm-card-bottom-row" style="display: flex; justify-content: space-between; align-items: center; margin-top: 4px;">
                 ${keysHtml ? `<div class="pm-card-keys" data-role="view-keys">${keysHtml}</div>` : '<div></div>'}
-                ${Array.isArray(mem.embedding) && mem.embedding.length > 0 ? `<span class="pm-embedding-tag" title="已缓存 ${mem.embedding.length} 维密集语义向量 (${escapeHtml(mem.embedding_provider || 'local')})"><i class="fa-solid fa-brain"></i></span>` : ''}
+                <div style="display: flex; align-items: center; gap: 4px;">
+                    ${mem.lorebook_ref && mem.lorebook_ref.entry_name ? `<span class="pm-lorebook-tag" title="关联世界书: ${escapeHtml(mem.lorebook_ref.book || '')} [UID: ${escapeHtml(String(mem.lorebook_ref.entry_uid ?? ''))}]"><i class="fa-solid fa-book-atlas"></i> ${escapeHtml(mem.lorebook_ref.entry_name)}</span>` : ''}
+                    ${Array.isArray(mem.embedding) && mem.embedding.length > 0 ? `<span class="pm-embedding-tag" title="已缓存 ${mem.embedding.length} 维密集语义向量 (${escapeHtml(mem.embedding_provider || 'local')})"><i class="fa-solid fa-brain"></i></span>` : ''}
+                </div>
             </div>
             <!-- 行内即时编辑表单 (默认隐藏) -->
             <div class="pm-card-edit-box" data-role="edit-box" style="display: none; margin-top: 8px;">
                 <textarea class="pm-input pm-edit-content-input" rows="2" maxlength="150" placeholder="记忆正文 (上限150字)" style="width: 100%; box-sizing: border-box; font-size: 13px; margin-bottom: 6px; resize: vertical; line-height: 1.4;">${escapeHtml(mem.content)}</textarea>
-                <input type="text" class="pm-input pm-edit-keys-input" placeholder="触发关键词 (逗号分隔，如: 约定, 礼物)" value="${escapeHtml((mem.trigger_keys || []).join(', '))}" style="width: 100%; box-sizing: border-box; font-size: 12px; margin-bottom: 8px;">
+                <input type="text" class="pm-input pm-edit-keys-input" placeholder="触发关键词 (逗号分隔，如: 约定, 礼物)" value="${escapeHtml((mem.trigger_keys || []).join(', '))}" style="width: 100%; box-sizing: border-box; font-size: 12px; margin-bottom: 6px;">
+                <input type="text" class="pm-input pm-edit-lore-input" placeholder="关联世界书条目 (可选，如: 断钢圣剑)" value="${escapeHtml(mem.lorebook_ref?.entry_name || '')}" style="width: 100%; box-sizing: border-box; font-size: 12px; margin-bottom: 8px;">
                 <div style="display: flex; gap: 6px; justify-content: flex-end;">
                     <button class="pm-btn-primary pm-edit-save-btn" data-action="save-edit" style="width: auto; padding: 4px 12px; font-size: 12px; background: #059669; border-color: #047857;"><i class="fa-solid fa-check"></i> 保存</button>
                     <button class="pm-btn-secondary pm-edit-cancel-btn" data-action="cancel-edit" style="padding: 4px 10px; font-size: 12px;"><i class="fa-solid fa-xmark"></i> 取消</button>
@@ -1472,6 +1518,38 @@ function bindPanelEvents(container) {
         }
     });
 
+    // 世界书关联与协同设置监听
+    const wbBoostSlider = container.querySelector('#pm-setting-worldbook-boost');
+    const wbBoostLabel = container.querySelector('#pm-val-worldbook-boost');
+    if (wbBoostSlider && wbBoostLabel) {
+        wbBoostSlider.addEventListener('input', (e) => {
+            wbBoostLabel.textContent = Number(e.target.value).toFixed(2);
+        });
+    }
+
+    const wbToggle = container.querySelector('#pm-setting-worldbook-enabled');
+    const wbBlock = container.querySelector('#pm-worldbook-settings-block');
+    if (wbToggle && wbBlock) {
+        wbToggle.addEventListener('change', (e) => {
+            wbBlock.style.display = e.target.checked ? 'block' : 'none';
+        });
+    }
+
+    const wbInfoEl = container.querySelector('#pm-active-worldbook-info');
+    if (wbInfoEl) {
+        getActiveWorldBookInfo().then(wb => {
+            if (!wbInfoEl) return;
+            if (wb && wb.bookName) {
+                const count = Array.isArray(wb.entries) ? wb.entries.length : 0;
+                wbInfoEl.innerHTML = `<i class="fa-solid fa-book-open" style="color: #0284c7;"></i> 当前生效世界书: <strong>${escapeHtml(wb.bookName)}</strong> (${count} 个条目，来源: ${wb.source === 'character_embedded' ? '角色卡内置' : '会话绑定'})`;
+            } else {
+                wbInfoEl.innerHTML = `<i class="fa-solid fa-circle-info" style="color: #64748b;"></i> 当前会话未绑定专属世界书（可在酒馆聊天或角色设置中关联世界书）`;
+            }
+        }).catch(() => {
+            if (wbInfoEl) wbInfoEl.innerHTML = `<i class="fa-solid fa-circle-info" style="color: #64748b;"></i> 当前会话未检测到生效的世界书`;
+        });
+    }
+
     // 保存并生效全部配置按钮 (Tab 3)
     container.querySelector('#pm-save-all-settings-btn')?.addEventListener('click', () => {
         syncHudApiInputs();
@@ -1496,6 +1574,10 @@ function bindPanelEvents(container) {
         const embKey = container.querySelector('#pm-setting-embedding-key')?.value?.trim() || '';
         const embModel = container.querySelector('#pm-setting-embedding-model')?.value?.trim() || 'text-embedding-3-small';
 
+        const isWbEnabled = container.querySelector('#pm-setting-worldbook-enabled')?.checked ?? true;
+        const isWbCtx = container.querySelector('#pm-setting-worldbook-context')?.checked ?? true;
+        const wbBoost = parseFloat(container.querySelector('#pm-setting-worldbook-boost')?.value) || 0.35;
+
         updateSettings({
             enabled: isEnabled,
             showFloatingBubble: showBubble,
@@ -1515,7 +1597,10 @@ function bindPanelEvents(container) {
             semanticWeight: semWeight,
             embeddingApiUrl: embUrl,
             embeddingApiKey: embKey,
-            embeddingModel: embModel
+            embeddingModel: embModel,
+            worldBookIntegrationEnabled: isWbEnabled,
+            worldBookContextToExtractor: isWbCtx,
+            worldBookBoostScore: wbBoost
         });
 
         const ok = saveSettingsImmediately();
@@ -1574,6 +1659,7 @@ function bindPanelEvents(container) {
         const keysInput = container.querySelector('#pm-new-mem-keys');
         const scopeSelect = container.querySelector('#pm-new-mem-scope');
         const targetInput = container.querySelector('#pm-new-mem-target');
+        const loreInput = container.querySelector('#pm-new-mem-lorebook');
 
         const content = (contentInput?.value || '').trim().slice(0, 150);
         if (!content) return;
@@ -1582,6 +1668,7 @@ function bindPanelEvents(container) {
         const keys = (keysInput?.value || '').split(/[,，]/).map(k => k.trim()).filter(Boolean);
         const scope = scopeSelect?.value || 'world';
         const targets = (targetInput?.value || '').split(/[,，]/).map(k => k.trim()).filter(Boolean);
+        const loreName = (loreInput?.value || '').trim();
 
         const state = getState();
         const c = window.SillyTavern?.getContext?.();
@@ -1594,6 +1681,10 @@ function bindPanelEvents(container) {
             scope: scope,
             status: MEMORY_STATUS.TRIGGERED
         };
+
+        if (loreName) {
+            memData.lorebook_ref = { entry_name: loreName };
+        }
 
         if (scope === 'character') {
             memData.character = targets[0] || curCharName;
@@ -1609,6 +1700,7 @@ function bindPanelEvents(container) {
         contentInput.value = '';
         keysInput.value = '';
         if (targetInput) targetInput.value = '';
+        if (loreInput) loreInput.value = '';
     });
 
     // 卡片动作 (点击切换状态 / 点击切换类型 / 行内编辑 / 删除)
@@ -1663,10 +1755,13 @@ function bindPanelEvents(container) {
             }
             const rawKeys = editKeysInput?.value || '';
             const newKeys = rawKeys.split(/[,，]/).map(k => k.trim()).filter(Boolean);
+            const newLore = card.querySelector('.pm-edit-lore-input')?.value?.trim() || '';
 
+            const memObj = getState().memories.find(m => m.id === id);
             const updated = updateMemory(id, {
                 content: newContent,
-                trigger_keys: newKeys
+                trigger_keys: newKeys,
+                lorebook_ref: newLore ? { entry_name: newLore, book: memObj?.lorebook_ref?.book || '', entry_uid: memObj?.lorebook_ref?.entry_uid ?? null } : null
             });
             if (updated) {
                 window.toastr?.success?.('记忆已成功修改！', '持续记忆');

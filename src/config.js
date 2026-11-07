@@ -1,8 +1,8 @@
 /**
- * 持续记忆插件配置与常量定义 (v0.1.14)
+ * 持续记忆插件配置与常量定义 (v0.1.15)
  */
 
-export const EXTENSION_VERSION = '0.1.14';
+export const EXTENSION_VERSION = '0.1.15';
 export const MODULE_NAME = 'st_persistent_memory';
 export const INJECT_KEY = 'PERSISTENT_MEMORY_INJECT';
 
@@ -66,7 +66,12 @@ export const DEFAULT_SETTINGS = {
     embeddingApiKey: '',                  // 独立 Embedding API Key (留空沿用 customApiKey)
     embeddingModel: 'text-embedding-3-small', // 向量模型 (如 text-embedding-3-small, bge-m3, nomic-embed-text)
     semanticThreshold: 0.25,              // 语义余弦相似度下限激活门槛 (0.1 ~ 0.9)
-    semanticWeight: 0.60                  // 混合打分权重: 语义权重占比 (0.0~1.0, 默认 0.60 语义 + 0.40 词法)
+    semanticWeight: 0.60,                 // 混合打分权重: 语义权重占比 (0.0~1.0, 默认 0.60 语义 + 0.40 词法)
+
+    // 世界书关联与协同 (World Info Integration) - 当前会话作用域
+    worldBookIntegrationEnabled: true,    // 是否启用世界书条目关联与动态注入
+    worldBookContextToExtractor: true,    // 提炼时是否注入当前世界书条目索引供模型参考关联
+    worldBookBoostScore: 0.35             // 命中关联世界书时的激活加权分 (0.0~1.0)
 };
 
 export const DEFAULT_STATE = {
