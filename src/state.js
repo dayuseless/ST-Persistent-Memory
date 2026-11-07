@@ -1,6 +1,6 @@
 /**
- * 记忆状态管理器 (v0.1.8)
- * 严格落实 state_revision 状态修订号、L0 三态 PATCH 语义、真正原子回滚事务与严格知情集合隔离
+ * 记忆状态管理器 (v0.1.10)
+ * 严格落实 state_revision 状态修订号、L0 三态 PATCH 语义、真正原子回滚事务、严格知情集合隔离与健壮防御迁移
  */
 
 import { MODULE_NAME, DEFAULT_SETTINGS, DEFAULT_STATE, MEMORY_STATUS, MEMORY_LIFECYCLE, MEMORY_TYPES, MEMORY_SCOPE } from './config.js';
@@ -29,8 +29,32 @@ export function onStateChange(fn) {
 }
 
 /**
- * P1-02 修复：事务式批量更新包装器 (具备完整内存快照与异常回滚能力)
- * 在事务块执行期间暂停单独持久化；若执行过程中发生任何异常，完整恢复先前快照，严禁落盘半修改状态
+ * 将当前缓存写入聊天元数据。调用方负责处理批处理状态。
+ */
+function persistCurrentStateInternal() {
+    const c = getContext();
+    const metadata = c?.chatMetadata ?? c?.chat_metadata;
+    if (!stateCache) return false;
+
+    // 每次实际落盘增加修订版本号。
+    stateCache.state_revision = (stateCache.state_revision || 0) + 1;
+
+    if (metadata) {
+        metadata[MODULE_NAME] = stateCache;
+        if (typeof c?.saveMetadataDebounced === 'function') {
+            c.saveMetadataDebounced();
+        } else if (typeof c?.saveMetadata === 'function') {
+            c.saveMetadata();
+        }
+    }
+
+    notifyChange();
+    return true;
+}
+
+/**
+ * 事务式批量更新包装器 (具备完整内存快照与异常回滚能力)
+ * 在事务块执行期间暂停单独持久化；若执行过程中发生任何异常，完整恢复先前快照，严禁落盘半修改状态。
  */
 export function batchUpdate(fn) {
     if (isBatchUpdating) {
@@ -42,7 +66,8 @@ export function batchUpdate(fn) {
     try {
         const result = fn();
         // 仅在全部操作执行成功后才统一落盘
-        saveCurrentState();
+        // 这里不能调用 saveCurrentState()：它会在批处理标志为 true 时正确地拒绝嵌套保存。
+        persistCurrentStateInternal();
         return result;
     } catch (err) {
         // 异常回滚内存状态，阻止脏数据持久化
@@ -212,37 +237,58 @@ export function loadCurrentState() {
     let upgradedCount = 0;
     let dormantCount = 0;
 
-    const migratedMemories = (Array.isArray(stored.memories) ? stored.memories : []).map(m => {
+    const VALID_TYPES = new Set(Object.values(MEMORY_TYPES));
+    const VALID_SCOPES = new Set(Object.values(MEMORY_SCOPE));
+
+    // 防御性过滤：滤除 null、非对象、无有效 content 的损坏记忆条目，防止迁移中断崩溃
+    const rawMemories = (Array.isArray(stored.memories) ? stored.memories : []).filter(
+        m => m && typeof m === 'object' && typeof m.content === 'string' && m.content.trim().length > 0
+    );
+
+    const migratedMemories = rawMemories.map(m => {
         migratedCount++;
+
+        // 严格类型校验与白名单归一化，杜绝存储型属性注入
+        const type = VALID_TYPES.has(m.type) ? m.type : MEMORY_TYPES.FACT;
+
         let scope = m.scope;
-        let knownBy = Array.isArray(m.known_by) ? m.known_by.filter(Boolean) : null;
+        if (scope && !VALID_SCOPES.has(scope)) {
+            scope = null;
+        }
+
+        let char = (typeof m.character === 'string' && m.character.trim()) ? m.character.trim() : '';
+        let knownBy = Array.isArray(m.known_by)
+            ? m.known_by.filter(k => typeof k === 'string' && k.trim()).map(k => k.trim())
+            : null;
 
         if (!scope) {
             upgradedCount++;
-            if (m.character) {
-                scope = MEMORY_SCOPE.CHARACTER;
-                if (!knownBy || knownBy.length === 0) knownBy = [m.character];
-            } else {
-                // P2-06 修复：针对旧版本未设定知情范围的单聊记忆，对齐为 shared 并赋予当前会话参与者，防止用户历史记忆静默休眠
-                scope = MEMORY_SCOPE.SHARED;
-                if (!knownBy || knownBy.length === 0) {
-                    knownBy = [...defaultParticipants];
-                }
+            // 审计修复：对于旧版未显式指定 scope 的记忆，遵循保守封闭原则，归属于当前角色 private (CHARACTER)，
+            // 严禁擅自升级为 [name1, name2] 双向共享秘密，防止知情范围无故膨胀
+            scope = MEMORY_SCOPE.CHARACTER;
+            char = char || (c?.name2 || 'Character');
+            knownBy = [char];
+        } else if (scope === MEMORY_SCOPE.CHARACTER) {
+            char = char || (c?.name2 || 'Character');
+            knownBy = [char];
+        } else if (scope === MEMORY_SCOPE.SHARED) {
+            if (!knownBy || knownBy.length === 0) {
+                knownBy = char ? [char] : [];
+            }
+            if (knownBy.length === 0) {
+                dormantCount++;
             }
         } else {
-            if (!knownBy) {
-                knownBy = m.character ? [m.character] : [];
-            }
-        }
-
-        if (scope === MEMORY_SCOPE.SHARED && knownBy.length === 0) {
-            dormantCount++;
+            // WORLD
+            knownBy = [];
         }
 
         return {
             ...m,
             id: sanitizeId(m.id),
+            type: type,
             scope: scope,
+            character: char,
             known_by: knownBy,
             // P1 修复旧记忆迁移语义：旧版无 lifecycle 的 archived 项仅代表检索休眠，绝不擅自篡改为 completed
             lifecycle: m.lifecycle || MEMORY_LIFECYCLE.ACTIVE
@@ -273,7 +319,17 @@ export function loadCurrentState() {
         turn_count: Number(stored.turn_count) || 0,
         last_digest_floor: Number(stored.last_digest_floor) || 0,
         last_digest_time: stored.last_digest_time || '',
-        last_digest_summary: stored.last_digest_summary || '尚未执行提炼'
+        last_digest_summary: stored.last_digest_summary || '尚未执行提炼',
+        // 错误状态属于可观测性数据，重载聊天后仍应保留。
+        last_sync_error: stored.last_sync_error && typeof stored.last_sync_error === 'object'
+            ? {
+                time: typeof stored.last_sync_error.time === 'string' ? stored.last_sync_error.time : '',
+                error: typeof stored.last_sync_error.error === 'string' ? stored.last_sync_error.error : '',
+                rawSnippet: typeof stored.last_sync_error.rawSnippet === 'string' ? stored.last_sync_error.rawSnippet : '',
+                truncated: Boolean(stored.last_sync_error.truncated)
+            }
+            : null,
+        last_digest_error: typeof stored.last_digest_error === 'string' ? stored.last_digest_error : null
     };
 
     notifyChange();
@@ -284,23 +340,7 @@ export function saveCurrentState() {
     if (isBatchUpdating) {
         return; // 事务进行中，由 batchUpdate 统一在结尾原子落盘
     }
-    const c = getContext();
-    const metadata = c?.chatMetadata ?? c?.chat_metadata;
-    if (!stateCache) return;
-
-    // 每次实际落盘增加修订版本号
-    stateCache.state_revision = (stateCache.state_revision || 0) + 1;
-
-    if (metadata) {
-        metadata[MODULE_NAME] = stateCache;
-        if (typeof c?.saveMetadataDebounced === 'function') {
-            c.saveMetadataDebounced();
-        } else if (typeof c?.saveMetadata === 'function') {
-            c.saveMetadata();
-        }
-    }
-
-    notifyChange();
+    persistCurrentStateInternal();
 }
 
 export function getState() {
@@ -421,6 +461,16 @@ function areSetsEqual(arr1, arr2) {
     return true;
 }
 
+function getRecipientsForScope(scope, character, knownBy) {
+    if (scope === MEMORY_SCOPE.CHARACTER) {
+        return character ? [character] : [];
+    }
+    if (scope === MEMORY_SCOPE.SHARED) {
+        return Array.isArray(knownBy) ? knownBy : [];
+    }
+    return null; // world 对所有主体可见
+}
+
 /**
  * 保守去重与认知演化保护
  */
@@ -485,6 +535,11 @@ export function addMemory(item) {
         return null;
     }
 
+    // character 私知的知情者由所属角色唯一决定，避免留下相互矛盾的 ACL。
+    if (targetScope === MEMORY_SCOPE.CHARACTER) {
+        knownBy = [targetChar];
+    }
+
     const SCOPE_RANK = {
         [MEMORY_SCOPE.CHARACTER]: 1, // 私密
         [MEMORY_SCOPE.SHARED]: 2,    // 现场共享
@@ -502,13 +557,18 @@ export function addMemory(item) {
         if (sim >= 0.70) {
             const existingRank = SCOPE_RANK[existing.scope] || 1;
             const newRank = SCOPE_RANK[targetScope] || 1;
-            if (newRank > existingRank) {
-                console.warn(`[${MODULE_NAME}] [Scope Escalation Guard] 拦截模型越权将已有受限条目 (ID: ${existing.id}, scope: ${existing.scope}) 扩大为 ${targetScope}，强制收敛至严格知情范围 ${existing.scope}`);
+            const existingRecipients = getRecipientsForScope(existing.scope, existing.character || '', existing.known_by);
+            const incomingRecipients = getRecipientsForScope(targetScope, targetChar, knownBy);
+            const expandsRecipients = existingRecipients !== null && (
+                incomingRecipients === null || incomingRecipients.some(name => !existingRecipients.includes(name))
+            );
+
+            // scope 与知情者集合都是权限边界。即使 scope 仍为 shared，新增一个知情者也属于越权。
+            if (newRank > existingRank || expandsRecipients) {
+                console.warn(`[${MODULE_NAME}] [Visibility Escalation Guard] 拦截模型扩大已有受限条目 (ID: ${existing.id}) 的可见范围，强制继承既有 ACL`);
                 targetScope = existing.scope;
-                if (existing.character) targetChar = existing.character;
-                if (Array.isArray(existing.known_by) && existing.known_by.length > 0) {
-                    knownBy = [...existing.known_by];
-                }
+                targetChar = existing.character || '';
+                knownBy = existingRecipients ? [...existingRecipients] : [];
                 break;
             }
         }

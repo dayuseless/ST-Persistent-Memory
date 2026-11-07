@@ -1,6 +1,6 @@
 /**
- * ST-Persistent-Memory 自动化测试验证矩阵 (T1 - T10)
- * 覆盖：状态迁移、生命周期、去重演化、权限路由、并发一致性、事务回滚、Token预算与韩文、伴生标签异常、超时保护、凭据脱敏
+ * ST-Persistent-Memory 自动化测试验证矩阵
+ * 覆盖：状态迁移、权限路由、ACL 边界、提炼数据最小化、事务提交/回滚、Token 预算、错误重载、超时和凭据脱敏。
  */
 
 import assert from 'assert';
@@ -80,8 +80,11 @@ import {
 
 import {
     validateExtractedPayload,
-    extractAndApplySyncTag
+    extractAndApplySyncTag,
+    filterMemoriesForDigest,
+    withTimeout
 } from '../src/extractor.js';
+import { renderMemoryCard } from '../src/ui.js';
 
 let passed = 0;
 let failed = 0;
@@ -98,15 +101,27 @@ function test(name, fn) {
     }
 }
 
+async function testAsync(name, fn) {
+    try {
+        await fn();
+        console.log(`\x1b[32m✔ [PASS]\x1b[0m ${name}`);
+        passed++;
+    } catch (e) {
+        console.error(`\x1b[31m✖ [FAIL]\x1b[0m ${name}`);
+        console.error(e);
+        failed++;
+    }
+}
+
 async function runTests() {
     console.log(`\n======================================================`);
     console.log(`  ST-Persistent-Memory (v${EXTENSION_VERSION}) 测试验证矩阵`);
     console.log(`======================================================\n`);
 
     // ─────────────────────────────────────────────────────────────
-    // T1: 状态迁移 (旧版本数据迁移与知情范围补全)
+    // T1: 状态迁移 (旧版本数据保守封闭迁移，防止知情范围越权扩大)
     // ─────────────────────────────────────────────────────────────
-    test('T1: 旧版本记忆无知情范围时平滑升级为 shared，并赋予当前会话参与者', () => {
+    test('T1: 旧版本记忆无知情范围与角色时保守升级为当前角色的 private (CHARACTER)，防止未授权扩大至两方 shared', () => {
         mockContext.chatMetadata = {
             [MODULE_NAME]: {
                 version: 1, // 旧版无 version: 3
@@ -118,8 +133,9 @@ async function runTests() {
         const state = loadCurrentState();
         assert.strictEqual(state.memories.length, 1);
         const m = state.memories[0];
-        assert.strictEqual(m.scope, MEMORY_SCOPE.SHARED);
-        assert.deepStrictEqual(m.known_by, ['玩家', '角色A']);
+        assert.strictEqual(m.scope, MEMORY_SCOPE.CHARACTER);
+        assert.strictEqual(m.character, '角色A');
+        assert.deepStrictEqual(m.known_by, ['角色A']);
         assert.strictEqual(m.lifecycle, MEMORY_LIFECYCLE.ACTIVE);
     });
 
@@ -168,6 +184,38 @@ async function runTests() {
         // 尝试以 world scope 录入高度相似内容
         const escalated = addMemory({ content: '角色A身怀藏宝图秘密', type: 'fact', scope: 'world' });
         assert.strictEqual(escalated.scope, MEMORY_SCOPE.CHARACTER, '检测到语义吻合时必须拦截权限提升，强制继承严格范围');
+    });
+
+    test('T3.2: shared 记忆的 known_by 不可被相似新条目扩大', () => {
+        const state = getState();
+        state.memories = [];
+        addMemory({
+            content: '角色A知道藏宝图藏在枯井下',
+            type: 'fact',
+            scope: 'shared',
+            known_by: ['角色A']
+        });
+
+        const attemptedExpansion = addMemory({
+            content: '角色A知道藏宝图藏在枯井下',
+            type: 'fact',
+            scope: 'shared',
+            known_by: ['角色A', '角色B']
+        });
+
+        assert.deepStrictEqual(attemptedExpansion.known_by, ['角色A'], '模型不得通过新增同义条目让角色B获得知情权');
+        assert.strictEqual(state.memories.length, 1, '等价条目应收敛至已有 ACL，而非创建权限更宽的副本');
+    });
+
+    test('T3.3: character 私知不可借相似条目转移给另一角色', () => {
+        const state = getState();
+        state.memories = [];
+        addMemory({ content: '角色A看过密诏原件', type: 'fact', scope: 'character', character: '角色A' });
+        const attemptedTransfer = addMemory({ content: '角色A看过密诏原件', type: 'fact', scope: 'character', character: '角色B' });
+
+        assert.strictEqual(attemptedTransfer.character, '角色A', '相似私知条目不得更换所属角色');
+        assert.deepStrictEqual(attemptedTransfer.known_by, ['角色A']);
+        assert.strictEqual(state.memories.length, 1);
     });
 
     // ─────────────────────────────────────────────────────────────
@@ -256,7 +304,7 @@ async function runTests() {
         mockContext.groupId = null;
     });
 
-    test('T4.3: 提炼请求数据边界隔离，无关第三方的私有记忆绝不上传提炼 Prompt', () => {
+    test('T4.3: 生产版提炼过滤器只上传当前场景相关的私有/共享记忆', () => {
         const state = getState();
         state.memories = [];
         state.scene = { in_scene_characters: ['角色A', '玩家'] };
@@ -264,18 +312,25 @@ async function runTests() {
         addMemory({ content: '角色C的秘密日记', type: 'fact', scope: 'character', character: '角色C' });
         // 角色A在场
         addMemory({ content: '角色A的公开伤势', type: 'fact', scope: 'character', character: '角色A' });
+        addMemory({ content: '天下降下大雪', type: 'fact', scope: 'world' });
 
-        // 模拟提炼时 activeMemList 过滤
-        const activeChars = new Set(['角色A', '玩家']);
-        const filtered = state.memories.filter(m => {
-            if (m.scope === MEMORY_SCOPE.CHARACTER) {
-                return m.character && activeChars.has(m.character);
-            }
-            return true;
+        const filtered = filterMemoriesForDigest(state.memories, {
+            sceneParticipants: state.scene.in_scene_characters,
+            conversationParticipants: ['角色C'],
+            fallbackParticipants: ['玩家', '角色A']
         });
 
-        assert.strictEqual(filtered.length, 1, '无关角色C的私密记忆必须被数据边界严格拦截');
-        assert.strictEqual(filtered[0].content, '角色A的公开伤势');
+        assert.deepStrictEqual(
+            filtered.map(m => m.content),
+            ['角色A的公开伤势', '天下降下大雪'],
+            '场景已知时，近期发言的角色C也不得导致其私密记忆被上传'
+        );
+
+        const emptySceneFiltered = filterMemoriesForDigest(state.memories, {
+            sceneParticipants: [],
+            conversationParticipants: ['角色A', '角色C']
+        });
+        assert.deepStrictEqual(emptySceneFiltered.map(m => m.content), ['天下降下大雪'], '显式空场景不应泄露任何私密或共享记忆');
     });
 
     // ─────────────────────────────────────────────────────────────
@@ -291,7 +346,7 @@ async function runTests() {
     // ─────────────────────────────────────────────────────────────
     // T6: 事务原子性与异常回滚 (P1-02 核心)
     // ─────────────────────────────────────────────────────────────
-    test('T6: batchUpdate 异常时完整回滚内存状态，阻止脏数据落盘', () => {
+    test('T6: batchUpdate 成功时仅提交一次并可重载，异常时完整回滚', () => {
         const state = getState();
         state.memories = [];
         updateScene({ location: '初始安全地点' });
@@ -316,12 +371,24 @@ async function runTests() {
         const currentState = getState();
         assert.strictEqual(currentState.scene.location, '初始安全地点', '发生异常后快照地点必须回滚');
         assert.strictEqual(currentState.memories.length, beforeMemCount, '发生异常后脏记忆必须被回滚移除');
+
+        const revisionBeforeCommit = currentState.state_revision;
+        batchUpdate(() => {
+            currentState.scene.location = '已提交地点';
+            currentState.memories.push({ id: 'mem-committed', content: '成功提交的记忆', type: 'fact', scope: 'world' });
+        });
+
+        assert.strictEqual(currentState.state_revision, revisionBeforeCommit + 1, '成功批处理必须恰好递增一次 revision');
+        assert.strictEqual(mockContext.chatMetadata[MODULE_NAME].memories.some(m => m.id === 'mem-committed'), true, '成功批处理必须写入 chatMetadata');
+        const reloaded = loadCurrentState();
+        assert.strictEqual(reloaded.scene.location, '已提交地点', '重新加载后必须保留批处理更新');
+        assert.strictEqual(reloaded.memories.some(m => m.id === 'mem-committed'), true, '重新加载后必须保留批处理记忆');
     });
 
     // ─────────────────────────────────────────────────────────────
     // T7: Token 预算与韩文 Hangul 字符估算 (P2-02)
     // ─────────────────────────────────────────────────────────────
-    test('T7: estimateTokens 涵盖韩文音节与全量 CJK，总开销先期扣减固定模板与伴随协议', () => {
+    test('T7: Token 预算涵盖韩文、time-only、显式空场景和极低 Sync 预算', () => {
         // 韩文测试
         const korean = '안녕하세요 반갑습니다'; // 10 字符 + 空格
         const tokens = estimateTokens(korean);
@@ -333,12 +400,25 @@ async function runTests() {
         assert(prompt.includes('伴随记忆与情境更新协议'), '伴随模式必须注入协议');
         const totalEstimated = estimateTokens(prompt);
         assert(totalEstimated <= 400, `注入总内容 (~${totalEstimated} tok) 绝不能超出 maxTotalMemoryTokens (400)`);
+
+        updateSettings({ mode: 'async', maxTotalMemoryTokens: 450 });
+        const state = getState();
+        state.memories = [];
+        state.scene = { time: '深夜，下着雨', in_scene_characters: [] };
+        const timeOnlyPrompt = buildAndInjectMemoryPrompt();
+        assert(timeOnlyPrompt.includes('时间/天气: 深夜，下着雨'), '只有 time 时必须输出时间字段');
+        assert(timeOnlyPrompt.includes('现场无人在场'), '显式空数组必须作为有效的空场景输出');
+
+        updateSettings({ mode: 'sync', maxTotalMemoryTokens: 100 });
+        const compactPrompt = buildAndInjectMemoryPrompt();
+        assert(compactPrompt.includes('状态更新协议'), '低预算时应降级为紧凑 Sync 协议');
+        assert(estimateTokens(compactPrompt) <= 100, '极低预算下的完整注入块仍不得超过总预算');
     });
 
     // ─────────────────────────────────────────────────────────────
     // T8: 伴生标签异常留存与可观测性 (P2-05)
     // ─────────────────────────────────────────────────────────────
-    test('T8: 畸形伴随标签解析失败后记录至 state.last_sync_error，不静默丢弃', () => {
+    test('T8: 畸形伴随标签的错误记录可跨重载保留，并带有明确长度边界', () => {
         const state = getState();
         state.last_sync_error = null;
 
@@ -348,20 +428,27 @@ async function runTests() {
         assert(!cleaned.includes('PERSISTENT_MEMORY'), '消息正文中标签必须被剥离');
         assert(state.last_sync_error !== null, '状态中必须记录 last_sync_error');
         assert(state.last_sync_error.error.includes('JSON 解析失败'), '必须记录具体解析失败原因');
+        assert.strictEqual(state.last_sync_error.truncated, false, '短标签不应被标记为截断');
+        const reloaded = loadCurrentState();
+        assert(reloaded.last_sync_error?.error.includes('JSON 解析失败'), '重载后必须保留同步标签错误');
     });
 
     // ─────────────────────────────────────────────────────────────
     // T9: 提炼超时保护验证 (P2-03)
     // ─────────────────────────────────────────────────────────────
-    test('T9: 提炼请求具备超时保护与 AbortController 机制', () => {
-        // 校验 AbortController 行为
-        const controller = new AbortController();
-        let aborted = false;
-        controller.signal.addEventListener('abort', () => {
-            aborted = true;
-        });
-        controller.abort();
-        assert(aborted, 'AbortController 超时中断机制有效');
+    await testAsync('T9: 原生提炼路径的超时包装器会丢弃迟到结果并释放等待', async () => {
+        let completed = false;
+        const slowRequest = () => new Promise(resolve => setTimeout(() => {
+            completed = true;
+            resolve('late result');
+        }, 30));
+
+        await assert.rejects(
+            withTimeout(slowRequest, 5, '测试原生请求'),
+            /超时/
+        );
+        await new Promise(resolve => setTimeout(resolve, 40));
+        assert.strictEqual(completed, true, '底层宿主请求可继续完成，但迟到结果不应提交到调用方');
     });
 
     // ─────────────────────────────────────────────────────────────
@@ -381,6 +468,124 @@ async function runTests() {
         const parsed = JSON.parse(raw);
         assert.strictEqual(parsed.customApiKey, undefined, 'localStorage 备份中绝不可出现明文 customApiKey！');
         assert.strictEqual(parsed.customApiUrl, 'https://api.openai.com/v1', '非敏感配置正常保存');
+    });
+
+    // ─────────────────────────────────────────────────────────────
+    // T17: 模型提炼 known_by 参与者白名单校验 (P0-1 核心)
+    // ─────────────────────────────────────────────────────────────
+    test('T17: 模型提炼输出中包含非参与者的 known_by / character 时触发 ACL 拦截并拒绝入库', () => {
+        const allowed = new Set(['玩家', '角色A']);
+        const payload = {
+            new_memories: [
+                {
+                    content: '角色A和局外人隐秘交谈',
+                    type: 'fact',
+                    scope: 'shared',
+                    known_by: ['角色A', '局外人C'] // 局外人C不在参与者名单中
+                },
+                {
+                    content: '局外人C的私密想法',
+                    type: 'fact',
+                    scope: 'character',
+                    character: '局外人C' // 局外人C不在名单中
+                },
+                {
+                    content: '合法共享记忆',
+                    type: 'fact',
+                    scope: 'shared',
+                    known_by: ['角色A', '玩家']
+                }
+            ]
+        };
+        const validated = validateExtractedPayload(payload, [], allowed);
+        assert(validated, '校验器应返回合法部分');
+        assert.strictEqual(validated.new_memories.length, 1, '非法成员条目必须被剔除');
+        assert.strictEqual(validated.new_memories[0].content, '合法共享记忆');
+    });
+
+    // ─────────────────────────────────────────────────────────────
+    // T18: 记忆类型 HTML 属性注入与存储型 XSS 防御 (P0-2 核心)
+    // ─────────────────────────────────────────────────────────────
+    test('T18: 恶意构造的 type (如带引号与事件注入) 在迁移载入与卡片渲染时被严格白名单净化', () => {
+        mockContext.chatMetadata = {
+            [MODULE_NAME]: {
+                version: 3,
+                memories: [
+                    {
+                        id: 'xss_1',
+                        content: '正常事实内容',
+                        type: 'fact" onclick="alert(1)" bad_attr="test',
+                        scope: 'world'
+                    }
+                ]
+            }
+        };
+        const state = loadCurrentState();
+        const loadedMem = state.memories[0];
+        assert.strictEqual(loadedMem.type, 'fact', 'state.js 载入时必须将非法类型规范化为合法枚举 (fact)');
+
+        // 进一步验证 ui.js renderMemoryCard 输出
+        const html = renderMemoryCard({
+            id: 'xss_card',
+            content: '测试防注入卡片',
+            type: 'fact" onclick="alert(1)"',
+            scope: 'world',
+            lifecycle: 'active'
+        });
+        assert(!html.includes('onclick="alert(1)"'), 'HTML 渲染必须杜绝属性注入');
+        assert(html.includes('pm-type-fact'), '类型徽章应渲染为合法的 pm-type-fact');
+    });
+
+    // ─────────────────────────────────────────────────────────────
+    // T19: 旧数据迁移知情范围保守化 (P1-1 核心)
+    // ─────────────────────────────────────────────────────────────
+    test('T19: 旧版本无 scope 且无角色归属数据保守继承为 character 范围，严禁膨胀为两方共享', () => {
+        mockContext.chatMetadata = {
+            [MODULE_NAME]: {
+                version: 2,
+                memories: [
+                    { id: 'legacy_unassigned', content: '旧记忆未分配归属', type: 'fact' },
+                    { id: 'legacy_with_char', content: '角色专属旧记忆', type: 'statement', character: '角色B' }
+                ]
+            }
+        };
+        const state = loadCurrentState();
+        assert.strictEqual(state.memories.length, 2);
+        const mem1 = state.memories.find(m => m.id === 'legacy_unassigned');
+        assert.strictEqual(mem1.scope, MEMORY_SCOPE.CHARACTER);
+        assert.strictEqual(mem1.character, '角色A');
+        assert.deepStrictEqual(mem1.known_by, ['角色A']);
+
+        const mem2 = state.memories.find(m => m.id === 'legacy_with_char');
+        assert.strictEqual(mem2.scope, MEMORY_SCOPE.CHARACTER);
+        assert.strictEqual(mem2.character, '角色B');
+        assert.deepStrictEqual(mem2.known_by, ['角色B']);
+    });
+
+    // ─────────────────────────────────────────────────────────────
+    // T20: 损坏记忆元数据自愈与容错 (P1-2 核心)
+    // ─────────────────────────────────────────────────────────────
+    test('T20: 聊天元数据中存在 null、undefined、非对象或缺失 content 的损坏条目时，迁移平滑自愈不崩溃', () => {
+        mockContext.chatMetadata = {
+            [MODULE_NAME]: {
+                version: 2,
+                memories: [
+                    null,
+                    undefined,
+                    "invalid-string-memory",
+                    12345,
+                    {}, // 缺失 content
+                    { id: 'corrupt_empty', content: '   ' }, // 空白 content
+                    { id: 'valid_mem', content: '正常完好的记忆', type: 'fact', scope: 'world' }
+                ]
+            }
+        };
+        assert.doesNotThrow(() => {
+            const state = loadCurrentState();
+            assert.strictEqual(state.memories.length, 1, '损坏条目过滤后仅保留完好记忆');
+            assert.strictEqual(state.memories[0].id, 'valid_mem');
+            assert.strictEqual(state.memories[0].content, '正常完好的记忆');
+        });
     });
 
     console.log(`\n======================================================`);

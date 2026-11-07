@@ -1,6 +1,6 @@
 # SillyTavern 持续记忆插件 (ST-Persistent-Memory)
 
-[![Version](https://img.shields.io/badge/version-v0.1.8-blue.svg)](https://github.com/dayuseless/ST-Persistent-Memory)
+[![Version](https://img.shields.io/badge/version-v0.1.10-blue.svg)](https://github.com/dayuseless/ST-Persistent-Memory)
 [![SillyTavern](https://img.shields.io/badge/SillyTavern-1.12.0+-purple.svg)](https://github.com/SillyTavern/SillyTavern)
 [![License](https://img.shields.io/badge/license-MIT-green.svg)](LICENSE)
 
@@ -65,7 +65,7 @@
 
 ### 方式二：手动离线包安装
 
-1. 从 [Releases 页面](https://github.com/dayuseless/ST-Persistent-Memory/releases) 下载 `ST-Persistent-Memory-v0.1.8.zip`。
+1. 从 [Releases 页面](https://github.com/dayuseless/ST-Persistent-Memory/releases) 下载 `ST-Persistent-Memory-v0.1.10.zip`。
 2. 解压到 SillyTavern 的扩展目录中：
    ```text
    SillyTavern/public/scripts/extensions/third-party/ST-Persistent-Memory/
@@ -146,6 +146,23 @@ window.__persistentMemory.digestNow();
 ---
 
 ## 📝 版本历史
+
+### v0.1.10 (ACL权限边界校验、XSS免疫、容错迁移与20项验证矩阵)
+
+- **P0-1 提炼知情者白名单核验 (ACL Boundary)**：模型提炼产出的 `known_by` 与私密归属 `character` 必须严格属于权威会话参与者名单（包含玩家、当前角色、全部群聊成员及现场角色）；严禁模型受注入影响擅自捏造局外已知者，杜绝越权信息渗透。
+- **P0-2 存储型属性注入与 XSS 防御**：在 UI 卡片渲染与状态载入层双重严格落实 `type` 枚举白名单过滤，彻底消除利用畸形属性突破 `class="... pm-type-${curType}"` 引发的浏览器端脚本执行风险。
+- **P1-1 历史数据迁移知情权保守化**：针对早期未设定知情范围的旧条目，遵循严格封闭原则归属为当前角色私密（`CHARACTER`），严禁自动升级扩大为两方共享秘密，杜绝历史记忆知情范围失控膨胀。
+- **P1-2 损坏记忆数据自愈与容错**：在元数据载入迁移环节引入防御性类型与结构过滤，剔除 `null`、非对象及空白条目，免疫异常元数据导致的迁移中断或插件崩溃。
+- **测试矩阵扩展至 20 项 (T1-T20 全绿)**：新增针对非参与者知情白名单核验 (T17)、恶意类型属性注入净化 (T18)、旧数据保守化范围约束 (T19) 与损坏元数据自愈容错 (T20) 的自动化断言。
+
+### v0.1.9 (事务提交、知情权限与预算边界修复)
+
+- **原子提交修复**：批量更新在成功路径直接执行内部持久化，保证聊天元数据与 `state_revision` 恰好提交一次；异常路径仍完整回滚。
+- **ACL 收敛**：`known_by` 与 `scope` 均作为权限对象处理。相似记忆不得扩大共享知情者集合，也不得把角色私知转移给另一角色。
+- **提炼数据最小化**：提炼请求优先按显式现场角色过滤私密和共享记忆；仅在现场未知时才按近期对话回退。
+- **异步可靠性**：修复异常路径的状态引用；原生 `generateRaw` 与 `generateQuietPrompt` 也具备超时后的结果丢弃与锁释放保护。
+- **注入边界**：`scene.time` 可独立输出，空角色数组表示有效空场景；总 Token 预算不足时自动改用紧凑同步协议，不再挤占可选记忆预算。
+- **可观测性与测试**：同步标签错误可跨重载保留并有 4,000 字符上限；测试矩阵扩展至 16 项，覆盖事务成功提交、ACL 扩张、生产过滤器、低预算和超时。
 
 ### v0.1.8 (架构边界与安全加固)
 - **P1-01 角色级接收者权限隔离 (POV-based Routing)**：重构知情范围过滤机制，基于当前实际生成对象 (POV) 进行记忆权限路由。私密记忆仅允许路由给该角色生成的提示词；共享记忆严格要求当前生成角色必须在 `known_by` 知情列表中；现场存在不知情角色时自动附加保密约束标记；生成主体无法确定时执行 Fail-Closed 仅注入公共常识。

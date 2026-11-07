@@ -1,6 +1,6 @@
 /**
- * 提炼引擎 (v0.1.8)
- * 严格落实：状态版本并发保护 (state_revision)、独立API/generateRaw自包含请求、严格拒绝型 Schema 验证、显式生命周期流转、知情范围隔离与请求超时保护
+ * 提炼引擎 (v0.1.10)
+ * 严格落实：状态版本并发保护 (state_revision)、独立API/generateRaw自包含请求、严格拒绝型 Schema 验证、知情者权威名单白名单核验、显式生命周期流转、知情范围隔离与请求超时保护
  */
 
 import { MODULE_NAME, MEMORY_TYPES, MEMORY_STATUS, MEMORY_LIFECYCLE, MEMORY_SCOPE } from './config.js';
@@ -8,6 +8,38 @@ import { getState, getSettings, updateScene, addMemory, setMemoryLifecycle, save
 
 function getContext() {
     return window.SillyTavern?.getContext?.() ?? null;
+}
+
+/**
+ * 获取当前场景与会话的可信参与者名单 (Trusted Participants)
+ * 用于对提炼产出的 known_by 和归属角色进行权威边界白名单校验
+ */
+export function getContextParticipants(c, state = null) {
+    const participants = new Set();
+    if (c) {
+        if (c.name1 && typeof c.name1 === 'string' && c.name1.trim()) {
+            participants.add(c.name1.trim());
+        }
+        if (c.name2 && typeof c.name2 === 'string' && c.name2.trim()) {
+            participants.add(c.name2.trim());
+        }
+        if (Array.isArray(c.characters)) {
+            c.characters.forEach(ch => {
+                if (ch && typeof ch.name === 'string' && ch.name.trim()) {
+                    participants.add(ch.name.trim());
+                }
+            });
+        }
+    }
+    const s = state || getState?.();
+    if (s && s.scene && Array.isArray(s.scene.in_scene_characters)) {
+        s.scene.in_scene_characters.forEach(name => {
+            if (typeof name === 'string' && name.trim()) {
+                participants.add(name.trim());
+            }
+        });
+    }
+    return participants;
 }
 
 // 针对模型提炼接口，只允许流转至终态 (P1 修复：严禁模型将已完结记忆重新激活为 active)
@@ -95,11 +127,18 @@ export function cleanAndParseJson(raw) {
  * P0-4 修复：建立严格的“拒绝型” Schema 验证拦截器
  * 核心原则：结构缺失全拒，类型未知单拒，严禁把未知类型静默降级为 fact
  */
-export function validateExtractedPayload(raw, currentMemories = []) {
+export function validateExtractedPayload(raw, currentMemories = [], allowedParticipants = null) {
     // 根节点必须是纯对象
     if (!raw || typeof raw !== 'object' || Array.isArray(raw)) {
         return null;
     }
+
+    // 权威可信参与者名单解析
+    const trustedParticipants = allowedParticipants instanceof Set
+        ? allowedParticipants
+        : (Array.isArray(allowedParticipants)
+            ? new Set(allowedParticipants.filter(x => typeof x === 'string').map(x => x.trim()).filter(Boolean))
+            : (typeof getContext === 'function' ? getContextParticipants(getContext(), getState?.()) : null));
 
     // 必须至少包含有效 scene 或 new_memories 或 lifecycle_updates 之一，否则拒绝整个 payload
     const hasScene = raw.scene && typeof raw.scene === 'object' && !Array.isArray(raw.scene);
@@ -208,6 +247,24 @@ export function validateExtractedPayload(raw, currentMemories = []) {
                 continue;
             }
 
+            // P0-v0.1.10 核心加固：可信名单校验 (Trusted Participants Boundary)
+            // 严禁模型推断自行突破实际参与者权限边界：known_by 或 character 必须严格属于权威参与者
+            if (trustedParticipants && trustedParticipants.size > 0) {
+                // 1. 若为 character 私密记忆，归属角色必须属于实际参与者名单
+                if (scope === MEMORY_SCOPE.CHARACTER && char && !trustedParticipants.has(char)) {
+                    console.warn(`[${MODULE_NAME}] [ACL 拦截] 私密记忆归属角色 "${char}" 超出当前可信参与者名单，拒绝越权入库`);
+                    continue;
+                }
+                // 2. 若为 shared 共享记忆，known_by 中所有知情者必须全部属于实际参与者名单
+                if (scope === MEMORY_SCOPE.SHARED) {
+                    const unauthorized = knownBy.filter(k => !trustedParticipants.has(k));
+                    if (unauthorized.length > 0) {
+                        console.warn(`[${MODULE_NAME}] [ACL 拦截] 共享记忆知情者 "${unauthorized.join(', ')}" 超出当前可信参与者名单，拒绝越权入库`);
+                        continue;
+                    }
+                }
+            }
+
             const status = item.status === MEMORY_STATUS.PINNED ? MEMORY_STATUS.PINNED : MEMORY_STATUS.TRIGGERED;
 
             validated.new_memories.push({
@@ -276,8 +333,9 @@ export function extractAndApplySyncTag(rawText) {
     const cleanText = rawText.replace(SYNC_TAG_REGEX, '').trim();
 
     const state = getState();
+    const participants = getContextParticipants(getContext(), state);
     const rawPayload = cleanAndParseJson(jsonStr);
-    const payload = validateExtractedPayload(rawPayload, state.memories || []);
+    const payload = validateExtractedPayload(rawPayload, state.memories || [], participants);
 
     if (payload) {
         const summary = applyExtractedData(payload);
@@ -288,10 +346,13 @@ export function extractAndApplySyncTag(rawText) {
         // P2-05 修复：标签校验失败绝不静默丢弃，留存错误日志并提供 HUD 可观测性
         const failReason = !rawPayload ? 'JSON 解析失败 (标签格式畸形)' : 'Schema 校验未通过 (缺少必要核心字段或类型非法)';
         console.warn(`[${MODULE_NAME}] [Sync] 伴生标签验证失败: ${failReason}`, jsonStr.slice(0, 160));
+        const MAX_SYNC_ERROR_RAW_CHARS = 4000;
         state.last_sync_error = {
             time: new Date().toLocaleTimeString(),
             error: failReason,
-            rawSnippet: jsonStr.slice(0, 200)
+            // 保留足够完整的原始标签用于排错，同时使用明确上限避免聊天元数据无限增长。
+            rawSnippet: jsonStr.slice(0, MAX_SYNC_ERROR_RAW_CHARS),
+            truncated: jsonStr.length > MAX_SYNC_ERROR_RAW_CHARS
         };
         saveCurrentState();
         window.toastr?.warning?.(`伴随记忆标签未通过验证: ${failReason} (已记录至状态面板，可展开查看)`, '伴随标签异常');
@@ -302,6 +363,61 @@ export function extractAndApplySyncTag(rawText) {
 
 const DIGEST_REQUEST_TIMEOUT_MS = 45000; // P2-03: 45秒提炼请求硬超时，防并发锁长久挂起
 const TEST_CONNECTION_TIMEOUT_MS = 15000; // P2-03: 15秒接口连通性测试超时
+
+export function withTimeout(startRequest, timeoutMs, label) {
+    return new Promise((resolve, reject) => {
+        let settled = false;
+        const timeoutId = setTimeout(() => {
+            if (settled) return;
+            settled = true;
+            reject(new Error(`${label}超时 (超过 ${timeoutMs / 1000} 秒未响应)`));
+        }, timeoutMs);
+
+        Promise.resolve()
+            .then(startRequest)
+            .then(value => {
+                if (settled) return;
+                settled = true;
+                clearTimeout(timeoutId);
+                resolve(value);
+            }, error => {
+                if (settled) return;
+                settled = true;
+                clearTimeout(timeoutId);
+                reject(error);
+            });
+    });
+}
+
+/**
+ * 仅返回与当前场景有关的活跃记忆，供提炼请求发送。
+ * 已知场景（包括显式空场景）优先于近期发言者；只有场景未知时才使用近期对话作为保守回退。
+ */
+export function filterMemoriesForDigest(memories, {
+    sceneParticipants,
+    conversationParticipants = [],
+    fallbackParticipants = []
+} = {}) {
+    const participants = Array.isArray(sceneParticipants)
+        ? sceneParticipants
+        : [...conversationParticipants, ...fallbackParticipants];
+    const activeChars = new Set(participants.filter(Boolean));
+
+    return (Array.isArray(memories) ? memories : []).filter(memory => {
+        if (memory.lifecycle !== MEMORY_LIFECYCLE.ACTIVE) return false;
+        if (memory.scope === MEMORY_SCOPE.WORLD) return true;
+        if (memory.scope === MEMORY_SCOPE.CHARACTER) {
+            return Boolean(memory.character && activeChars.has(memory.character));
+        }
+        if (memory.scope === MEMORY_SCOPE.SHARED) {
+            const knownList = Array.isArray(memory.known_by)
+                ? memory.known_by
+                : (memory.character ? [memory.character] : []);
+            return knownList.some(name => activeChars.has(name));
+        }
+        return false;
+    });
+}
 
 /**
  * 执行提炼生成请求：
@@ -362,12 +478,20 @@ async function executeDigestRequest(c, digestPrompt, settings) {
 
     // 方案 B: 优先使用 generateRaw (单轮独立 Prompt，不附带历史会话与缺失的 reasoning_content)
     if (typeof c.generateRaw === 'function') {
-        return await c.generateRaw({ prompt: digestPrompt });
+        return await withTimeout(
+            () => c.generateRaw({ prompt: digestPrompt }),
+            DIGEST_REQUEST_TIMEOUT_MS,
+            '原生 generateRaw 提炼请求'
+        );
     }
 
     // 方案 C: 兜底调用 generateQuietPrompt
     if (typeof c.generateQuietPrompt === 'function') {
-        return await c.generateQuietPrompt({ quietPrompt: digestPrompt });
+        return await withTimeout(
+            () => c.generateQuietPrompt({ quietPrompt: digestPrompt }),
+            DIGEST_REQUEST_TIMEOUT_MS,
+            '原生 generateQuietPrompt 提炼请求'
+        );
     }
 
     throw new Error('当前环境未发现可用的文本生成接口 (generateRaw / generateQuietPrompt)');
@@ -485,6 +609,7 @@ export async function triggerAsyncDigest(force = false) {
     activeChatDigests.add(startChatId);
     console.log(`[${MODULE_NAME}] [Async] 启动提炼任务 (会话: ${startChatId}, 修订版本: rev.${startRevision}, 轮次: 第 ${currentTurn} 轮)...`);
 
+    let currentState = state;
     try {
         const sliceCount = Math.max(2, Math.min(15, Number(settings.digestSliceCount) || 6));
         const recentSlice = chat.slice(-sliceCount);
@@ -521,31 +646,14 @@ export async function triggerAsyncDigest(force = false) {
 
         const currentScene = JSON.stringify(state.scene, null, 2);
 
-        // P1 核心加固：私有记忆与数据边界过滤 (严禁将不在场无关角色的私密条目发送至提炼请求)
-        const activeChars = new Set([
-            ...(Array.isArray(state.scene.in_scene_characters) ? state.scene.in_scene_characters : []),
-            ...recentSlice.map(m => m.is_user ? (c.name1 || 'User') : (m.name || 'AI')).filter(Boolean),
-            c.name1,
-            c.name2
-        ].filter(Boolean));
-
-        // 列出当前活跃记忆供模型去重与生命周期联动 (最多 10 条，且单条内容截断至 90 字符，控制 Prompt 开销)
-        const activeMemList = (state.memories || [])
-            .filter(m => {
-                if (m.lifecycle !== MEMORY_LIFECYCLE.ACTIVE) return false;
-                // 世界公共常识允许作为去重基准
-                if (m.scope === MEMORY_SCOPE.WORLD) return true;
-                // 角色私密记忆：该角色必须在当前活跃对话或在场名单中，无关角色的私密秘密绝不上送外部 API
-                if (m.scope === MEMORY_SCOPE.CHARACTER) {
-                    return m.character && activeChars.has(m.character);
-                }
-                // 共享记忆：在场或近期发话者中至少有一人知情
-                if (m.scope === MEMORY_SCOPE.SHARED) {
-                    const knownList = Array.isArray(m.known_by) ? m.known_by : (m.character ? [m.character] : []);
-                    return knownList.some(k => activeChars.has(k));
-                }
-                return false;
-            })
+        // 私有记忆的上送遵循当前场景；仅当场景未知时才按近期发言者回退。
+        // 该生产函数也被测试直接覆盖，避免测试重写一套与实际代码不同的过滤逻辑。
+        const activeMemList = filterMemoriesForDigest(state.memories, {
+            sceneParticipants: state.scene.in_scene_characters,
+            conversationParticipants: recentSlice
+                .map(m => m.is_user ? (c.name1 || 'User') : (m.name || 'AI')),
+            fallbackParticipants: [c.name1, c.name2]
+        })
             .slice(-10)
             .map(m => `(ID: ${m.id}) [${m.type}] [归属:${m.character || '公共'}] [范围:${m.scope}] ${String(m.content || '').slice(0, 90)}`)
             .join('\n') || '（暂无活跃记忆）';
@@ -630,14 +738,15 @@ ${conversationText}
             return { success: false, error: '提炼期间会话发生切换，已丢弃' };
         }
 
-        const currentState = getState();
+        currentState = getState();
         if ((currentState.state_revision || 0) !== startRevision) {
             console.warn(`[${MODULE_NAME}] [状态版本冲突拦截] 在提炼期间，会话状态已被修改 (启动版本: rev.${startRevision} -> 当前版本: rev.${currentState.state_revision})。已丢弃旧提炼结果，保护用户最新手改与状态一致性！`);
             return { success: false, error: '提炼期间状态被编辑，为防冲突已放弃提交' };
         }
 
+        const participants = getContextParticipants(c, currentState);
         const rawPayload = cleanAndParseJson(response);
-        const payload = validateExtractedPayload(rawPayload, currentState.memories || []);
+        const payload = validateExtractedPayload(rawPayload, currentState.memories || [], participants);
 
         if (payload) {
             batchUpdate(() => {
@@ -658,9 +767,16 @@ ${conversationText}
         }
     } catch (e) {
         console.error(`[${MODULE_NAME}] [Async] 后台提炼异常:`, e);
-        currentState.last_digest_error = e.message || String(e);
-        saveCurrentState();
-        return { success: false, error: e.message || String(e) };
+        const errorMessage = e.message || String(e);
+        // 会话已切换时不得将旧请求的失败状态写入新聊天。
+        if (getChatIdentifier(c) === startChatId) {
+            const errorState = currentState || getState();
+            errorState.last_digest_error = errorMessage;
+            saveCurrentState();
+        } else {
+            console.warn(`[${MODULE_NAME}] [Async] 提炼失败时会话已切换，未写入其他聊天的错误状态`);
+        }
+        return { success: false, error: errorMessage };
     } finally {
         activeChatDigests.delete(startChatId);
     }

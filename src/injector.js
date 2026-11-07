@@ -1,5 +1,5 @@
 /**
- * 注入引擎 (v0.1.8)
+ * 注入引擎 (v0.1.9)
  * 严格落实：
  * 1. P1-01 角色级知情范围严格路由 (生成主体 POV 与现场角色集合严格解耦)
  * 2. P2-01 L0 现场快照时间字段 (scene.time) 纳入与三态存在判定
@@ -53,6 +53,12 @@ export const SYNC_PROTOCOL_TEXT = [
     '（若无新事实发生，则无需附带任何标签，直接正常回复即可。前端会自动截获隐藏此标签，用户界面完全不可见。）'
 ].join('\n');
 
+const PROMPT_HEADER = '### 持续情境与记忆核心 (Persistent Memory)';
+const PROMPT_DIVIDER = '──────────────────────────────────────────';
+const MEMORY_SECTION_HEADER = '[相关认知与关键记忆 (Active Memories)]';
+// 当用户把总预算设得低于完整协议所需开销时，保留可解析的最小协议而不挤占总预算。
+const COMPACT_SYNC_PROTOCOL_TEXT = '[状态更新协议] 有更新时在回复末尾附 `<!--PERSISTENT_MEMORY {合法JSON}-->`；无更新不输出标签。';
+
 /**
  * 真实 Token 消耗保守估算函数 (Heuristic Token Estimation)
  * P2-02 修复：扩展 CJK 字符集，将韩文音节 (Hangul Syllables: \uac00-\ud7af) 与谚文字母 (\u1100-\u11ff, \u3130-\u318f) 全面纳入
@@ -86,7 +92,8 @@ function getMemoryPrefix(m) {
  */
 function assembleSceneLines(location, time, action, tension, unresolved, inScene) {
     const lines = ['[当前情境快照 (Scene State)]'];
-    if (location) lines.push(`- 地点环境: ${location}${time ? ` (${time})` : ''}`);
+    if (location) lines.push(`- 地点环境: ${location}`);
+    if (time) lines.push(`- 时间/天气: ${time}`);
     if (action) lines.push(`- 正在进行: ${action}`);
     if (tension) lines.push(`- 即时气氛: ${tension}`);
     if (unresolved) lines.push(`- 即时悬念/待决: ${unresolved}`);
@@ -133,19 +140,31 @@ export function buildAndInjectMemoryPrompt() {
     const maxSceneTokens = Math.max(50, Number(settings.maxSceneTokens) || 150);
     const maxTotalTokens = Math.max(100, Number(settings.maxTotalMemoryTokens) || 450);
 
-    // P2-02 修复：总预算必须全量扣减包含标题、分隔线与伴随协议在内的全部模板固定开销
-    const BASE_TEMPLATE_OVERHEAD_TOKENS = 35; // 标题与分隔线等模板开销
-    const syncProtocolCost = settings.mode === 'sync' ? estimateTokens(SYNC_PROTOCOL_TEXT) : 0;
-    const totalFixedOverhead = BASE_TEMPLATE_OVERHEAD_TOKENS + syncProtocolCost;
+    // 所有固定文本都按实际内容计入预算。完整协议放不下时改用紧凑协议；仍放不下则停止本次 sync 注入。
+    const fixedTokenCost = (protocol = '') => estimateTokens([PROMPT_HEADER, protocol, PROMPT_DIVIDER].filter(Boolean).join('\n')) + 4;
+    let syncProtocol = '';
+    if (settings.mode === 'sync') {
+        if (fixedTokenCost(SYNC_PROTOCOL_TEXT) <= maxTotalTokens) {
+            syncProtocol = SYNC_PROTOCOL_TEXT;
+        } else if (fixedTokenCost(COMPACT_SYNC_PROTOCOL_TEXT) <= maxTotalTokens) {
+            syncProtocol = COMPACT_SYNC_PROTOCOL_TEXT;
+            console.warn(`[${MODULE_NAME}] [Injector] 总预算不足以容纳完整 Sync 协议，已使用紧凑协议并停用可选记忆内容`);
+        } else {
+            console.warn(`[${MODULE_NAME}] [Injector] 总预算不足以容纳最小 Sync 协议，本轮不注入提示词`);
+        }
+    }
 
-    const maxAvailableForContent = Math.max(50, maxTotalTokens - totalFixedOverhead);
-    const effectiveMaxSceneTokens = Math.min(maxSceneTokens, Math.max(50, Math.floor(maxAvailableForContent * 0.5)));
+    const totalFixedOverhead = fixedTokenCost(syncProtocol);
+    const maxAvailableForContent = syncProtocol || settings.mode !== 'sync'
+        ? Math.max(0, maxTotalTokens - totalFixedOverhead)
+        : 0;
+    const effectiveMaxSceneTokens = Math.min(maxSceneTokens, maxAvailableForContent);
 
     // P2-01 修复：将 scene.time 明确纳入现场快照存在判断，并纠正 in_scene_characters 长度判定
-    const hasScene = Boolean(scene.time || scene.location || scene.action || scene.tension || scene.unresolved || (Array.isArray(scene.in_scene_characters) && scene.in_scene_characters.length > 0));
+    const hasScene = Boolean(scene.time || scene.location || scene.action || scene.tension || scene.unresolved || Array.isArray(scene.in_scene_characters));
     let sceneLines = [];
 
-    if (hasScene) {
+    if (hasScene && maxAvailableForContent >= estimateTokens('[当前情境快照 (Scene State)]')) {
         let curLoc = typeof scene.location === 'string' ? scene.location : '';
         let curTime = typeof scene.time === 'string' ? scene.time : '';
         let curAct = typeof scene.action === 'string' ? scene.action : '';
@@ -194,6 +213,8 @@ export function buildAndInjectMemoryPrompt() {
     // 3. 计算剩余记忆预算 (扣减 L0 实际消耗与模板全开销)
     const sceneTokenCost = sceneLines.length > 0 ? estimateTokens(sceneLines.join('\n')) : 0;
     let remainingTokens = Math.max(0, maxAvailableForContent - sceneTokenCost);
+    const memorySectionHeaderTokens = estimateTokens(MEMORY_SECTION_HEADER);
+    let memorySectionReserved = false;
 
     // 4. 扫描近期对话上下文以进行触发词匹配打分
     const recentChat = Array.isArray(c.chat) ? c.chat.slice(-5) : [];
@@ -303,9 +324,11 @@ export function buildAndInjectMemoryPrompt() {
 
     for (const item of pinnedCandidates) {
         if (selectedPinnedLines.length >= maxPinned) break;
-        if (remainingTokens >= item.tokens) {
+        const requiredTokens = item.tokens + (memorySectionReserved ? 0 : memorySectionHeaderTokens);
+        if (remainingTokens >= requiredTokens) {
             selectedPinnedLines.push(item.line);
-            remainingTokens -= item.tokens;
+            remainingTokens -= requiredTokens;
+            memorySectionReserved = true;
         }
     }
 
@@ -320,9 +343,11 @@ export function buildAndInjectMemoryPrompt() {
 
     for (const item of triggeredCandidates) {
         if (selectedTriggeredLines.length >= maxTriggered) break;
-        if (remainingTokens >= item.tokens) {
+        const requiredTokens = item.tokens + (memorySectionReserved ? 0 : memorySectionHeaderTokens);
+        if (remainingTokens >= requiredTokens) {
             selectedTriggeredLines.push(item.line);
-            remainingTokens -= item.tokens;
+            remainingTokens -= requiredTokens;
+            memorySectionReserved = true;
         } else {
             // 预算已满，整条截断，不再塞入不完整的后文
             break;
@@ -333,24 +358,24 @@ export function buildAndInjectMemoryPrompt() {
     const memLines = [];
     const allSelectedMemLines = [...selectedPinnedLines, ...selectedTriggeredLines];
     if (allSelectedMemLines.length > 0) {
-        memLines.push('[相关认知与关键记忆 (Active Memories)]');
+        memLines.push(MEMORY_SECTION_HEADER);
         memLines.push(...allSelectedMemLines);
     }
 
     // 8. 组合成最终注入块 (若处于伴随标签模式，需附带输出协议)
-    if (sceneLines.length === 0 && memLines.length === 0 && settings.mode !== 'sync') {
+    if (sceneLines.length === 0 && memLines.length === 0 && !syncProtocol) {
         c.setExtensionPrompt?.(INJECT_KEY, '', position, depth);
         return '';
     }
 
-    const promptParts = ['### 持续情境与记忆核心 (Persistent Memory)'];
+    const promptParts = [PROMPT_HEADER];
     if (sceneLines.length > 0) promptParts.push(...sceneLines);
     if (memLines.length > 0) promptParts.push(...memLines);
 
-    if (settings.mode === 'sync') {
-        promptParts.push(SYNC_PROTOCOL_TEXT);
+    if (syncProtocol) {
+        promptParts.push(syncProtocol);
     }
-    promptParts.push('──────────────────────────────────────────');
+    promptParts.push(PROMPT_DIVIDER);
 
     const fullPromptBlock = promptParts.join('\n');
 
@@ -364,7 +389,7 @@ export function buildAndInjectMemoryPrompt() {
         0
     );
 
-    console.log(`[${MODULE_NAME}] [Injector] 成功注入提示词 (模式: ${settings.mode}, 位置: ${position === 0 ? 'System Prompt' : 'In-Chat @ 深度 ' + depth}, 长度: ${fullPromptBlock.length} 字符, 伴随协议: ${settings.mode === 'sync' ? '已包含' : '未开启'})`);
+    console.log(`[${MODULE_NAME}] [Injector] 成功注入提示词 (模式: ${settings.mode}, 位置: ${position === 0 ? 'System Prompt' : 'In-Chat @ 深度 ' + depth}, 长度: ${fullPromptBlock.length} 字符, 伴随协议: ${syncProtocol ? '已包含' : '未开启'})`);
 
     if (settings.logVerbose) {
         console.log(`[${INJECT_KEY}] 预算控制：注入 L0 快照 (~${sceneTokenCost} tok, 硬上限 ${maxSceneTokens}) + ${selectedPinnedLines.length} 条常驻 + ${selectedTriggeredLines.length} 条激活记忆，结余预算 ~${remainingTokens} tok`);

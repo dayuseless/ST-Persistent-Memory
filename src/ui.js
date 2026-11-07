@@ -1,5 +1,5 @@
 /**
- * UI 管理器 (v0.1.8)：原生扩展抽屉集成、屏幕快捷悬浮按钮（支持自由拖拽与持久化）与 HUD 侧边控制台
+ * UI 管理器 (v0.1.10)：原生扩展抽屉集成、屏幕快捷悬浮按钮（支持自由拖拽与持久化）与 HUD 侧边控制台
  * 全面升级：选项卡式现代工业风界面、大号高对比度数字显示、独立 API 完整配置与连通性测试
  */
 
@@ -1013,7 +1013,7 @@ function renderPanelContent() {
 /**
  * 渲染单个记忆卡片
  */
-function renderMemoryCard(mem) {
+export function renderMemoryCard(mem) {
     let statusClass = 'pm-chip-triggered';
     let statusIcon = '<i class="fa-solid fa-bolt"></i> 动态触发';
     if (mem.status === MEMORY_STATUS.PINNED) {
@@ -1048,7 +1048,9 @@ function renderMemoryCard(mem) {
 
     let typeIcon = 'fa-file-lines';
     let typeName = '事实';
-    const curType = mem.type || 'fact';
+    // 审计修复：严格限制 curType 仅能取预定义枚举，防御存储型 HTML 属性注入/XSS
+    const VALID_TYPES = new Set(['fact', 'statement', 'inference', 'todo']);
+    const curType = VALID_TYPES.has(mem.type) ? mem.type : 'fact';
     if (curType === 'statement') {
         typeIcon = 'fa-comment-dots';
         typeName = '约定';
