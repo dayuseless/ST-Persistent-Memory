@@ -4,8 +4,9 @@
  */
 
 import { MODULE_NAME, MEMORY_STATUS, MEMORY_LIFECYCLE, MEMORY_SCOPE } from './config.js';
-import { getState, getSettings, updateSettings, saveSettingsImmediately, updateScene, addMemory, updateMemory, deleteMemory, purgeArchivedMemories, cycleMemoryStatus, cycleMemoryType, exportMemoryData, importMemoryData, onStateChange } from './state.js';
+import { getState, getSettings, updateSettings, saveSettingsImmediately, updateScene, addMemory, updateMemory, deleteMemory, purgeArchivedMemories, cycleMemoryStatus, cycleMemoryType, exportMemoryData, importMemoryData, reindexAllMemories, onStateChange } from './state.js';
 import { triggerAsyncDigest, triggerMemoryConsolidation, testCustomApiConnection } from './extractor.js';
+import { testEmbeddingApiConnection } from './semantic.js';
 
 let panelEl = null;
 let currentTab = 'memories'; // 'memories' | 'scene' | 'settings'
@@ -1039,6 +1040,76 @@ function renderPanelContent() {
                     </div>
                 </div>
 
+                <!-- 语义检索与向量基建 -->
+                <div class="pm-section-card pm-mt-12" style="background: #f8fafc; border: 1px solid #e2e8f0; border-radius: 8px; padding: 12px; margin-top: 14px;">
+                    <div class="pm-section-header" style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 6px;">
+                        <span class="pm-section-title" style="font-weight: 600; font-size: 13px; color: #1e293b; display: flex; align-items: center; gap: 6px;">
+                            <i class="fa-solid fa-brain" style="color: #8b5cf6;"></i> 语义检索与向量基建 (Hybrid Search)
+                        </span>
+                        <div class="pm-switch">
+                            <input type="checkbox" id="pm-setting-semantic-enabled" ${settings.semanticRetrievalEnabled !== false ? 'checked' : ''}>
+                            <span class="pm-slider"></span>
+                        </div>
+                    </div>
+                    <div style="font-size: 12px; color: #64748b; margin-bottom: 10px; line-height: 1.4;">
+                        结合关键词词法与高维向量余弦相似度，精准识别近义表达与概念关联（如“海啸”与“巨浪侵袭村庄”），彻底摆脱死板字面匹配。
+                    </div>
+
+                    <div id="pm-semantic-settings-block" style="${settings.semanticRetrievalEnabled !== false ? 'display: block;' : 'display: none;'}">
+                        <div class="pm-grid-2col pm-mb-8">
+                            <div class="pm-input-row">
+                                <label class="pm-input-label">向量计算引擎：</label>
+                                <select id="pm-setting-embedding-provider" class="pm-input" style="cursor: pointer;">
+                                    <option value="local" ${(settings.embeddingProvider || 'local') === 'local' ? 'selected' : ''}>内置轻量向量引擎 (零依赖/全离线/秒级响应)</option>
+                                    <option value="custom_api" ${settings.embeddingProvider === 'custom_api' ? 'selected' : ''}>外部 OpenAI 兼容端点 (/embeddings)</option>
+                                </select>
+                            </div>
+                            <div class="pm-input-row">
+                                <label class="pm-input-label">语义相似度激活阈值 (<span id="pm-val-semantic-threshold">${Number(settings.semanticThreshold ?? 0.25).toFixed(2)}</span>):</label>
+                                <input type="range" id="pm-setting-semantic-threshold" min="0.10" max="0.90" step="0.05" value="${settings.semanticThreshold ?? 0.25}" style="width: 100%; cursor: pointer;">
+                            </div>
+                        </div>
+
+                        <div class="pm-grid-2col pm-mb-8">
+                            <div class="pm-input-row">
+                                <label class="pm-input-label">语义打分权重占比 (<span id="pm-val-semantic-weight">${Math.round((settings.semanticWeight ?? 0.60) * 100)}%</span> 语义 + <span id="pm-val-lexical-weight">${Math.round((1 - (settings.semanticWeight ?? 0.60)) * 100)}%</span> 词法):</label>
+                                <input type="range" id="pm-setting-semantic-weight" min="0.0" max="1.0" step="0.05" value="${settings.semanticWeight ?? 0.60}" style="width: 100%; cursor: pointer;">
+                            </div>
+                            <div class="pm-input-row" style="display: flex; align-items: flex-end;">
+                                <button id="pm-btn-reindex-all" class="pm-btn-secondary" style="width: 100%; cursor: pointer; padding: 6px 10px; font-size: 12px;">
+                                    <i class="fa-solid fa-arrows-rotate"></i> 重新索引全库向量
+                                </button>
+                            </div>
+                        </div>
+
+                        <div id="pm-embedding-api-fields" style="${settings.embeddingProvider === 'custom_api' ? 'display: block;' : 'display: none;'} margin-top: 8px; padding-top: 8px; border-top: 1px dashed #cbd5e1;">
+                            <div class="pm-input-row">
+                                <label class="pm-input-label">Embedding API Base URL (留空沿用提炼端点):</label>
+                                <input type="text" id="pm-setting-embedding-url" class="pm-input" value="${escapeHtml(settings.embeddingApiUrl || '')}" placeholder="继承提炼 API 或如 https://api.openai.com/v1">
+                            </div>
+                            <div class="pm-grid-2col pm-mb-8">
+                                <div class="pm-input-row" style="margin-bottom: 0;">
+                                    <label class="pm-input-label">Embedding API Key (留空沿用提炼密钥):</label>
+                                    <input type="password" id="pm-setting-embedding-key" class="pm-input" value="${escapeHtml(settings.embeddingApiKey || '')}" placeholder="继承提炼 API Key">
+                                </div>
+                                <div class="pm-input-row" style="margin-bottom: 0;">
+                                    <label class="pm-input-label">向量模型 (如 text-embedding-3-small, bge-m3):</label>
+                                    <input type="text" id="pm-setting-embedding-model" class="pm-input" value="${escapeHtml(settings.embeddingModel || 'text-embedding-3-small')}" placeholder="text-embedding-3-small">
+                                </div>
+                            </div>
+                            <div style="display: flex; gap: 8px; align-items: center; margin-top: 6px; flex-wrap: wrap;">
+                                <button id="pm-btn-test-embedding-api" class="pm-btn-test">
+                                    <i class="fa-solid fa-plug"></i> 测试向量 API 连通性
+                                </button>
+                                <button id="pm-btn-import-digest-api" class="pm-btn-test" title="一键从上方提炼 API 同步 Base URL 与 Key">
+                                    <i class="fa-solid fa-copy"></i> 继承提炼 API 配置
+                                </button>
+                                <span id="pm-embedding-api-test-status" style="font-size: 11px; font-weight: 500;"></span>
+                            </div>
+                        </div>
+                    </div>
+                </div>
+
                 <div class="pm-mt-8">
                     <button id="pm-save-all-settings-btn" class="pm-btn-primary" style="padding: 10px 14px; font-size: 13px; background: #059669; border-color: #047857;">
                         <i class="fa-solid fa-floppy-disk"></i> 保存并生效全部配置
@@ -1140,7 +1211,10 @@ export function renderMemoryCard(mem) {
                 </div>
             </div>
             <div class="pm-card-content" data-role="view-content">${escapeHtml(mem.content)}</div>
-            ${keysHtml ? `<div class="pm-card-keys" data-role="view-keys">${keysHtml}</div>` : ''}
+            <div class="pm-card-bottom-row" style="display: flex; justify-content: space-between; align-items: center; margin-top: 4px;">
+                ${keysHtml ? `<div class="pm-card-keys" data-role="view-keys">${keysHtml}</div>` : '<div></div>'}
+                ${Array.isArray(mem.embedding) && mem.embedding.length > 0 ? `<span class="pm-embedding-tag" title="已缓存 ${mem.embedding.length} 维密集语义向量 (${escapeHtml(mem.embedding_provider || 'local')})"><i class="fa-solid fa-brain"></i></span>` : ''}
+            </div>
             <!-- 行内即时编辑表单 (默认隐藏) -->
             <div class="pm-card-edit-box" data-role="edit-box" style="display: none; margin-top: 8px;">
                 <textarea class="pm-input pm-edit-content-input" rows="2" maxlength="150" placeholder="记忆正文 (上限150字)" style="width: 100%; box-sizing: border-box; font-size: 13px; margin-bottom: 6px; resize: vertical; line-height: 1.4;">${escapeHtml(mem.content)}</textarea>
@@ -1307,6 +1381,97 @@ function bindPanelEvents(container) {
         }
     });
 
+    // 语义检索与向量设置交互
+    container.querySelector('#pm-setting-semantic-enabled')?.addEventListener('change', (e) => {
+        const isSemEnabled = e.target.checked;
+        const block = container.querySelector('#pm-semantic-settings-block');
+        if (block) block.style.display = isSemEnabled ? 'block' : 'none';
+        updateSettings({ semanticRetrievalEnabled: isSemEnabled });
+    });
+
+    container.querySelector('#pm-setting-embedding-provider')?.addEventListener('change', (e) => {
+        const provider = e.target.value;
+        const apiBlock = container.querySelector('#pm-embedding-api-fields');
+        if (apiBlock) apiBlock.style.display = provider === 'custom_api' ? 'block' : 'none';
+        updateSettings({ embeddingProvider: provider });
+    });
+
+    container.querySelector('#pm-setting-semantic-threshold')?.addEventListener('input', (e) => {
+        const val = parseFloat(e.target.value);
+        const span = container.querySelector('#pm-val-semantic-threshold');
+        if (span) span.textContent = val.toFixed(2);
+        updateSettings({ semanticThreshold: val });
+    });
+
+    container.querySelector('#pm-setting-semantic-weight')?.addEventListener('input', (e) => {
+        const val = parseFloat(e.target.value);
+        const semSpan = container.querySelector('#pm-val-semantic-weight');
+        const lexSpan = container.querySelector('#pm-val-lexical-weight');
+        if (semSpan) semSpan.textContent = `${Math.round(val * 100)}%`;
+        if (lexSpan) lexSpan.textContent = `${Math.round((1 - val) * 100)}%`;
+        updateSettings({ semanticWeight: val });
+    });
+
+    // 测试向量 API 连通性
+    container.querySelector('#pm-btn-test-embedding-api')?.addEventListener('click', async () => {
+        const url = container.querySelector('#pm-setting-embedding-url')?.value?.trim() || getSettings().customApiUrl;
+        const key = container.querySelector('#pm-setting-embedding-key')?.value?.trim() || getSettings().customApiKey;
+        const model = container.querySelector('#pm-setting-embedding-model')?.value?.trim() || 'text-embedding-3-small';
+        const statusEl = container.querySelector('#pm-embedding-api-test-status');
+        if (statusEl) {
+            statusEl.style.color = '#38bdf8';
+            statusEl.innerHTML = '<i class="fa-solid fa-spinner fa-spin"></i> 测试向量接口中...';
+        }
+        const res = await testEmbeddingApiConnection({ apiUrl: url, apiKey: key, model });
+        if (res.success) {
+            if (statusEl) {
+                statusEl.style.color = '#34d399';
+                statusEl.innerHTML = `<i class="fa-solid fa-check"></i> 向量连接成功！(${res.latency}ms, ${res.dimensions}维)`;
+            }
+            window.toastr?.success?.(`向量 API 连接成功！响应延时 ${res.latency}ms，嵌入维度: ${res.dimensions}`, '持续记忆');
+        } else {
+            if (statusEl) {
+                statusEl.style.color = '#f87171';
+                statusEl.innerHTML = `<i class="fa-solid fa-xmark"></i> 失败: ${escapeHtml(res.error).slice(0, 35)}`;
+            }
+            window.toastr?.error?.(res.error, '向量 API 连接失败');
+        }
+    });
+
+    // 继承提炼 API 配置
+    container.querySelector('#pm-btn-import-digest-api')?.addEventListener('click', () => {
+        const s = getSettings();
+        const urlInput = container.querySelector('#pm-setting-embedding-url');
+        const keyInput = container.querySelector('#pm-setting-embedding-key');
+        if (urlInput && s.customApiUrl) urlInput.value = s.customApiUrl;
+        if (keyInput && s.customApiKey) keyInput.value = s.customApiKey;
+        window.toastr?.success?.('已从提炼 API 继承 Base URL 与 Key！', '持续记忆');
+    });
+
+    // 全库向量重建索引
+    container.querySelector('#pm-btn-reindex-all')?.addEventListener('click', async () => {
+        const btn = container.querySelector('#pm-btn-reindex-all');
+        const originalHtml = btn?.innerHTML || '';
+        if (btn) {
+            btn.disabled = true;
+            btn.innerHTML = '<i class="fa-solid fa-spinner fa-spin"></i> 索引建立中...';
+        }
+        try {
+            const res = await reindexAllMemories(true, (cur, total) => {
+                if (btn) btn.innerHTML = `<i class="fa-solid fa-spinner fa-spin"></i> 索引进度: ${cur}/${total}`;
+            });
+            window.toastr?.success?.(`全库向量索引构建完成！共更新 ${res.updated} 条记忆向量`, '持续记忆');
+            renderPanelContent();
+        } catch (err) {
+            window.toastr?.error?.(`向量索引失败: ${err.message}`, '持续记忆');
+        } finally {
+            if (btn) {
+                btn.disabled = false;
+                btn.innerHTML = originalHtml;
+            }
+        }
+    });
+
     // 保存并生效全部配置按钮 (Tab 3)
     container.querySelector('#pm-save-all-settings-btn')?.addEventListener('click', () => {
         syncHudApiInputs();
@@ -1320,6 +1485,16 @@ function bindPanelEvents(container) {
         const useCustom = container.querySelector('#pm-setting-custom-api-enabled')?.checked ?? false;
         const injectPos = parseInt(container.querySelector('#pm-setting-inject-pos')?.value) || 1;
         const injectDep = parseInt(container.querySelector('#pm-setting-inject-depth')?.value) || 2;
+        const autoConsolidate = (container.querySelector('#pm-setting-auto-consolidate')?.value ?? '1') === '1';
+        const consolidateThreshold = parseInt(container.querySelector('#pm-setting-consolidate-threshold')?.value) || 20;
+
+        const isSemEnabled = container.querySelector('#pm-setting-semantic-enabled')?.checked ?? true;
+        const embProvider = container.querySelector('#pm-setting-embedding-provider')?.value || 'local';
+        const semThresh = parseFloat(container.querySelector('#pm-setting-semantic-threshold')?.value) || 0.25;
+        const semWeight = parseFloat(container.querySelector('#pm-setting-semantic-weight')?.value) || 0.60;
+        const embUrl = container.querySelector('#pm-setting-embedding-url')?.value?.trim() || '';
+        const embKey = container.querySelector('#pm-setting-embedding-key')?.value?.trim() || '';
+        const embModel = container.querySelector('#pm-setting-embedding-model')?.value?.trim() || 'text-embedding-3-small';
 
         updateSettings({
             enabled: isEnabled,
@@ -1331,7 +1506,16 @@ function bindPanelEvents(container) {
             maxTotalMemoryTokens: memTok,
             mode: selectedMode,
             injectionPosition: injectPos,
-            injectionDepth: injectDep
+            injectionDepth: injectDep,
+            autoConsolidate,
+            consolidateThreshold,
+            semanticRetrievalEnabled: isSemEnabled,
+            embeddingProvider: embProvider,
+            semanticThreshold: semThresh,
+            semanticWeight: semWeight,
+            embeddingApiUrl: embUrl,
+            embeddingApiKey: embKey,
+            embeddingModel: embModel
         });
 
         const ok = saveSettingsImmediately();

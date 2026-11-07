@@ -71,6 +71,7 @@ import {
     exportMemoryData,
     importMemoryData,
     setMemoryLifecycle,
+    reindexAllMemories,
     batchUpdate,
     saveCurrentState
 } from '../src/state.js';
@@ -92,6 +93,16 @@ import {
     triggerMemoryConsolidation
 } from '../src/extractor.js';
 import { renderMemoryCard } from '../src/ui.js';
+import {
+    LOCAL_VECTOR_DIM,
+    cosineSimilarity,
+    generateLocalEmbedding,
+    getMemoryEmbeddingText,
+    computeMemoryEmbeddingHash,
+    isEmbeddingDirty,
+    buildQueryContext,
+    calculateHybridMemoryScore
+} from '../src/semantic.js';
 
 let passed = 0;
 let failed = 0;
@@ -866,6 +877,180 @@ async function runTests() {
 
         delete mockContext.generateRaw;
         mockContext.chatId = 'chat_test_001';
+    });
+
+    // ─────────────────────────────────────────────────────────────
+    // T28: 语义向量数学运算与本地特征哈希嵌入确定性
+    // ─────────────────────────────────────────────────────────────
+    test('T28: 向量余弦相似度边界防护与本地 256 维嵌入确定性', () => {
+        // 1. 余弦相似度边界
+        assert.strictEqual(cosineSimilarity(null, [1, 2]), 0);
+        assert.strictEqual(cosineSimilarity([0, 0], [0, 0]), 0);
+        const v1 = [1, 0, 0];
+        const v2 = [1, 0, 0];
+        assert(Math.abs(cosineSimilarity(v1, v2) - 1.0) < 1e-5, '相同向量相似度应为 1.0');
+        const vOrtho = [0, 1, 0];
+        assert.strictEqual(cosineSimilarity(v1, vOrtho), 0, '正交向量相似度应为 0');
+
+        // 2. 本地嵌入生成与确定性
+        const emb1 = generateLocalEmbedding('山谷深处的千年灵芝能解奇毒');
+        const emb2 = generateLocalEmbedding('山谷深处的千年灵芝能解奇毒');
+        assert.strictEqual(emb1.length, LOCAL_VECTOR_DIM);
+        assert.deepStrictEqual(emb1, emb2, '相同文本的本地向量必须绝对一致 (确定性)');
+
+        // 3. 语义相近 vs 语义无关
+        const embSimilar = generateLocalEmbedding('深山采摘灵芝草药解天下剧毒');
+        const embIrrelevant = generateLocalEmbedding('世界金融股市剧烈波动下跌');
+
+        const simHigh = cosineSimilarity(emb1, embSimilar);
+        const simLow = cosineSimilarity(emb1, embIrrelevant);
+        assert(simHigh > 0.20, `同义表达相似度应较高 (当前: ${simHigh.toFixed(3)})`);
+        assert(simLow < 0.15, `无关表达相似度应极低 (当前: ${simLow.toFixed(3)})`);
+        assert(simHigh > simLow, '语义相关相似度应显著高于无关文本');
+    });
+
+    // ─────────────────────────────────────────────────────────────
+    // T29: 混合检索：同义转换无字面关键词时的语义激活
+    // ─────────────────────────────────────────────────────────────
+    test('T29: calculateHybridMemoryScore 在无字面关键词命中时，依据高语义相似度成功激活记忆', () => {
+        const mem = {
+            id: 'mem_sea',
+            content: '海啸爆发摧毁了沿海渔村',
+            type: 'fact',
+            scope: 'world',
+            trigger_keys: ['海啸', '渔村'], // 触发词严格为海啸与渔村
+            embedding: generateLocalEmbedding('海啸爆发摧毁了沿海渔村 海啸 渔村')
+        };
+
+        // 对话上下文：使用近义与同义词，但完全不出现“海啸”与“渔村”
+        const queryContext = {
+            queryText: '地点: 海岸 | 玩家: 巨大的海浪疯狂席卷陆地，水势凶猛吞没了一切村落与房屋！',
+            scanCorpus: '巨大的海浪疯狂席卷陆地，水势凶猛吞没了一切村落与房屋！',
+            queryVector: generateLocalEmbedding('地点: 海岸 | 玩家: 巨大的海浪疯狂席卷陆地，水势凶猛吞没了一切村落与房屋！')
+        };
+
+        // 1. 关闭语义检索 (纯关键词): 词法未命中 -> 返回 0
+        const lexicalOnlyScore = calculateHybridMemoryScore(mem, queryContext, { semanticRetrievalEnabled: false });
+        assert.strictEqual(lexicalOnlyScore, 0, '纯词法匹配在无关键词命中时不得激活');
+
+        // 2. 开启语义检索 (混合打分): 语义相似度达标 -> 成功激活
+        const hybridScore = calculateHybridMemoryScore(mem, queryContext, {
+            semanticRetrievalEnabled: true,
+            semanticThreshold: 0.10,
+            semanticWeight: 0.60
+        });
+        assert(hybridScore > 0, `混合检索应在无关键词命中时通过语义相似度成功激活 (得分: ${hybridScore})`);
+
+        // 3. 对完全无关内容拒绝激活
+        const irrelevantMem = {
+            id: 'mem_book',
+            content: '图书馆古籍记载了古代帝王谱系',
+            trigger_keys: ['帝王', '谱系'],
+            embedding: generateLocalEmbedding('图书馆古籍记载了古代帝王谱系 帝王 谱系')
+        };
+        const irrevScore = calculateHybridMemoryScore(irrelevantMem, queryContext, {
+            semanticRetrievalEnabled: true,
+            semanticThreshold: 0.20,
+            semanticWeight: 0.60
+        });
+        assert.strictEqual(irrevScore, 0, '语义完全无关的记忆即便开启混合检索也必须被坚决拦截');
+    });
+
+    // ─────────────────────────────────────────────────────────────
+    // T30: 语义高分绝不可穿透角色知情权 (ACL 权限绝对免疫)
+    // ─────────────────────────────────────────────────────────────
+    test('T30: 角色私密与共享记忆即便具备 100% 语义相似度，未授权角色也绝对无法获悉', () => {
+        updateSettings({
+            mode: 'async',
+            maxTotalMemoryTokens: 450,
+            semanticRetrievalEnabled: true
+        });
+
+        const state = getState();
+        state.memories = [];
+        state.scene = {
+            location: '暗室',
+            in_scene_characters: ['角色A', '角色B', '玩家']
+        };
+
+        // 角色A私密记忆
+        addMemory({
+            content: '角色A私藏了绝密藏宝图',
+            type: 'fact',
+            scope: 'character',
+            character: '角色A',
+            trigger_keys: ['藏宝图']
+        });
+
+        // 构造与记忆 100% 吻合的对话
+        mockContext.chat = [
+            { is_user: true, mes: '角色A私藏了绝密藏宝图' }
+        ];
+
+        // 角色B生成时，尽管语义吻合度极高，绝对严禁注入角色A的私密记忆！
+        mockContext.characterId = 1; // 角色B
+        mockContext.this_chid = 1;
+        const promptB = buildAndInjectMemoryPrompt();
+        assert(!promptB.includes('藏宝图'), '角色B生成时即便语义 100% 吻合也绝对严禁注入角色A私密记忆！');
+
+        // 角色A生成时，正常注入
+        mockContext.characterId = 0; // 角色A
+        mockContext.this_chid = 0;
+        const promptA = buildAndInjectMemoryPrompt();
+        assert(promptA.includes('藏宝图'), '角色A自身生成时应正常注入');
+
+        // 恢复聊天上下文
+        mockContext.chat = [
+            { is_user: true, mes: '你好！' },
+            { is_user: false, name: '角色A', mes: '你好，很高兴见到你。' }
+        ];
+    });
+
+    // ─────────────────────────────────────────────────────────────
+    // T31: 向量缓存过期检测与批量重构 (Cache Invalidation & Reindexing)
+    // ─────────────────────────────────────────────────────────────
+    await testAsync('T31: 修改记忆内容使 embedding 缓存失效，reindexAllMemories 成功重新建立索引', async () => {
+        const state = getState();
+        state.memories = [];
+        const mem = addMemory({
+            content: '原始记忆文本',
+            type: 'fact',
+            scope: 'world'
+        });
+        assert(Array.isArray(mem.embedding), '新建记忆应同步产生本地向量');
+        assert.strictEqual(isEmbeddingDirty(mem, 'local'), false, '新建记忆向量应为有效最新状态');
+
+        // 修改记忆文本
+        updateMemory(mem.id, { content: '更新后的全新剧情记忆' });
+        const updatedMem = state.memories.find(m => m.id === mem.id);
+        assert.strictEqual(isEmbeddingDirty(updatedMem, 'local'), false, 'updateMemory 后向量指纹同步刷新');
+
+        // 人工使向量失效
+        updatedMem.embedding = null;
+        assert.strictEqual(isEmbeddingDirty(updatedMem, 'local'), true, '清空向量后应被标记为 dirty');
+
+        const reindexRes = await reindexAllMemories(false);
+        assert.strictEqual(reindexRes.updated, 1, '应有 1 条记忆被重新索引');
+        assert(Array.isArray(updatedMem.embedding), '重新索引后向量恢复');
+    });
+
+    // ─────────────────────────────────────────────────────────────
+    // T32: 敏感凭据脱敏存储支持 embeddingApiKey
+    // ─────────────────────────────────────────────────────────────
+    test('T32: localStorage 备份中严格脱敏 embeddingApiKey', () => {
+        mockLocalStorage = {};
+        updateSettings({
+            embeddingApiUrl: 'https://api.openai.com/v1',
+            embeddingApiKey: 'sk-embedding-secret-key-abcdef',
+            embeddingModel: 'text-embedding-3-small'
+        });
+        saveSettingsImmediately();
+
+        const raw = mockLocalStorage['ST_PM_SETTINGS_BACKUP'];
+        assert(raw, 'localStorage 中必须存在备份');
+        const parsed = JSON.parse(raw);
+        assert.strictEqual(parsed.embeddingApiKey, undefined, 'localStorage 备份中绝不可出现明文 embeddingApiKey！');
+        assert.strictEqual(parsed.embeddingApiUrl, 'https://api.openai.com/v1', '非敏感向量配置正常保存');
     });
 
     console.log(`\n======================================================`);

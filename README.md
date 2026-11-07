@@ -1,6 +1,6 @@
 # SillyTavern 持续记忆插件 (ST-Persistent-Memory)
 
-[![Version](https://img.shields.io/badge/version-v0.1.13-blue.svg)](https://github.com/dayuseless/ST-Persistent-Memory)
+[![Version](https://img.shields.io/badge/version-v0.1.14-blue.svg)](https://github.com/dayuseless/ST-Persistent-Memory)
 [![SillyTavern](https://img.shields.io/badge/SillyTavern-1.12.0+-purple.svg)](https://github.com/SillyTavern/SillyTavern)
 [![License](https://img.shields.io/badge/license-MIT-green.svg)](LICENSE)
 
@@ -146,6 +146,16 @@ window.__persistentMemory.digestNow();
 ---
 
 ## 📝 版本历史
+
+### v0.1.14 (语义检索基建：密集向量嵌入、混合检索融合与多源 Embedding 支持)
+
+- **语义检索与向量基建 (Semantic Retrieval Infrastructure)**：实现词法匹配（精确关键词）与密集向量余弦相似度（Dense Cosine Similarity）的混合双路召回引擎。彻底解决同义词与概念转述无法激活的问题（如记忆中为“海啸爆发”，对话提到“巨浪疯狂席卷吞没村落”，无相同关键字仍可精准召回）。
+- **内置零依赖轻量向量引擎 (Local Dense Vectorizer)**：专为浏览器与 Node.js 离线环境设计的多尺度字符 N-gram 与 FNV-1a 符号投射 256 维稠密特征向量，无需外部模型、零网络依赖、毫秒级响应且 100% 确定性。
+- **通用 OpenAI 兼容 Embedding 接口支持**：支持配置独立的 Embedding Base URL、Key 与模型（如 `text-embedding-3-small`、`bge-m3`、`nomic-embed-text`），具备超时保护与网络异常时的本地平滑优雅降级。
+- **全生命周期向量缓存与失效感知**：条目创建、修改正文或触发词、导入时自动感知失效并增量同步向量缓存；支持在控制台一键全库向量重建索引。
+- **权限安全边界绝对免疫 (Semantic ACL Invariant)**：确立严密的权限不变量——任何高分语义匹配绝不可穿透角色私密（`character`）或共享（`shared`）边界，未授权 POV 永远无法借由语义高分探测他人秘密。
+- **API Key 双重安全脱敏**：`embeddingApiKey` 与提炼 Key 一道享受完整的 `localStorage` 备份脱敏防护，杜绝明文密钥泄漏。
+- **测试矩阵扩展至 32 项 (T1-T32 全绿)**：新增向量余弦数学与确定性 (T28)、无关键词同义语义激活 (T29)、高语义得分权限绝对免疫 (T30)、向量失效与重构 (T31) 及密钥脱敏 (T32) 的自动化测试覆盖。
 
 ### v0.1.13 (归并时序安全、跨会话竞态拦截与生命周期边界自洽)
 

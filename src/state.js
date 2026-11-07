@@ -4,6 +4,7 @@
  */
 
 import { MODULE_NAME, EXTENSION_VERSION, DEFAULT_SETTINGS, DEFAULT_STATE, MEMORY_STATUS, MEMORY_LIFECYCLE, MEMORY_TYPES, MEMORY_SCOPE } from './config.js';
+import { syncEnsureLocalEmbedding, reindexMemories } from './semantic.js';
 
 let stateCache = null;
 const stateChangeListeners = new Set();
@@ -97,6 +98,7 @@ function getSanitizedSettingsForBackup(settings) {
     if (!settings || typeof settings !== 'object') return {};
     const safe = Object.assign({}, settings);
     delete safe.customApiKey;
+    delete safe.embeddingApiKey;
     return safe;
 }
 
@@ -112,8 +114,9 @@ export function getSettings() {
                 if (raw) {
                     restored = JSON.parse(raw);
                     // 清理旧版本可能遗留的明文 Key
-                    if (restored && restored.customApiKey) {
+                    if (restored && (restored.customApiKey || restored.embeddingApiKey)) {
                         delete restored.customApiKey;
+                        delete restored.embeddingApiKey;
                         localStorage.setItem('ST_PM_SETTINGS_BACKUP', JSON.stringify(restored));
                     }
                 }
@@ -138,8 +141,9 @@ export function getSettings() {
             const raw = localStorage.getItem('ST_PM_SETTINGS_BACKUP');
             if (raw) {
                 restored = JSON.parse(raw);
-                if (restored && restored.customApiKey) {
+                if (restored && (restored.customApiKey || restored.embeddingApiKey)) {
                     delete restored.customApiKey;
+                    delete restored.embeddingApiKey;
                     localStorage.setItem('ST_PM_SETTINGS_BACKUP', JSON.stringify(restored));
                 }
             }
@@ -644,6 +648,10 @@ export function addMemory(item) {
         updated_at: new Date().toISOString()
     };
 
+    try {
+        syncEnsureLocalEmbedding(newItem);
+    } catch {}
+
     s.memories.push(newItem);
     saveCurrentState();
     return newItem;
@@ -690,6 +698,12 @@ export function updateMemory(id, patch) {
         if (VALID_LIFECYCLES.has(patch.lifecycle)) {
             updated.lifecycle = patch.lifecycle;
         }
+    }
+
+    if (patch.content !== undefined || patch.trigger_keys !== undefined || patch.type !== undefined) {
+        try {
+            syncEnsureLocalEmbedding(updated);
+        } catch {}
     }
 
     updated.updated_at = new Date().toISOString();
@@ -783,6 +797,9 @@ export function importMemoryData(data, strategy = 'merge') {
         let importedCount = 0;
 
         if (strategy === 'replace') {
+            for (const item of validMemories) {
+                try { syncEnsureLocalEmbedding(item); } catch {}
+            }
             s.memories = validMemories;
             importedCount = validMemories.length;
             if (data.scene && typeof data.scene === 'object' && !Array.isArray(data.scene)) {
@@ -800,6 +817,7 @@ export function importMemoryData(data, strategy = 'merge') {
                 if (existingIds.has(item.id)) {
                     item.id = 'mem-' + Date.now().toString(36) + '-' + Math.random().toString(36).substring(2, 6);
                 }
+                try { syncEnsureLocalEmbedding(item); } catch {}
                 s.memories.push(item);
                 existingIds.add(item.id);
                 existingContents.add(item.content.trim().toLowerCase());
@@ -888,4 +906,24 @@ export function cycleMemoryType(id) {
     item.updated_at = new Date().toISOString();
 
     saveCurrentState();
+}
+
+/**
+ * 重新为所有记忆建立向量索引 (支持强行重建与增量更新)
+ */
+export async function reindexAllMemories(force = false, onProgress = null) {
+    const s = getState();
+    const settings = getSettings();
+    if (force) {
+        for (const m of s.memories) {
+            m.embedding = null;
+            m.embedding_hash = null;
+            m.embedding_provider = null;
+        }
+    }
+    const result = await reindexMemories(s.memories, settings, onProgress);
+    if (result.updated > 0) {
+        saveCurrentState();
+    }
+    return result;
 }

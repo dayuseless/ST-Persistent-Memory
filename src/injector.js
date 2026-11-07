@@ -9,6 +9,7 @@
 
 import { MODULE_NAME, INJECT_KEY, MEMORY_STATUS, MEMORY_LIFECYCLE, MEMORY_SCOPE, MEMORY_TYPES } from './config.js';
 import { getState, getSettings } from './state.js';
+import { buildQueryContext, calculateHybridMemoryScore } from './semantic.js';
 
 function getContext() {
     return window.SillyTavern?.getContext?.() ?? null;
@@ -216,9 +217,8 @@ export function buildAndInjectMemoryPrompt() {
     const memorySectionHeaderTokens = estimateTokens(MEMORY_SECTION_HEADER);
     let memorySectionReserved = false;
 
-    // 4. 扫描近期对话上下文以进行触发词匹配打分
-    const recentChat = Array.isArray(c.chat) ? c.chat.slice(-5) : [];
-    const scanCorpus = recentChat.map(m => m.mes || '').join('\n').toLowerCase();
+    // 4. 构建现场语义查询与扫描上下文 (结合近期对话与现场焦点)
+    const queryContext = buildQueryContext(c, scene, settings);
 
     // P1-01 核心修复：确定当前生成请求的接收主体 (Generating Entity / POV)
     const generatingEntity = getGeneratingEntity(c);
@@ -296,22 +296,11 @@ export function buildAndInjectMemoryPrompt() {
             continue;
         }
 
-        // 条件激活项 (Triggered)
+        // 条件激活项 (Triggered) - 结合关键词词法与密集向量相似度的混合检索
         if (mem.status === MEMORY_STATUS.TRIGGERED) {
-            const keys = Array.isArray(mem.trigger_keys) ? mem.trigger_keys : [];
-            if (keys.length === 0) {
-                // 无特定触发词的记忆给予保底权重
-                triggeredCandidates.push({ mem, score: 1, line: formattedLine, tokens: itemTokens });
-            } else {
-                let hitScore = 0;
-                for (const k of keys) {
-                    if (k && scanCorpus.includes(String(k).toLowerCase())) {
-                        hitScore += 2;
-                    }
-                }
-                if (hitScore > 0) {
-                    triggeredCandidates.push({ mem, score: hitScore, line: formattedLine, tokens: itemTokens });
-                }
+            const score = calculateHybridMemoryScore(mem, queryContext, settings);
+            if (score > 0) {
+                triggeredCandidates.push({ mem, score, line: formattedLine, tokens: itemTokens });
             }
         }
     }

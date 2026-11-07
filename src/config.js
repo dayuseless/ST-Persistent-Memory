@@ -1,8 +1,8 @@
 /**
- * 持续记忆插件配置与常量定义 (v0.1.13)
+ * 持续记忆插件配置与常量定义 (v0.1.14)
  */
 
-export const EXTENSION_VERSION = '0.1.13';
+export const EXTENSION_VERSION = '0.1.14';
 export const MODULE_NAME = 'st_persistent_memory';
 export const INJECT_KEY = 'PERSISTENT_MEMORY_INJECT';
 
@@ -57,7 +57,16 @@ export const DEFAULT_SETTINGS = {
 
     // 记忆生命周期演进与高阶归并
     autoConsolidate: true,     // 是否在活跃记忆达到阈值时自动触发宏观归并压缩
-    consolidateThreshold: 20   // 触发宏观归并的活跃记忆条数阈值 (10~50)
+    consolidateThreshold: 20,  // 触发宏观归并的活跃记忆条数阈值 (10~50)
+
+    // 语义检索基建配置 (Semantic Retrieval Infrastructure)
+    semanticRetrievalEnabled: true,       // 是否启用语义向量与混合检索
+    embeddingProvider: 'local',           // 'local' (内置轻量向量引擎) | 'custom_api' (OpenAI 兼容端点) | 'disabled'
+    embeddingApiUrl: '',                  // 独立 Embedding API 端点 (留空沿用 customApiUrl)
+    embeddingApiKey: '',                  // 独立 Embedding API Key (留空沿用 customApiKey)
+    embeddingModel: 'text-embedding-3-small', // 向量模型 (如 text-embedding-3-small, bge-m3, nomic-embed-text)
+    semanticThreshold: 0.25,              // 语义余弦相似度下限激活门槛 (0.1 ~ 0.9)
+    semanticWeight: 0.60                  // 混合打分权重: 语义权重占比 (0.0~1.0, 默认 0.60 语义 + 0.40 词法)
 };
 
 export const DEFAULT_STATE = {
