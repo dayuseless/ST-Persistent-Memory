@@ -1107,7 +1107,21 @@ function renderPanelContent() {
                     </div>
                     <div class="pm-input-row">
                         <label class="pm-input-label">归并触发阈值 (条数):</label>
-                        <input type="number" id="pm-setting-consolidate-threshold" class="pm-input" min="5" max="50" value="${settings.consolidateThreshold || 20}">
+                        <input type="number" id="pm-setting-consolidate-threshold" class="pm-input" min="5" max="50" value="${settings.consolidateThreshold || 10}">
+                    </div>
+                </div>
+
+                <div class="pm-grid-2col pm-mb-8">
+                    <div class="pm-input-row">
+                        <label class="pm-input-label">闲置记忆自动沉睡：</label>
+                        <select id="pm-setting-auto-sleep" class="pm-input" style="cursor: pointer;">
+                            <option value="1" ${settings.autoSleepEnabled !== false ? 'selected' : ''}>启用 (超期未提及自动休眠)</option>
+                            <option value="0" ${settings.autoSleepEnabled === false ? 'selected' : ''}>停用 (始终保持活跃)</option>
+                        </select>
+                    </div>
+                    <div class="pm-input-row">
+                        <label class="pm-input-label">沉睡未命中轮数：</label>
+                        <input type="number" id="pm-setting-auto-sleep-turns" class="pm-input" min="5" max="100" value="${settings.autoSleepTurns || 20}">
                     </div>
                 </div>
 
@@ -1402,8 +1416,17 @@ function bindPanelEvents(container) {
     });
 
     container.querySelector('#pm-setting-consolidate-threshold')?.addEventListener('change', (e) => {
-        const val = Math.max(5, Math.min(50, parseInt(e.target.value) || 20));
+        const val = Math.max(5, Math.min(50, parseInt(e.target.value) || 10));
         updateSettings({ consolidateThreshold: val });
+    });
+
+    container.querySelector('#pm-setting-auto-sleep')?.addEventListener('change', (e) => {
+        updateSettings({ autoSleepEnabled: e.target.value === '1' });
+    });
+
+    container.querySelector('#pm-setting-auto-sleep-turns')?.addEventListener('change', (e) => {
+        const val = Math.max(5, Math.min(100, parseInt(e.target.value) || 20));
+        updateSettings({ autoSleepTurns: val });
     });
 
     // 全局插件启用
@@ -1642,7 +1665,9 @@ function bindPanelEvents(container) {
         const injectPos = parseInt(container.querySelector('#pm-setting-inject-pos')?.value) || 1;
         const injectDep = parseInt(container.querySelector('#pm-setting-inject-depth')?.value) || 2;
         const autoConsolidate = (container.querySelector('#pm-setting-auto-consolidate')?.value ?? '1') === '1';
-        const consolidateThreshold = parseInt(container.querySelector('#pm-setting-consolidate-threshold')?.value) || 20;
+        const consolidateThreshold = parseInt(container.querySelector('#pm-setting-consolidate-threshold')?.value) || 10;
+        const autoSleepEnabled = (container.querySelector('#pm-setting-auto-sleep')?.value ?? '1') === '1';
+        const autoSleepTurns = parseInt(container.querySelector('#pm-setting-auto-sleep-turns')?.value) || 20;
 
         const isSemEnabled = container.querySelector('#pm-setting-semantic-enabled')?.checked ?? true;
         const embProvider = container.querySelector('#pm-setting-embedding-provider')?.value || 'local';
@@ -1669,6 +1694,8 @@ function bindPanelEvents(container) {
             injectionDepth: injectDep,
             autoConsolidate,
             consolidateThreshold,
+            autoSleepEnabled,
+            autoSleepTurns,
             semanticRetrievalEnabled: isSemEnabled,
             embeddingProvider: embProvider,
             semanticThreshold: semThresh,
