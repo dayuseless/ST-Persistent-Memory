@@ -21,9 +21,13 @@ function getContext() {
  */
 export function getGeneratingEntity(c) {
     if (!c) return null;
-    // 1. 群聊或单聊中由 this_chid / characterId 指定的当前生成角色
-    if (typeof c.characterId === 'number' && Array.isArray(c.characters) && c.characters[c.characterId]) {
-        return c.characters[c.characterId].name || null;
+    // 1. 群聊或单聊中由 characterId / this_chid 指定的当前生成角色 (characterId 优先，支持数字与字符串索引)
+    const chid = (c.characterId !== undefined && c.characterId !== null)
+        ? c.characterId
+        : c.this_chid;
+    if (chid !== undefined && chid !== null && Array.isArray(c.characters)) {
+        const char = c.characters[chid] || c.characters[Number(chid)];
+        if (char && char.name) return char.name;
     }
     // 2. 单聊常规 fallback (无 groupId 时的对方角色名)
     if (!c.groupId && c.name2) {
@@ -353,7 +357,7 @@ export function buildAndInjectMemoryPrompt() {
                 hasMemoryStateMutated = true;
                 console.log(`[${MODULE_NAME}] [Wake-Up] 沉睡记忆 [${item.mem.id}] 被高匹配度重新唤醒: "${item.mem.content}"`);
             }
-            if (item.mem.last_activated_floor !== currentTurn) {
+            if (currentTurn > 0 && item.mem.last_activated_floor !== currentTurn) {
                 item.mem.last_activated_floor = currentTurn;
                 hasMemoryStateMutated = true;
             }

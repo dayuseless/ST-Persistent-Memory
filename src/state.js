@@ -322,7 +322,8 @@ export function loadCurrentState() {
             synced_to_world_info: Boolean(m.synced_to_world_info),
             synced_at: typeof m.synced_at === 'string' ? m.synced_at : null,
             // P1 修复旧记忆迁移语义：旧版无 lifecycle 的 archived 项仅代表检索休眠，绝不擅自篡改为 completed
-            lifecycle: m.lifecycle || MEMORY_LIFECYCLE.ACTIVE
+            lifecycle: m.lifecycle || MEMORY_LIFECYCLE.ACTIVE,
+            last_activated_floor: Number.isInteger(m.last_activated_floor) ? m.last_activated_floor : (Number.isInteger(m.floor) ? m.floor : 0)
         };
     });
 
@@ -650,8 +651,9 @@ export function addMemory(item) {
                 existing.content = content;
             }
 
-            existing.floor = item.floor || existing.floor;
-            existing.last_activated_floor = item.floor || existing.last_activated_floor || existing.floor;
+            // 保留条目初始创建楼层，仅刷新最后活跃楼层
+            const currentFloor = Number.isInteger(item.floor) ? item.floor : (Number.isInteger(existing.last_activated_floor) ? existing.last_activated_floor : (existing.floor || 0));
+            existing.last_activated_floor = currentFloor;
             existing.updated_at = new Date().toISOString();
 
             saveCurrentState();
@@ -832,6 +834,7 @@ export function importMemoryData(data, strategy = 'merge') {
                 synced_at: typeof m.synced_at === 'string' ? m.synced_at : null,
                 trigger_keys: triggerKeys,
                 floor: Number(m.floor) || 0,
+                last_activated_floor: Number.isInteger(m.last_activated_floor) ? m.last_activated_floor : (Number.isInteger(m.floor) ? Number(m.floor) : 0),
                 created_at: m.created_at || new Date().toISOString(),
                 updated_at: new Date().toISOString()
             };

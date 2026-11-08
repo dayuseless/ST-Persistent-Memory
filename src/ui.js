@@ -1403,11 +1403,13 @@ function bindPanelEvents(container) {
     });
 
     container.querySelector('#pm-setting-inject-pos')?.addEventListener('change', (e) => {
-        updateSettings({ injectionPosition: parseInt(e.target.value) || 0 });
+        const val = parseInt(e.target.value);
+        updateSettings({ injectionPosition: !isNaN(val) ? val : 1 });
     });
 
     container.querySelector('#pm-setting-inject-depth')?.addEventListener('change', (e) => {
-        const val = Math.max(0, Math.min(20, parseInt(e.target.value) || 2));
+        const raw = parseInt(e.target.value);
+        const val = !isNaN(raw) ? Math.max(0, Math.min(20, raw)) : 2;
         updateSettings({ injectionDepth: val });
     });
 
@@ -1662,24 +1664,31 @@ function bindPanelEvents(container) {
         const isEnabled = container.querySelector('#pm-setting-hud-enabled')?.checked ?? true;
         const showBubble = container.querySelector('#pm-setting-hud-bubble')?.checked ?? true;
         const useCustom = container.querySelector('#pm-setting-custom-api-enabled')?.checked ?? false;
-        const injectPos = parseInt(container.querySelector('#pm-setting-inject-pos')?.value) || 1;
-        const injectDep = parseInt(container.querySelector('#pm-setting-inject-depth')?.value) || 2;
+        const rawPos = parseInt(container.querySelector('#pm-setting-inject-pos')?.value);
+        const injectPos = !isNaN(rawPos) ? rawPos : 1;
+        const rawDep = parseInt(container.querySelector('#pm-setting-inject-depth')?.value);
+        const injectDep = !isNaN(rawDep) ? Math.max(0, Math.min(20, rawDep)) : 2;
         const autoConsolidate = (container.querySelector('#pm-setting-auto-consolidate')?.value ?? '1') === '1';
-        const consolidateThreshold = parseInt(container.querySelector('#pm-setting-consolidate-threshold')?.value) || 10;
+        const rawConsolidateThreshold = parseInt(container.querySelector('#pm-setting-consolidate-threshold')?.value);
+        const consolidateThreshold = !isNaN(rawConsolidateThreshold) ? Math.max(5, Math.min(50, rawConsolidateThreshold)) : 10;
         const autoSleepEnabled = (container.querySelector('#pm-setting-auto-sleep')?.value ?? '1') === '1';
-        const autoSleepTurns = parseInt(container.querySelector('#pm-setting-auto-sleep-turns')?.value) || 20;
+        const rawSleepTurns = parseInt(container.querySelector('#pm-setting-auto-sleep-turns')?.value);
+        const autoSleepTurns = !isNaN(rawSleepTurns) ? Math.max(5, Math.min(100, rawSleepTurns)) : 20;
 
         const isSemEnabled = container.querySelector('#pm-setting-semantic-enabled')?.checked ?? true;
         const embProvider = container.querySelector('#pm-setting-embedding-provider')?.value || 'local';
-        const semThresh = parseFloat(container.querySelector('#pm-setting-semantic-threshold')?.value) || 0.25;
-        const semWeight = parseFloat(container.querySelector('#pm-setting-semantic-weight')?.value) || 0.60;
+        const rawSemThresh = parseFloat(container.querySelector('#pm-setting-semantic-threshold')?.value);
+        const semThresh = !isNaN(rawSemThresh) ? rawSemThresh : 0.25;
+        const rawSemWeight = parseFloat(container.querySelector('#pm-setting-semantic-weight')?.value);
+        const semWeight = !isNaN(rawSemWeight) ? rawSemWeight : 0.60;
         const embUrl = container.querySelector('#pm-setting-embedding-url')?.value?.trim() || '';
         const embKey = container.querySelector('#pm-setting-embedding-key')?.value?.trim() || '';
         const embModel = container.querySelector('#pm-setting-embedding-model')?.value?.trim() || 'text-embedding-3-small';
 
         const isWbEnabled = container.querySelector('#pm-setting-worldbook-enabled')?.checked ?? true;
         const isWbCtx = container.querySelector('#pm-setting-worldbook-context')?.checked ?? true;
-        const wbBoost = parseFloat(container.querySelector('#pm-setting-worldbook-boost')?.value) || 0.35;
+        const rawWbBoost = parseFloat(container.querySelector('#pm-setting-worldbook-boost')?.value);
+        const wbBoost = !isNaN(rawWbBoost) ? rawWbBoost : 0.35;
 
         updateSettings({
             enabled: isEnabled,
@@ -1778,13 +1787,16 @@ function bindPanelEvents(container) {
         const state = getState();
         const c = window.SillyTavern?.getContext?.();
         const curCharName = c?.characters?.[c?.this_chid]?.name || '角色';
+        const currentTurn = Array.isArray(c?.chat) ? c.chat.filter(m => !m.is_user).length : 0;
 
         let memData = {
             type: type,
             content: content,
             trigger_keys: keys,
             scope: scope,
-            status: MEMORY_STATUS.TRIGGERED
+            status: MEMORY_STATUS.TRIGGERED,
+            floor: currentTurn,
+            last_activated_floor: currentTurn
         };
 
         if (loreName) {
@@ -1859,7 +1871,10 @@ function bindPanelEvents(container) {
                 return;
             }
             const rawKeys = editKeysInput?.value || '';
-            const newKeys = rawKeys.split(/[,，]/).map(k => k.trim()).filter(Boolean);
+            const newKeys = rawKeys.split(/[,，]/)
+                .map(k => k.trim())
+                .filter(k => k.length >= 2 && k.length <= 15)
+                .slice(0, 5);
             const newLore = card.querySelector('.pm-edit-lore-input')?.value?.trim() || '';
 
             const memObj = getState().memories.find(m => m.id === id);

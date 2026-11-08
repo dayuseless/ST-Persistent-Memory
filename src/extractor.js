@@ -124,8 +124,9 @@ export function repairTruncatedJson(str) {
     }
 
     // 清理尾部悬空的无效未完成结构 (例如未完成的键、悬空逗号冒号)
-    s = s.replace(/,\s*"(?:[^"\\]|\\.)*"\s*:\s*$/g, '');
-    s = s.replace(/,\s*"(?:[^"\\]|\\.)*"\s*$/g, '');
+    // 兼容首键 (前缀为 {) 与非首键 (前缀为 ,)
+    s = s.replace(/(?:,\s*|{\s*)"(?:[^"\\]|\\.)*"\s*:\s*$/g, (m) => m.startsWith('{') ? '{' : '');
+    s = s.replace(/(?:,\s*|{\s*)"(?:[^"\\]|\\.)*"\s*$/g, (m) => m.startsWith('{') ? '{' : '');
     s = s.replace(/:\s*$/g, ': null');
     s = s.replace(/,\s*$/g, '');
 
@@ -958,8 +959,9 @@ ${conversationText}
                 currentState.last_digest_time = new Date().toLocaleTimeString();
                 currentState.last_digest_summary = quietSummary;
                 currentState.last_digest_error = null;
+                // 执行超期未激活记忆自动沉睡巡检 (同周期原子落盘)
+                applyInactivitySleep(currentTurn, settings);
             });
-            applyInactivitySleep(currentTurn, settings);
             console.log(`[${MODULE_NAME}] [Async] 识别为良性静默提炼 (${quietSummary})，状态保持平稳`);
             return { success: true, summary: quietSummary };
         }
@@ -973,11 +975,10 @@ ${conversationText}
                 currentState.last_digest_time = new Date().toLocaleTimeString();
                 currentState.last_digest_summary = summary;
                 currentState.last_digest_error = null;
+                // 执行超期未激活记忆自动沉睡巡检 (同周期原子落盘)
+                applyInactivitySleep(currentTurn, settings);
             });
             console.log(`[${MODULE_NAME}] [Async] 提炼原子提交落盘 (会话: ${startChatId}, rev.${currentState.state_revision}): ${currentState.last_digest_summary}`);
-
-            // 执行超期未激活记忆自动沉睡巡检
-            applyInactivitySleep(currentTurn, settings);
 
             // 检查是否达到长程记忆归并阈值 (由后台异步触发，不阻塞当前响应)
             if (settings.autoConsolidate !== false) {
@@ -1317,6 +1318,8 @@ ${groupsPromptText}
             return { success: true, count: 0, superseded: 0 };
         }
 
+        const currentTurn = getChatTurnCount(c?.chat);
+
         return batchUpdate(() => {
             let newCount = 0;
             let supersededCount = 0;
@@ -1329,6 +1332,7 @@ ${groupsPromptText}
                 }
 
                 // 2. 随后入库全新的宏观概括记忆 (此时旧条目已脱离 active，绝不会与新条目发生错误的同库相似冲突融合)
+                // 必须显式携带当前轮次，防止新归并条目被误判为 0 楼层而立即沉睡
                 const added = addMemory({
                     type: item.type,
                     content: item.content,
@@ -1336,7 +1340,9 @@ ${groupsPromptText}
                     character: item.character,
                     known_by: item.known_by,
                     trigger_keys: item.trigger_keys,
-                    status: MEMORY_STATUS.TRIGGERED
+                    status: MEMORY_STATUS.TRIGGERED,
+                    floor: currentTurn,
+                    last_activated_floor: currentTurn
                 });
 
                 if (added) {

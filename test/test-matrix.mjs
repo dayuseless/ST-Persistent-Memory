@@ -1805,6 +1805,142 @@ async function runTests() {
         assert.ok(awakenedMem.last_activated_floor >= 1, '活跃楼层指针应被同步刷新');
     });
 
+    // T48: 断尾修复首键截断测试 (BUG-01)
+    test('T48: repairTruncatedJson 能正确修复首属性截断 (无前置逗号) 的残缺 JSON', () => {
+        const testCases = [
+            '{"loc',
+            '{"scene": {"loc',
+            '{"scene": {"location": "客栈"}, "new_memories": [{"cont',
+            '{"scene": {"location": "客栈"}, "new_memories": [{"content": "测试", "type": "fact"}, {"con'
+        ];
+        for (const tc of testCases) {
+            const repaired = repairTruncatedJson(tc);
+            assert.ok(repaired, `应返回修复后的 JSON: ${tc}`);
+            let parsed = null;
+            assert.doesNotThrow(() => {
+                parsed = JSON.parse(repaired);
+            }, `修复后的 JSON 必须能被标准 JSON.parse 解析: ${repaired}`);
+            assert.ok(parsed && typeof parsed === 'object');
+        }
+    });
+
+    // T49: 记忆融合保护原始创建楼层并刷新活跃楼层 (BUG-06)
+    test('T49: addMemory 保守融合保留条目原始创建楼层并刷新 last_activated_floor', () => {
+        mockContext.chatMetadata = {};
+        loadCurrentState();
+        const mem1 = addMemory({
+            content: '角色A在山顶藏有一柄宝剑',
+            type: 'fact',
+            scope: 'character',
+            character: '角色A',
+            floor: 5
+        });
+        assert.strictEqual(mem1.floor, 5);
+        assert.strictEqual(mem1.last_activated_floor, 5);
+
+        // 在第 25 轮融合相同的记忆
+        const fused = addMemory({
+            content: '角色A在山顶藏有一柄宝剑',
+            type: 'fact',
+            scope: 'character',
+            character: '角色A',
+            floor: 25
+        });
+        assert.strictEqual(fused.id, mem1.id, '应命中同条记忆融合');
+        assert.strictEqual(fused.floor, 5, '条目原始创建楼层应被严格保留');
+        assert.strictEqual(fused.last_activated_floor, 25, '最后活跃楼层应刷新至当前轮次');
+    });
+
+    // T50: 群聊与字符串 ID 兼容性测试 (BUG-03)
+    test('T50: getGeneratingEntity 完美兼容字符串 characterId 与 this_chid，并在群聊中正确识别 POV', () => {
+        // 单聊，characterId 为字符串 "1"
+        const ctx1 = {
+            characterId: '1',
+            this_chid: 0,
+            characters: [{ name: '角色A' }, { name: '角色B' }]
+        };
+        assert.strictEqual(getGeneratingEntity(ctx1), '角色B', '字符串 characterId 应正确映射到角色名');
+
+        // 群聊环境 (groupId 存在)，characterId 缺省，this_chid 为 0
+        const ctx2 = {
+            groupId: 'grp_001',
+            this_chid: 0,
+            characters: [{ name: '角色A' }, { name: '角色B' }]
+        };
+        assert.strictEqual(getGeneratingEntity(ctx2), '角色A', '群聊中 characterId 缺省时应回退至 this_chid');
+
+        // 单聊回退分支
+        const ctx3 = {
+            name2: '单聊角色'
+        };
+        assert.strictEqual(getGeneratingEntity(ctx3), '单聊角色', '单聊无角色列表时正确回退到 name2');
+    });
+
+    // T51: 宏观归并与导入记忆楼层完整性测试 (BUG-02)
+    await testAsync('T51: 宏观归并新记忆与 importMemoryData 完备保留活跃楼层，避免被下一轮秒沉睡', async () => {
+        mockContext.chatMetadata = {};
+        loadCurrentState();
+
+        // 模拟当前对话进展到第 30 轮
+        mockContext.chat = new Array(60).fill(null).map((_, i) => ({
+            is_user: i % 2 === 0,
+            mes: `消息 ${i}`
+        }));
+
+        // 添加两条细节记忆准备归并
+        const m1 = addMemory({ content: '双方在城西茶楼碰面交谈', type: 'fact', scope: 'world', floor: 10 });
+        const m2 = addMemory({ content: '双方商定次日去往黑风寨', type: 'fact', scope: 'world', floor: 12 });
+
+        // 模拟宏观归并
+        mockContext.generateRaw = async () => JSON.stringify({
+            consolidated: [{
+                content: '双方在茶楼达成前往黑风寨的同盟',
+                type: 'fact',
+                scope: 'world',
+                supersedes: [m1.id, m2.id]
+            }]
+        });
+
+        const res = await triggerMemoryConsolidation(true);
+        assert.ok(res.success, '归并应成功');
+
+        const state = getState();
+        const consolidatedMem = state.memories.find(m => m.content.includes('达成前往黑风寨的同盟'));
+        assert.ok(consolidatedMem, '归并新记忆应已入库');
+        assert.strictEqual(consolidatedMem.floor, 30, '归并记忆的创建楼层应同步为当前对话轮次 (30)');
+        assert.strictEqual(consolidatedMem.last_activated_floor, 30, '最后活跃楼层应为 30');
+
+        // 执行沉睡检测 (第 31 轮)
+        const sleepRes = applyInactivitySleep(31);
+        assert.strictEqual(sleepRes.sleptCount, 0, '归并刚生成的记忆绝对不应被误判休眠');
+        assert.strictEqual(consolidatedMem.status, MEMORY_STATUS.TRIGGERED, '归并记忆仍应保持活跃状态');
+    });
+
+    // T52: importMemoryData 保留 last_activated_floor
+    test('T52: importMemoryData 完备继承原始数据的 last_activated_floor', () => {
+        mockContext.chatMetadata = {};
+        loadCurrentState();
+
+        const importPayload = {
+            memories: [
+                {
+                    id: 'mem_import_01',
+                    content: '历史遗留记忆',
+                    type: 'fact',
+                    scope: 'world',
+                    floor: 10,
+                    last_activated_floor: 28
+                }
+            ]
+        };
+
+        importMemoryData(importPayload, 'replace');
+        const state = getState();
+        const mem = state.memories[0];
+        assert.strictEqual(mem.floor, 10);
+        assert.strictEqual(mem.last_activated_floor, 28, '导入应完整保留历史活跃楼层');
+    });
+
     console.log(`\n======================================================`);
     console.log(`  测试结果: 共 ${passed + failed} 项 | \x1b[32m${passed} 通过\x1b[0m | \x1b[31m${failed} 失败\x1b[0m`);
     console.log(`======================================================\n`);
