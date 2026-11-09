@@ -261,7 +261,7 @@ function createNativeExtensionDrawer() {
     drawerWrapper.innerHTML = `
         <div class="inline-drawer-toggle inline-drawer-header">
             <b><i class="fa-solid fa-brain"></i> 持续记忆 (Persistent Memory)</b>
-            <div class="inline-drawer-icon fa-solid fa-circle-chevron-down"></div>
+            <div class="inline-drawer-icon fa-solid fa-circle-chevron-down down"></div>
         </div>
         <div class="inline-drawer-content" id="pm-native-content">
             <!-- 动态渲染设置与快速状态 -->
@@ -269,16 +269,6 @@ function createNativeExtensionDrawer() {
     `;
 
     container.appendChild(drawerWrapper);
-
-    const toggle = drawerWrapper.querySelector('.inline-drawer-toggle');
-    const content = drawerWrapper.querySelector('.inline-drawer-content');
-    const icon = drawerWrapper.querySelector('.inline-drawer-icon');
-
-    toggle?.addEventListener('click', () => {
-        content?.classList.toggle('pm-native-open');
-        icon?.classList.toggle('fa-circle-chevron-up');
-        icon?.classList.toggle('fa-circle-chevron-down');
-    });
 
     renderNativeDrawerContent();
 }

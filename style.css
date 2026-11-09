@@ -762,10 +762,6 @@
     color: #0f172a;
 }
 
-.pm-native-open {
-    display: block !important;
-}
-
 .pm-grid-2col {
     display: grid;
     grid-template-columns: 1fr 1fr;
