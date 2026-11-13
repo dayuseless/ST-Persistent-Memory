@@ -920,3 +920,156 @@
         gap: 6px;
     }
 }
+
+/* ─────────────────────────────────────────────────────────────────────────────
+ * 11. P0 搜索与批量操作工具栏、预设按钮样式
+ * ───────────────────────────────────────────────────────────────────────────── */
+
+/* 搜索框 */
+.pm-search-wrap {
+    width: 100%;
+}
+.pm-search-box {
+    display: flex;
+    align-items: center;
+    background: #ffffff;
+    border: 1px solid #cbd5e1;
+    border-radius: 6px;
+    padding: 5px 8px;
+    gap: 6px;
+    transition: all 0.15s ease;
+}
+.pm-search-box:focus-within {
+    border-color: #2563eb;
+    box-shadow: 0 0 0 2px rgba(37, 99, 235, 0.1);
+}
+.pm-search-icon {
+    color: #94a3b8;
+    font-size: 12px;
+}
+.pm-search-input {
+    border: none;
+    outline: none;
+    background: transparent;
+    font-size: 12px;
+    color: #0f172a;
+    width: 100%;
+    padding: 0;
+}
+.pm-search-clear-btn {
+    background: none;
+    border: none;
+    color: #94a3b8;
+    cursor: pointer;
+    font-size: 12px;
+    padding: 0 2px;
+}
+.pm-search-clear-btn:hover {
+    color: #475569;
+}
+
+/* 批量操作工具栏 */
+.pm-bulk-bar {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    background: linear-gradient(135deg, #eff6ff 0%, #dbeafe 100%);
+    border: 1px solid #bfdbfe;
+    border-radius: 6px;
+    padding: 6px 10px;
+    animation: pmFadeIn 0.15s ease-out;
+}
+.pm-bulk-badge {
+    font-size: 11px;
+    font-weight: 600;
+    color: #1e40af;
+    display: flex;
+    align-items: center;
+    gap: 4px;
+}
+.pm-bulk-actions {
+    display: flex;
+    gap: 5px;
+    align-items: center;
+}
+.pm-bulk-btn {
+    font-size: 11px;
+    padding: 2px 7px;
+    height: 22px;
+    border-radius: 4px;
+    border: 1px solid #cbd5e1;
+    background: #ffffff;
+    color: #334155;
+    cursor: pointer;
+    display: inline-flex;
+    align-items: center;
+    gap: 3px;
+    font-weight: 500;
+    transition: all 0.15s ease;
+}
+.pm-bulk-btn:hover {
+    background: #f8fafc;
+    border-color: #94a3b8;
+}
+.pm-bulk-del {
+    color: #dc2626;
+    border-color: #fca5a5;
+    background: #fff;
+}
+.pm-bulk-del:hover {
+    background: #fee2e2;
+    border-color: #ef4444;
+}
+
+/* 复选框与选中卡片高亮 */
+.pm-card-select-cb {
+    cursor: pointer;
+    width: 14px;
+    height: 14px;
+    margin: 0 6px 0 0;
+    accent-color: #2563eb;
+    vertical-align: middle;
+}
+.pm-select-all-label {
+    display: inline-flex;
+    align-items: center;
+    cursor: pointer;
+    margin-right: 4px;
+    color: #475569;
+}
+.pm-select-all-label input {
+    cursor: pointer;
+    width: 13px;
+    height: 13px;
+    accent-color: #2563eb;
+}
+.pm-card-selected {
+    border-color: #3b82f6 !important;
+    background: #f8faff !important;
+    box-shadow: 0 0 0 1px #3b82f6 !important;
+}
+
+/* API 预设胶囊 */
+.pm-preset-group {
+    display: flex;
+    gap: 6px;
+    flex-wrap: wrap;
+    margin-top: 4px;
+}
+.pm-preset-pill {
+    font-size: 11px;
+    padding: 3px 8px;
+    border-radius: 4px;
+    border: 1px solid #cbd5e1;
+    background: #ffffff;
+    color: #334155;
+    cursor: pointer;
+    font-weight: 500;
+    transition: all 0.15s ease;
+}
+.pm-preset-pill:hover {
+    background: #eff6ff;
+    border-color: #93c5fd;
+    color: #1d4ed8;
+}
+

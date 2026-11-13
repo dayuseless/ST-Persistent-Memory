@@ -1941,6 +1941,91 @@ async function runTests() {
         assert.strictEqual(mem.last_activated_floor, 28, '导入应完整保留历史活跃楼层');
     });
 
+    test('T53: validateExtractedPayload 遵循用户配置的 maxSceneTokens 与 maxTotalMemoryTokens 动态放宽长度截断', () => {
+        // 配置较高的预算
+        updateSettings({ maxSceneTokens: 400, maxTotalMemoryTokens: 1200 });
+
+        const longAction = '两人在暴雨中的驿站内相对而坐，烛火随狂风剧烈摇曳。角色A缓缓放下手中满是裂痕的青瓷茶盏，眼神中满是警惕与试探，而角色B则不动声色地将左手按在腰间暗藏的短匕之上，窗外的惊雷骤然撕裂夜空，气氛紧绷到了极点。';
+        const longContent = '在暴雨之夜的青石驿站中，角色A与角色B达成了暂时休战的约定，承诺在天亮前互不拔刀，但双方依然各自防备。';
+
+        const raw = {
+            scene: {
+                location: '青石山下的荒僻驿站内堂',
+                time: '子夜暴雨',
+                action: longAction,
+                tension: '表面平和，杀机暗涌',
+                unresolved: '茶水中是否被下了蒙汗药'
+            },
+            new_memories: [
+                {
+                    type: 'statement',
+                    content: longContent,
+                    trigger_keys: ['休战', '驿站'],
+                    scope: 'world'
+                }
+            ]
+        };
+
+        const res = validateExtractedPayload(raw, []);
+        assert.ok(res, '应解析通过');
+        assert.strictEqual(res.scene.action, longAction, '400 Token 预算下长动作描述不应被 150 字符硬截断');
+        assert.strictEqual(res.new_memories[0].content, longContent, '1200 Token 预算下长记忆正文不应被 100 字符硬截断');
+
+        // 还原默认设置
+        updateSettings({ maxSceneTokens: 150, maxTotalMemoryTokens: 450 });
+    });
+
+    test('T54: buildAndInjectMemoryPrompt 在总预算调高时弹性扩容注入条数，突破旧版硬编码 5 条上限', () => {
+        mockContext.chatMetadata = {
+            [MODULE_NAME]: JSON.parse(JSON.stringify(DEFAULT_STATE))
+        };
+        mockContext.chat = [
+            { is_user: true, mes: '你好，我们继续探险吧！' },
+            { is_user: false, name: '角色A', mes: '好的，我们一起探险去山洞。' }
+        ];
+        loadCurrentState();
+
+        // 设置充裕总预算
+        updateSettings({
+            enabled: true,
+            maxTotalMemoryTokens: 1500,
+            maxPinnedCount: 5,
+            maxTriggeredCount: 15
+        });
+
+        // 录入 10 条高相关度匹配的激活记忆
+        batchUpdate(() => {
+            const s = getState();
+            s.scene = {
+                location: '神秘山谷',
+                in_scene_characters: ['角色A', '玩家']
+            };
+            for (let i = 1; i <= 10; i++) {
+                s.memories.push({
+                    id: `mem-t54-${i}`,
+                    type: 'fact',
+                    content: `角色A与用户共同经历了第${i}次探险旅程并在山洞中发现线索`,
+                    trigger_keys: ['你好', '探险'],
+                    scope: 'world',
+                    status: MEMORY_STATUS.TRIGGERED,
+                    lifecycle: MEMORY_LIFECYCLE.ACTIVE,
+                    updated_at: new Date(Date.now() - i * 1000).toISOString()
+                });
+            }
+        });
+
+        buildAndInjectMemoryPrompt();
+        const injected = mockContext._injectedPrompt;
+        assert.ok(injected, '应生成有效注入文本');
+
+        // 统计注入的记忆条目数
+        const injectedItemCount = (injected.match(/- \[事实\]/g) || []).length;
+        assert.ok(injectedItemCount > 5, `1500 Token 预算下注入条数应突破旧版 5 条上限，实际注入: ${injectedItemCount} 条`);
+
+        // 还原默认设置
+        updateSettings({ maxTotalMemoryTokens: 450, maxPinnedCount: 5, maxTriggeredCount: 5 });
+    });
+
     console.log(`\n======================================================`);
     console.log(`  测试结果: 共 ${passed + failed} 项 | \x1b[32m${passed} 通过\x1b[0m | \x1b[31m${failed} 失败\x1b[0m`);
     console.log(`======================================================\n`);

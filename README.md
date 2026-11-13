@@ -1,6 +1,6 @@
 # SillyTavern 持续记忆插件 (ST-Persistent-Memory)
 
-[![Version](https://img.shields.io/badge/version-v0.1.17-blue.svg)](https://github.com/dayuseless/ST-Persistent-Memory)
+[![Version](https://img.shields.io/badge/version-v0.1.23-blue.svg)](https://github.com/dayuseless/ST-Persistent-Memory)
 [![SillyTavern](https://img.shields.io/badge/SillyTavern-1.12.0+-purple.svg)](https://github.com/SillyTavern/SillyTavern)
 [![License](https://img.shields.io/badge/license-MIT-green.svg)](LICENSE)
 
@@ -77,7 +77,7 @@
 
 ### 方式二：手动离线包安装
 
-1. 从 [Releases 页面](https://github.com/dayuseless/ST-Persistent-Memory/releases) 下载 `ST-Persistent-Memory-v0.1.17.zip`。
+1. 从 [Releases 页面](https://github.com/dayuseless/ST-Persistent-Memory/releases) 下载 `ST-Persistent-Memory-v0.1.23.zip`。
 2. 解压到 SillyTavern 的扩展目录中：
    ```text
    SillyTavern/public/scripts/extensions/third-party/ST-Persistent-Memory/
@@ -166,6 +166,26 @@ window.__persistentMemory.digestNow();
 - **中途启用智能引导与交互横幅 (Smart Mid-Chat Onboarding)**：当检测到会话已有较长历史（$\ge 6$ 条消息）但记忆库为空时，HUD 顶部自动展示友好的智能引导横幅，支持一键点击启动全量回溯；控制台顶部新增“回溯提炼”快捷按钮，自由选择“从头全量提炼”或“增量补全未消化历史”。
 - **实时进度反馈与随时安全中止 (Live Progress & Abort Guard)**：回溯执行期间，HUD 实时呈现带旋转动效的百分比进度条、批次计数与已沉淀记忆数；提供一键“中止”按钮与会话切换自动熔断拦截，绝不发生跨会话污染或挂死。
 - **测试矩阵扩展至 41 项 (T1-T41 全绿)**：新增针对对话轮次回退自愈校准 (T40) 与全量历史分块回溯多批次递进提炼 (T41) 的自动化测试覆盖。
+
+### v0.1.23 (P0交互增强：实时搜索、批量管理、主流API预设与动态预算弹性扩容)
+
+- **HUD 记忆流实时搜索框 (Real-time Memory Stream Search)**：记忆卡片顶部新增高响应度搜索框，支持即时按正文内容、关键词、角色过滤记忆卡片，带有一键清空按钮，即使存在上百条记忆也能秒级定位目标条目。
+- **批量管理工具栏 (Batch Management Toolbar)**：
+  - 记忆卡片支持多选复选框，选中卡片高亮显式呈现。
+  - 顶部工具栏提供全选/反选与实时选中计数，支持一键**批量常驻（Pinned）**、**批量激活（Triggered）**、**批量归档（Archived）**与**批量删除（带二次确认拦截）**。
+- **内置主流 API 模型预设 (API Provider Presets)**：在 HUD 和酒馆原生设置抽屉中内置 5 大主流供应商一键填充预设：
+  - **DeepSeek 官方**（`api.deepseek.com` / `deepseek-chat`）
+  - **硅基流动 SiliconFlow**（`api.siliconflow.cn/v1` / `deepseek-ai/DeepSeek-V3`）
+  - **本地 Ollama**（`http://127.0.0.1:11434/v1` / `qwen2.5:7b`）
+  - **OpenAI 官方**（`api.openai.com/v1` / `gpt-4o-mini`）
+  - **OpenRouter**（`openrouter.ai/api/v1` / `deepseek/deepseek-chat`）
+- **动态预算弹性扩容与字数自适应 (Dynamic Budget Elastic Scaling)**：
+  - **根治“调高摘要字数与 Token 预算后好像没用”的问题**：
+  - **提示词动态弹性放宽**：取消原先对提炼模型硬编码的“≤40字”限制；当用户调高现场快照预算（$\ge 220$）或总预算（$\ge 800$）时，提炼提示词自动指导模型输出长达 80~250 字符的丰富细节。
+  - **Schema 清洗边界弹性自适应**：取消原先对快照动作（150字）与记忆正文（100字）的机械硬截断，改为根据 `maxSceneTokens` 与 `maxTotalMemoryTokens` 动态按比例计算安全截断边界（动作最高允许 800 字符，记忆正文最高允许 400 字符）。
+  - **注入器条数突破硬编码**：打破原先常驻 5 条、激活 5 条的硬上限，注入器随总预算弹性扩展（常驻最高 15 条，激活最高 30 条），并在设置面板中提供 `maxPinnedCount` 与 `maxTriggeredCount` 显式配置，允许总预算上限设置到 2500。
+- **现场快照动作多行文本域 (Multi-line Scene Action Textarea)**：现场快照中的“正在进行”动作输入框升级为支持自适应拉伸的多行 `<textarea>`，方便输入与微调复杂细腻的动作描写。
+- **测试矩阵扩展至 54 项 (T1-T54 全绿)**：新增针对动态字符截断边界放宽 (T53) 与总预算调高弹性扩容注入条数 (T54) 的全自动化测试断言。
 
 ### v0.1.16 (世界书深度协同：设定复合筛选、安全差量写回钩子与全流程防重矩阵)
 

@@ -318,7 +318,12 @@ export function buildAndInjectMemoryPrompt() {
     }
 
     // 5. 常驻项装载 (在 remainingTokens 限制下原子载入，按时间倒序)
-    const maxPinned = Math.max(1, Number(settings.maxPinnedCount) || 5);
+    // 动态弹性上限：若用户上调了总预算，自动弹性扩容常驻容量 (5~15条)，充分利用 Token 空间
+    const configuredMaxPinned = Number(settings.maxPinnedCount);
+    const autoScaledPinned = Math.min(15, Math.max(5, Math.floor(maxTotalTokens / 80)));
+    const maxPinned = (!isNaN(configuredMaxPinned) && configuredMaxPinned > 5)
+        ? configuredMaxPinned
+        : Math.max(configuredMaxPinned || 5, autoScaledPinned);
     const selectedPinnedLines = [];
 
     pinnedCandidates.sort((a, b) => new Date(b.mem.updated_at || 0) - new Date(a.mem.updated_at || 0));
@@ -334,7 +339,12 @@ export function buildAndInjectMemoryPrompt() {
     }
 
     // 6. 激活项装载 (按相关度打分降序，在剩余 remainingTokens 下原子装载，遇满即停，严禁腰斩单条记忆)
-    const maxTriggered = Math.max(1, Number(settings.maxTriggeredCount) || 5);
+    // 动态弹性上限：若用户上调总 Token 预算至 800~2000，自动弹性扩容激活容量 (5~30条)，杜绝因硬编码5条导致预算闲置
+    const configuredMaxTriggered = Number(settings.maxTriggeredCount);
+    const autoScaledTriggered = Math.min(30, Math.max(5, Math.floor(maxTotalTokens / 45)));
+    const maxTriggered = (!isNaN(configuredMaxTriggered) && configuredMaxTriggered > 5)
+        ? configuredMaxTriggered
+        : Math.max(configuredMaxTriggered || 5, autoScaledTriggered);
     const selectedTriggeredLines = [];
     let hasMemoryStateMutated = false;
 

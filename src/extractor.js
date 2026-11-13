@@ -291,6 +291,18 @@ export function validateExtractedPayload(raw, currentMemories = [], allowedParti
     };
 
     // 1. 校验 scene 结构 (支持显式清空语义: 允许空字符串和空数组)
+    const curSettings = typeof getSettings === 'function' ? getSettings() : {};
+    const maxSceneTok = Math.max(50, Number(curSettings?.maxSceneTokens) || 150);
+    const maxTotalTok = Math.max(100, Number(curSettings?.maxTotalMemoryTokens) || 450);
+
+    // 动态放宽净化截断上限，支持用户调高预算后保留更详尽生动的现场描述
+    const maxActionLen = Math.max(150, Math.min(800, Math.floor(maxSceneTok * 1.6)));
+    const maxLocLen = Math.max(80, Math.min(300, Math.floor(maxSceneTok * 0.8)));
+    const maxUnresLen = Math.max(120, Math.min(400, Math.floor(maxSceneTok * 1.0)));
+    const maxTensionLen = Math.max(80, Math.min(300, Math.floor(maxSceneTok * 0.8)));
+    const maxMemContentLen = Math.max(100, Math.min(400, Math.floor(maxTotalTok / 3)));
+    const maxNewMemoriesAllowed = Math.max(5, Math.min(15, Math.floor(maxTotalTok / 80)));
+
     if (hasScene) {
         const sc = target.scene;
         validated.scene = {};
@@ -307,11 +319,11 @@ export function validateExtractedPayload(raw, currentMemories = [], allowedParti
         };
 
         if (sc.scene_id !== undefined) validated.scene.scene_id = sanitizeString(sc.scene_id, 40);
-        if (sc.location !== undefined) validated.scene.location = sanitizeString(sc.location, 80);
-        if (sc.time !== undefined) validated.scene.time = sanitizeString(sc.time, 40);
-        if (sc.action !== undefined) validated.scene.action = sanitizeString(sc.action, 150);
-        if (sc.tension !== undefined) validated.scene.tension = sanitizeString(sc.tension, 80);
-        if (sc.unresolved !== undefined) validated.scene.unresolved = sanitizeString(sc.unresolved, 120);
+        if (sc.location !== undefined) validated.scene.location = sanitizeString(sc.location, maxLocLen);
+        if (sc.time !== undefined) validated.scene.time = sanitizeString(sc.time, 60);
+        if (sc.action !== undefined) validated.scene.action = sanitizeString(sc.action, maxActionLen);
+        if (sc.tension !== undefined) validated.scene.tension = sanitizeString(sc.tension, maxTensionLen);
+        if (sc.unresolved !== undefined) validated.scene.unresolved = sanitizeString(sc.unresolved, maxUnresLen);
 
         if (Array.isArray(sc.in_scene_characters)) {
             validated.scene.in_scene_characters = sc.in_scene_characters
@@ -433,7 +445,7 @@ export function validateExtractedPayload(raw, currentMemories = [], allowedParti
 
             validated.new_memories.push({
                 type: item.type,
-                content: content.slice(0, 100),
+                content: content.slice(0, maxMemContentLen),
                 trigger_keys: sanitizeTriggerKeys(item.trigger_keys),
                 status: status,
                 character: char,
@@ -442,8 +454,8 @@ export function validateExtractedPayload(raw, currentMemories = [], allowedParti
                 lorebook_ref: lorebookRef
             });
 
-            // 单次提炼最多吸收 5 条，防止暴走
-            if (validated.new_memories.length >= 5) break;
+            // 单次提炼吸收上限根据预算动态弹性扩展 (5~15条)
+            if (validated.new_memories.length >= maxNewMemoriesAllowed) break;
         }
     }
 
@@ -846,6 +858,17 @@ export async function triggerAsyncDigest(force = false) {
             }
         }
 
+        const maxSceneTok = Math.max(50, Number(settings?.maxSceneTokens) || 150);
+        const maxTotalTok = Math.max(100, Number(settings?.maxTotalMemoryTokens) || 450);
+
+        const actionGuidance = maxSceneTok >= 220
+            ? `当前正在进行的具体可观察动作与细节（当前现场快照预算充裕约 ${maxSceneTok} Tok，可详尽生动描写现场动态与人物动作细节，约 ${Math.min(250, Math.floor(maxSceneTok * 1.2))} 字；如交谈已结束请填空串 \"\"）`
+            : `当前正在进行的具体可观察动作（如交谈已结束请填空串 \"\"）`;
+
+        const memContentGuidance = maxTotalTok >= 800
+            ? `完整准确的一句话事实、承诺或推断（当前总预算充裕约 ${maxTotalTok} Tok，允许较详尽记录，≤80字）`
+            : `精炼的一句话事实或约定（≤40字）`;
+
         const digestPrompt = `你是一个严格遵循“事实分级与防幻觉纪律”的持续性记忆系统提炼专家。
 你的任务是基于角色扮演对话的最近进展，更新【现场快照 (Scene State)】，并提炼出值得沉淀为长期记忆的【关键信息】。
 
@@ -892,7 +915,7 @@ ${conversationText}
   "scene": {
     "location": "当前具体地点/环境（未变则继承，离开请更新）",
     "time": "时间/天气/时段",
-    "action": "当前正在进行的具体可观察动作（如交谈已结束请填空串 \"\"）",
+    "action": "${actionGuidance}",
     "tension": "当下的心理张力或气氛（若已消解请填空串 \"\"）",
     "unresolved": "当下悬而未决的冲突（若已解决请填空串 \"\"）",
     "in_scene_characters": ["在场角色A", "在场角色B"]
@@ -900,7 +923,7 @@ ${conversationText}
   "new_memories": [
     {
       "type": "fact 或 statement 或 inference 或 todo",
-      "content": "精炼的一句话事实或约定（≤40字）",
+      "content": "${memContentGuidance}",
       "trigger_keys": ["实体词1", "实体词2"],
       "character": "关联角色名或留空",
       "scope": "character 或 shared 或 world",
@@ -1527,6 +1550,17 @@ export async function triggerBacklogDigest(options = {}) {
                 } catch {}
             }
 
+            const maxSceneTok = Math.max(50, Number(settings?.maxSceneTokens) || 150);
+            const maxTotalTok = Math.max(100, Number(settings?.maxTotalMemoryTokens) || 450);
+
+            const actionGuidance = maxSceneTok >= 220
+                ? `当前正在进行的具体可观察动作与细节（当前现场快照预算充裕约 ${maxSceneTok} Tok，请详尽生动描写现场动态与人物动作细节，约 ${Math.min(250, Math.floor(maxSceneTok * 1.2))} 字；如交谈已结束请填空串 \"\"）`
+                : `当前正在进行的具体可观察动作`;
+
+            const memContentGuidance = maxTotalTok >= 800
+                ? `完整准确的一句话事实、承诺或推断（当前总预算充裕约 ${maxTotalTok} Tok，允许较详尽记录，≤80字）`
+                : `精炼的一句话事实或约定（≤40字）`;
+
             const digestPrompt = `你是一个严格遵循“事实分级与防幻觉纪律”的持续性记忆系统提炼专家。
 你的任务是基于角色扮演长程历史中的阶段片段（第 ${i + 1}/${batches.length} 阶段），递进更新【现场快照 (Scene State)】，并提炼出值得沉淀为长期记忆的【关键信息】。
 
@@ -1554,7 +1588,7 @@ ${conversationText}
   "scene": {
     "location": "当前地点",
     "time": "时间/天气",
-    "action": "当前正在进行的具体可观察动作",
+    "action": "${actionGuidance}",
     "tension": "当下的心理张力或气氛",
     "unresolved": "当下悬而未决的冲突",
     "in_scene_characters": ["在场角色A", "在场角色B"]
@@ -1562,7 +1596,7 @@ ${conversationText}
   "new_memories": [
     {
       "type": "fact 或 statement 或 inference 或 todo",
-      "content": "精炼的一句话事实或约定（≤40字）",
+      "content": "${memContentGuidance}",
       "trigger_keys": ["实体词1", "实体词2"],
       "character": "关联角色名或留空",
       "scope": "character 或 shared 或 world",

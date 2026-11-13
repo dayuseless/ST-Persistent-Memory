@@ -4,7 +4,7 @@
  */
 
 import { MODULE_NAME, MEMORY_STATUS, MEMORY_LIFECYCLE, MEMORY_SCOPE } from './config.js';
-import { getState, getSettings, updateSettings, saveSettingsImmediately, updateScene, addMemory, updateMemory, deleteMemory, purgeArchivedMemories, cycleMemoryStatus, cycleMemoryType, exportMemoryData, importMemoryData, reindexAllMemories, onStateChange, getActiveWorldBookInfo, syncMemoryDeltaToWorldInfo } from './state.js';
+import { getState, getSettings, updateSettings, saveSettingsImmediately, updateScene, addMemory, updateMemory, deleteMemory, purgeArchivedMemories, cycleMemoryStatus, cycleMemoryType, exportMemoryData, importMemoryData, reindexAllMemories, onStateChange, getActiveWorldBookInfo, syncMemoryDeltaToWorldInfo, batchUpdate } from './state.js';
 import { triggerAsyncDigest, triggerMemoryConsolidation, testCustomApiConnection, triggerBacklogDigest, abortBacklogDigest, isBacklogDigestRunning } from './extractor.js';
 import { testEmbeddingApiConnection } from './semantic.js';
 
@@ -12,6 +12,55 @@ let panelEl = null;
 let currentTab = 'memories'; // 'memories' | 'scene' | 'settings'
 let memoryFilter = 'active'; // 'active' | 'archived' | 'all'
 let lorebookFilter = '';    // '' (全部) | '__unlinked__' (未关联) | '<entry_name>'
+let memorySearchQuery = ''; // 实时搜索过滤关键字
+let selectedMemoryIds = new Set(); // 批量操作选中的记忆 ID 集合
+
+export const API_PRESETS = {
+    deepseek: {
+        url: 'https://api.deepseek.com',
+        model: 'deepseek-chat',
+        name: 'DeepSeek 官方'
+    },
+    siliconflow: {
+        url: 'https://api.siliconflow.cn/v1',
+        model: 'deepseek-ai/DeepSeek-V3',
+        name: '硅基流动'
+    },
+    ollama: {
+        url: 'http://localhost:11434/v1',
+        model: 'qwen2.5:7b',
+        name: 'Ollama (本地)'
+    },
+    openai: {
+        url: 'https://api.openai.com/v1',
+        model: 'gpt-4o-mini',
+        name: 'OpenAI 官方'
+    },
+    openrouter: {
+        url: 'https://openrouter.ai/api/v1',
+        model: 'deepseek/deepseek-chat',
+        name: 'OpenRouter'
+    }
+};
+
+function applyApiPreset(key, isNative = false) {
+    const p = API_PRESETS[key];
+    if (!p) return;
+    if (isNative) {
+        const u = document.getElementById('pm-native-custom-api-url');
+        const m = document.getElementById('pm-native-custom-api-model');
+        if (u) u.value = p.url;
+        if (m) m.value = p.model;
+    }
+    const hu = document.getElementById('pm-setting-custom-api-url');
+    const hm = document.getElementById('pm-setting-custom-api-model');
+    if (hu) hu.value = p.url;
+    if (hm) hm.value = p.model;
+
+    updateSettings({ customApiUrl: p.url, customApiModel: p.model });
+    saveSettingsImmediately();
+    window.toastr?.success?.(`已载入预设：${p.name} (${p.model})`, '持续记忆');
+}
 
 function getContext() {
     return window.SillyTavern?.getContext?.() ?? null;
@@ -367,6 +416,18 @@ function renderNativeDrawerContent() {
                         </button>
                         <span id="pm-native-test-res" style="font-size: 11px; font-weight: 500;"></span>
                     </div>
+                    <div class="pm-input-row pm-mt-8" style="margin-top: 8px;">
+                        <label class="pm-input-label" style="font-size: 11px; color: #475569;">
+                            <i class="fa-solid fa-wand-magic-sparkles" style="color: #2563eb;"></i> 快速填充常用 API 预设：
+                        </label>
+                        <div class="pm-preset-group">
+                            <button type="button" class="pm-preset-pill" data-preset="deepseek">DeepSeek 官方</button>
+                            <button type="button" class="pm-preset-pill" data-preset="siliconflow">硅基流动</button>
+                            <button type="button" class="pm-preset-pill" data-preset="ollama">Ollama (本地)</button>
+                            <button type="button" class="pm-preset-pill" data-preset="openai">OpenAI 官方</button>
+                            <button type="button" class="pm-preset-pill" data-preset="openrouter">OpenRouter</button>
+                        </div>
+                    </div>
                 </div>
             </div>
 
@@ -573,6 +634,13 @@ function renderNativeDrawerContent() {
             window.toastr?.warning?.(res?.error || '提炼未产生有效更新', '持续记忆');
         }
     });
+
+    content.querySelectorAll('.pm-preset-pill').forEach(btn => {
+        btn.addEventListener('click', () => {
+            const p = btn.getAttribute('data-preset');
+            applyApiPreset(p, true);
+        });
+    });
 }
 
 /**
@@ -712,7 +780,7 @@ function renderPanelContent() {
     )).filter(Boolean).sort();
     const unlinkedCount = memories.filter(m => !m.lorebook_ref || !m.lorebook_ref.entry_name).length;
 
-    // 根据当前筛选状态选择要渲染的卡片列表 (结合生命周期与世界书关联)
+    // 根据当前筛选状态选择要渲染的卡片列表 (结合生命周期、世界书关联与实时搜索)
     const filteredMemories = memories.filter(m => {
         if (memoryFilter === 'active' && isTerminalOrArchived(m)) return false;
         if (memoryFilter === 'archived' && !isTerminalOrArchived(m)) return false;
@@ -721,6 +789,15 @@ function renderPanelContent() {
             if (m.lorebook_ref && m.lorebook_ref.entry_name) return false;
         } else if (lorebookFilter) {
             if (!m.lorebook_ref || m.lorebook_ref.entry_name !== lorebookFilter) return false;
+        }
+
+        if (memorySearchQuery) {
+            const kw = memorySearchQuery.toLowerCase();
+            const matchContent = m.content && m.content.toLowerCase().includes(kw);
+            const matchChar = m.character && m.character.toLowerCase().includes(kw);
+            const matchKeys = Array.isArray(m.trigger_keys) && m.trigger_keys.some(k => k.toLowerCase().includes(kw));
+            const matchLb = m.lorebook_ref && m.lorebook_ref.entry_name && m.lorebook_ref.entry_name.toLowerCase().includes(kw);
+            if (!matchContent && !matchChar && !matchKeys && !matchLb) return false;
         }
 
         return true;
@@ -738,26 +815,48 @@ function renderPanelContent() {
     // TAB 1: 记忆流 (Memories)
     // ─────────────────────────────────────────────────────────────────────────
     if (currentTab === 'memories') {
+        const isAllSelected = filteredMemories.length > 0 && filteredMemories.every(m => selectedMemoryIds.has(m.id));
         const memCardsHtml = filteredMemories.length > 0
             ? filteredMemories.map(renderMemoryCard).join('')
-            : `<div class="pm-empty-hint"><i class="fa-solid fa-box-open" style="font-size: 24px; margin-bottom: 6px; display: block; opacity: 0.5;"></i>${lorebookFilter ? `设定【${escapeHtml(lorebookFilter === '__unlinked__' ? '未关联' : lorebookFilter)}】下暂无匹配记忆` : (memoryFilter === 'archived' ? '暂无归档或已结项记忆' : (memoryFilter === 'active' ? '暂无活跃记忆' : '记忆库暂无条目'))}</div>`;
+            : `<div class="pm-empty-hint"><i class="fa-solid fa-box-open" style="font-size: 24px; margin-bottom: 6px; display: block; opacity: 0.5;"></i>${memorySearchQuery ? `未找到包含 “${escapeHtml(memorySearchQuery)}” 的相关记忆` : (lorebookFilter ? `设定【${escapeHtml(lorebookFilter === '__unlinked__' ? '未关联' : lorebookFilter)}】下暂无匹配记忆` : (memoryFilter === 'archived' ? '暂无归档或已结项记忆' : (memoryFilter === 'active' ? '暂无活跃记忆' : '记忆库暂无条目')))}</div>`;
 
         tabHtml = `
             <!-- 统计数据横幅 (大号清晰数字) -->
             <div class="pm-stats-banner">
                 <div class="pm-stat-box">
                     <span class="pm-stat-label"><i class="fa-solid fa-thumbtack"></i> 常驻记忆</span>
-                    <span class="pm-stat-value pm-text-amber">${pinnedCount} <span style="font-size: 11px; font-weight: 500; color: #64748b;">/ 5</span></span>
+                    <span class="pm-stat-value pm-text-amber">${pinnedCount} <span style="font-size: 11px; font-weight: 500; color: #64748b;">/ ${settings.maxPinnedCount || 5}</span></span>
                 </div>
                 <div class="pm-stat-box">
                     <span class="pm-stat-label"><i class="fa-solid fa-bolt"></i> 动态触发</span>
-                    <span class="pm-stat-value pm-text-emerald">${triggeredCount} <span style="font-size: 11px; font-weight: 500; color: #64748b;">/ 5</span></span>
+                    <span class="pm-stat-value pm-text-emerald">${triggeredCount} <span style="font-size: 11px; font-weight: 500; color: #64748b;">/ ${settings.maxTriggeredCount || 5}</span></span>
                 </div>
                 <div class="pm-stat-box">
                     <span class="pm-stat-label"><i class="fa-solid fa-gauge-high"></i> 估算占用</span>
                     <span class="pm-stat-value pm-text-sky">~${activeTokenEstimate} <span style="font-size: 11px; font-weight: 500; color: #64748b;">/ ${settings.maxTotalMemoryTokens || 450}T</span></span>
                 </div>
             </div>
+
+            <!-- P0 实时搜索框与批量管理条 -->
+            <div class="pm-search-wrap pm-mb-8">
+                <div class="pm-search-box">
+                    <i class="fa-solid fa-magnifying-glass pm-search-icon"></i>
+                    <input type="text" id="pm-mem-search-input" class="pm-search-input" placeholder="实时搜索记忆内容、触发词、关联角色..." value="${escapeHtml(memorySearchQuery)}">
+                    ${memorySearchQuery ? '<button id="pm-mem-search-clear" class="pm-search-clear-btn" title="清空搜索"><i class="fa-solid fa-xmark"></i></button>' : ''}
+                </div>
+            </div>
+
+            ${selectedMemoryIds.size > 0 ? `
+            <div class="pm-bulk-bar pm-mb-8">
+                <span class="pm-bulk-badge"><i class="fa-solid fa-check-double"></i> 已选 <b>${selectedMemoryIds.size}</b> 项</span>
+                <div class="pm-bulk-actions">
+                    <button id="pm-bulk-pin" class="pm-bulk-btn" title="批量设为常驻"><i class="fa-solid fa-thumbtack pm-text-amber"></i> 常驻</button>
+                    <button id="pm-bulk-trigger" class="pm-bulk-btn" title="批量设为条件激活"><i class="fa-solid fa-bolt pm-text-emerald"></i> 激活</button>
+                    <button id="pm-bulk-archive" class="pm-bulk-btn" title="批量归档"><i class="fa-solid fa-box-archive pm-text-sky"></i> 归档</button>
+                    <button id="pm-bulk-delete" class="pm-bulk-btn pm-bulk-del" title="批量彻底删除"><i class="fa-solid fa-trash-can"></i> 删除</button>
+                    <button id="pm-bulk-cancel" class="pm-bulk-btn" title="取消选择"><i class="fa-solid fa-xmark"></i></button>
+                </div>
+            </div>` : ''}
 
             ${state.last_sync_error ? `
             <div style="background: rgba(239, 68, 68, 0.08); border-left: 3px solid #ef4444; padding: 6px 10px; border-radius: 4px; margin-bottom: 8px; font-size: 11px;">
@@ -803,6 +902,10 @@ function renderPanelContent() {
             <div class="pm-section-card" style="flex: 1; display: flex; flex-direction: column;">
                 <div class="pm-section-header" style="flex-wrap: wrap; gap: 8px; justify-content: space-between;">
                     <div style="display: flex; gap: 4px; align-items: center; flex-wrap: wrap;">
+                        <label class="pm-select-all-label" title="全选/反选当前筛选出的记忆">
+                            <input type="checkbox" id="pm-select-all-cb" ${isAllSelected ? 'checked' : ''}>
+                            <span style="font-size: 11px; margin-left: 2px;">全选</span>
+                        </label>
                         <button class="pm-filter-pill ${memoryFilter === 'active' ? 'pm-filter-active' : ''}" data-action="filter-mem" data-filter="active">
                             活跃 (${activeCount})
                         </button>
@@ -919,8 +1022,8 @@ function renderPanelContent() {
                 </div>
 
                 <div class="pm-input-row">
-                    <label class="pm-input-label"><i class="fa-solid fa-person-running"></i> 当前正在进行的动作:</label>
-                    <input type="text" id="pm-scene-action" class="pm-input" value="${escapeHtml(scene.action || '')}" placeholder="例如: 两人坐在桌前，正端起茶碗饮用">
+                    <label class="pm-input-label"><i class="fa-solid fa-person-running"></i> 当前正在进行的动作与细节:</label>
+                    <textarea id="pm-scene-action" class="pm-input" rows="2" style="resize: vertical; min-height: 48px; line-height: 1.4;" placeholder="例如: 两人坐在桌前，正端起茶碗饮用。窗外雨势渐大，屋内烛火摇曳。">${escapeHtml(scene.action || '')}</textarea>
                 </div>
 
                 <div class="pm-grid-2col pm-mb-8">
@@ -1024,6 +1127,19 @@ function renderPanelContent() {
                         </button>
                         <span id="pm-api-test-status" style="font-size: 11px; font-weight: 500;"></span>
                     </div>
+
+                    <div class="pm-input-row pm-mt-8" style="margin-top: 10px;">
+                        <label class="pm-input-label" style="font-size: 11px; color: #475569;">
+                            <i class="fa-solid fa-wand-magic-sparkles" style="color: #2563eb;"></i> 快速填充常用 API 预设：
+                        </label>
+                        <div class="pm-preset-group">
+                            <button type="button" class="pm-preset-pill" data-preset="deepseek">DeepSeek 官方</button>
+                            <button type="button" class="pm-preset-pill" data-preset="siliconflow">硅基流动</button>
+                            <button type="button" class="pm-preset-pill" data-preset="ollama">Ollama (本地)</button>
+                            <button type="button" class="pm-preset-pill" data-preset="openai">OpenAI 官方</button>
+                            <button type="button" class="pm-preset-pill" data-preset="openrouter">OpenRouter</button>
+                        </div>
+                    </div>
                 </div>
             </div>
 
@@ -1065,11 +1181,22 @@ function renderPanelContent() {
                 <div class="pm-grid-2col pm-mb-8">
                     <div class="pm-input-row">
                         <label class="pm-input-label">现场快照上限 (Tok):</label>
-                        <input type="number" id="pm-setting-scene-tokens" class="pm-input" min="50" max="500" value="${settings.maxSceneTokens || 150}">
+                        <input type="number" id="pm-setting-scene-tokens" class="pm-input" min="50" max="800" value="${settings.maxSceneTokens || 150}">
                     </div>
                     <div class="pm-input-row">
                         <label class="pm-input-label">记忆总 Token 预算:</label>
-                        <input type="number" id="pm-setting-tokens" class="pm-input" min="150" max="2000" value="${settings.maxTotalMemoryTokens || 450}">
+                        <input type="number" id="pm-setting-tokens" class="pm-input" min="150" max="2500" value="${settings.maxTotalMemoryTokens || 450}">
+                    </div>
+                </div>
+
+                <div class="pm-grid-2col pm-mb-8">
+                    <div class="pm-input-row">
+                        <label class="pm-input-label">常驻记忆上限 (条):</label>
+                        <input type="number" id="pm-setting-max-pinned" class="pm-input" min="1" max="15" value="${settings.maxPinnedCount || 5}">
+                    </div>
+                    <div class="pm-input-row">
+                        <label class="pm-input-label">激活记忆上限 (条):</label>
+                        <input type="number" id="pm-setting-max-triggered" class="pm-input" min="1" max="30" value="${settings.maxTriggeredCount || 5}">
                     </div>
                 </div>
 
@@ -1312,8 +1439,9 @@ export function renderMemoryCard(mem) {
     }
 
     return `
-        <div class="pm-card" data-id="${escapeHtml(mem.id)}">
+        <div class="pm-card ${selectedMemoryIds.has(mem.id) ? 'pm-card-selected' : ''}" data-id="${escapeHtml(mem.id)}">
             <div class="pm-card-top">
+                <input type="checkbox" class="pm-card-select-cb" data-id="${escapeHtml(mem.id)}" ${selectedMemoryIds.has(mem.id) ? 'checked' : ''} title="选择此项进行批量操作">
                 <button class="pm-status-chip ${statusClass}" title="点击切换：常驻 / 触发 / 归档" data-action="cycle">
                     ${statusIcon}
                 </button>
@@ -1383,13 +1511,23 @@ function bindPanelEvents(container) {
     });
 
     container.querySelector('#pm-setting-tokens')?.addEventListener('change', (e) => {
-        const val = Math.max(150, Math.min(2000, parseInt(e.target.value) || 450));
+        const val = Math.max(150, Math.min(2500, parseInt(e.target.value) || 450));
         updateSettings({ maxTotalMemoryTokens: val });
     });
 
     container.querySelector('#pm-setting-scene-tokens')?.addEventListener('change', (e) => {
-        const val = Math.max(50, Math.min(500, parseInt(e.target.value) || 150));
+        const val = Math.max(50, Math.min(800, parseInt(e.target.value) || 150));
         updateSettings({ maxSceneTokens: val });
+    });
+
+    container.querySelector('#pm-setting-max-pinned')?.addEventListener('change', (e) => {
+        const val = Math.max(1, Math.min(15, parseInt(e.target.value) || 5));
+        updateSettings({ maxPinnedCount: val });
+    });
+
+    container.querySelector('#pm-setting-max-triggered')?.addEventListener('change', (e) => {
+        const val = Math.max(1, Math.min(30, parseInt(e.target.value) || 5));
+        updateSettings({ maxTriggeredCount: val });
     });
 
     container.querySelector('#pm-setting-inject-pos')?.addEventListener('change', (e) => {
@@ -1648,8 +1786,10 @@ function bindPanelEvents(container) {
         syncHudApiInputs();
         const freqVal = Math.max(1, parseInt(container.querySelector('#pm-setting-freq')?.value) || 3);
         const sliceVal = Math.max(2, Math.min(15, parseInt(container.querySelector('#pm-setting-slice')?.value) || 6));
-        const sceneTok = Math.max(50, Math.min(500, parseInt(container.querySelector('#pm-setting-scene-tokens')?.value) || 150));
-        const memTok = Math.max(150, Math.min(2000, parseInt(container.querySelector('#pm-setting-tokens')?.value) || 450));
+        const sceneTok = Math.max(50, Math.min(800, parseInt(container.querySelector('#pm-setting-scene-tokens')?.value) || 150));
+        const memTok = Math.max(150, Math.min(2500, parseInt(container.querySelector('#pm-setting-tokens')?.value) || 450));
+        const maxPinnedVal = Math.max(1, Math.min(15, parseInt(container.querySelector('#pm-setting-max-pinned')?.value) || 5));
+        const maxTriggeredVal = Math.max(1, Math.min(30, parseInt(container.querySelector('#pm-setting-max-triggered')?.value) || 5));
         const selectedMode = container.querySelector('input[name="pm-mode"]:checked')?.value || 'async';
         const isEnabled = container.querySelector('#pm-setting-hud-enabled')?.checked ?? true;
         const showBubble = container.querySelector('#pm-setting-hud-bubble')?.checked ?? true;
@@ -1688,6 +1828,8 @@ function bindPanelEvents(container) {
             digestSliceCount: sliceVal,
             maxSceneTokens: sceneTok,
             maxTotalMemoryTokens: memTok,
+            maxPinnedCount: maxPinnedVal,
+            maxTriggeredCount: maxTriggeredVal,
             mode: selectedMode,
             injectionPosition: injectPos,
             injectionDepth: injectDep,
@@ -1922,6 +2064,143 @@ function bindPanelEvents(container) {
                 memoryFilter = filter;
                 renderPanelContent();
             }
+        });
+    });
+
+    // P0 实时搜索输入与清空
+    const searchInput = container.querySelector('#pm-mem-search-input');
+    if (searchInput) {
+        searchInput.addEventListener('input', (e) => {
+            memorySearchQuery = e.target.value;
+            renderPanelContent();
+            const reSearchInput = document.getElementById('pm-mem-search-input');
+            if (reSearchInput) {
+                reSearchInput.focus();
+                reSearchInput.setSelectionRange(reSearchInput.value.length, reSearchInput.value.length);
+            }
+        });
+    }
+    container.querySelector('#pm-mem-search-clear')?.addEventListener('click', () => {
+        memorySearchQuery = '';
+        renderPanelContent();
+    });
+
+    // P0 卡片复选框事件
+    container.querySelectorAll('.pm-card-select-cb').forEach(cb => {
+        cb.addEventListener('change', (e) => {
+            e.stopPropagation();
+            const id = e.target.getAttribute('data-id');
+            if (e.target.checked) selectedMemoryIds.add(id);
+            else selectedMemoryIds.delete(id);
+            renderPanelContent();
+        });
+    });
+
+    // P0 全选/反选当前列表
+    container.querySelector('#pm-select-all-cb')?.addEventListener('change', (e) => {
+        const isChecked = e.target.checked;
+        const memories = getState().memories || [];
+        const isTermOrArch = m => m.status === MEMORY_STATUS.ARCHIVED || (m.lifecycle && m.lifecycle !== MEMORY_LIFECYCLE.ACTIVE);
+        const curList = memories.filter(m => {
+            if (memoryFilter === 'active' && isTermOrArch(m)) return false;
+            if (memoryFilter === 'archived' && !isTermOrArch(m)) return false;
+            if (lorebookFilter === '__unlinked__') {
+                if (m.lorebook_ref && m.lorebook_ref.entry_name) return false;
+            } else if (lorebookFilter) {
+                if (!m.lorebook_ref || m.lorebook_ref.entry_name !== lorebookFilter) return false;
+            }
+            if (memorySearchQuery) {
+                const kw = memorySearchQuery.toLowerCase();
+                const matchContent = m.content && m.content.toLowerCase().includes(kw);
+                const matchChar = m.character && m.character.toLowerCase().includes(kw);
+                const matchKeys = Array.isArray(m.trigger_keys) && m.trigger_keys.some(k => k.toLowerCase().includes(kw));
+                const matchLb = m.lorebook_ref && m.lorebook_ref.entry_name && m.lorebook_ref.entry_name.toLowerCase().includes(kw);
+                if (!matchContent && !matchChar && !matchKeys && !matchLb) return false;
+            }
+            return true;
+        });
+
+        if (isChecked) {
+            curList.forEach(m => selectedMemoryIds.add(m.id));
+        } else {
+            curList.forEach(m => selectedMemoryIds.delete(m.id));
+        }
+        renderPanelContent();
+    });
+
+    // P0 批量操作按钮
+    container.querySelector('#pm-bulk-pin')?.addEventListener('click', () => {
+        if (selectedMemoryIds.size === 0) return;
+        const count = selectedMemoryIds.size;
+        batchUpdate(() => {
+            const s = getState();
+            for (const id of selectedMemoryIds) {
+                const target = s.memories.find(m => m.id === id);
+                if (target) target.status = MEMORY_STATUS.PINNED;
+            }
+        });
+        window.toastr?.success?.(`已将选中的 ${count} 条记忆设为常驻置顶`, '持续记忆');
+        selectedMemoryIds.clear();
+        renderPanelContent();
+    });
+
+    container.querySelector('#pm-bulk-trigger')?.addEventListener('click', () => {
+        if (selectedMemoryIds.size === 0) return;
+        const count = selectedMemoryIds.size;
+        batchUpdate(() => {
+            const s = getState();
+            for (const id of selectedMemoryIds) {
+                const target = s.memories.find(m => m.id === id);
+                if (target) {
+                    target.status = MEMORY_STATUS.TRIGGERED;
+                    target.lifecycle = MEMORY_LIFECYCLE.ACTIVE;
+                }
+            }
+        });
+        window.toastr?.success?.(`已将选中的 ${count} 条记忆设为条件激活`, '持续记忆');
+        selectedMemoryIds.clear();
+        renderPanelContent();
+    });
+
+    container.querySelector('#pm-bulk-archive')?.addEventListener('click', () => {
+        if (selectedMemoryIds.size === 0) return;
+        const count = selectedMemoryIds.size;
+        batchUpdate(() => {
+            const s = getState();
+            for (const id of selectedMemoryIds) {
+                const target = s.memories.find(m => m.id === id);
+                if (target) target.status = MEMORY_STATUS.ARCHIVED;
+            }
+        });
+        window.toastr?.success?.(`已将选中的 ${count} 条记忆归档休眠`, '持续记忆');
+        selectedMemoryIds.clear();
+        renderPanelContent();
+    });
+
+    container.querySelector('#pm-bulk-delete')?.addEventListener('click', () => {
+        if (selectedMemoryIds.size === 0) return;
+        const count = selectedMemoryIds.size;
+        if (confirm(`确定要彻底删除已选中的 ${count} 条记忆吗？此操作无法撤销。`)) {
+            batchUpdate(() => {
+                const s = getState();
+                s.memories = s.memories.filter(m => !selectedMemoryIds.has(m.id));
+            });
+            window.toastr?.success?.(`已成功批量删除 ${count} 条记忆`, '持续记忆');
+            selectedMemoryIds.clear();
+            renderPanelContent();
+        }
+    });
+
+    container.querySelector('#pm-bulk-cancel')?.addEventListener('click', () => {
+        selectedMemoryIds.clear();
+        renderPanelContent();
+    });
+
+    // P0 常用 API 预设快速填充按钮
+    container.querySelectorAll('.pm-preset-pill').forEach(btn => {
+        btn.addEventListener('click', () => {
+            const p = btn.getAttribute('data-preset');
+            applyApiPreset(p, false);
         });
     });
 
