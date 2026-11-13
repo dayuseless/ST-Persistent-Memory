@@ -1,5 +1,5 @@
 /**
- * ST-Persistent-Memory - 数据迁移与导入导出服务 (Data Migration & Portability Service, v0.1.34)
+ * ST-Persistent-Memory - 数据迁移与导入导出服务 (Data Migration & Portability Service, v0.1.35)
  * 职责：
  * 1. 跨版本 Schema 迁移与平滑升级 (migrateLegacyState, migrateMemoryItems)
  * 2. 外部记忆/场景数据包导出与脱敏规范化 (exportMemoryData)

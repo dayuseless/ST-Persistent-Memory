@@ -1,5 +1,5 @@
 /**
- * UI 管理器 (v0.1.34)：原生扩展抽屉集成、屏幕快捷悬浮按钮（支持自由拖拽与持久化）与 HUD 侧边控制台
+ * UI 管理器 (v0.1.35)：原生扩展抽屉集成、屏幕快捷悬浮按钮（支持自由拖拽与持久化）与 HUD 侧边控制台
  * 全面升级：统一ACL判定层介入、行内即时编辑、记忆数据独立导出/导入迁移、世界书升格安全确认、长程宏观归并 (Consolidation)、终态记忆过滤与归档清理抽屉
  */
 
@@ -446,6 +446,18 @@ function renderNativeDrawerContent() {
                 </div>
             </div>
 
+            <!-- 核心 Token 预算与快照上限设置 (原生抽屉直接调节) -->
+            <div class="pm-grid-2col pm-mb-8">
+                <div class="pm-input-row">
+                    <label class="pm-input-label">现场快照上限 (Tok):</label>
+                    <input type="number" id="pm-native-scene-tokens" class="pm-input" min="50" max="800" value="${settings.maxSceneTokens || 150}" title="现场快照所允许占用的独立硬 Token 预算 (默认 150，范围 50~800)">
+                </div>
+                <div class="pm-input-row">
+                    <label class="pm-input-label">记忆总 Token 预算:</label>
+                    <input type="number" id="pm-native-tokens" class="pm-input" min="150" max="2500" value="${settings.maxTotalMemoryTokens || 450}" title="提示词记忆注入总硬预算 (默认 450，范围 150~2500)">
+                </div>
+            </div>
+
             <div class="pm-input-row pm-mb-8">
                 <label class="pm-input-label">提示词注入格式模板：</label>
                 <select id="pm-native-inject-template" class="pm-input" style="cursor: pointer;">
@@ -592,6 +604,8 @@ function renderNativeDrawerContent() {
         const useCustom = content.querySelector('#pm-native-custom-api-enabled')?.checked ?? false;
         const template = content.querySelector('#pm-native-inject-template')?.value || 'standard';
         const adaptiveCadence = (content.querySelector('input[name="pm-native-adaptive-cadence"]:checked')?.value ?? '1') === '1';
+        const sceneTok = Math.max(50, Math.min(800, parseInt(content.querySelector('#pm-native-scene-tokens')?.value) || 150));
+        const memTok = Math.max(150, Math.min(2500, parseInt(content.querySelector('#pm-native-tokens')?.value) || 450));
         updateSettings({
             customApiUrl: url,
             customApiKey: key,
@@ -601,14 +615,26 @@ function renderNativeDrawerContent() {
             showFloatingBubble: bubble,
             useCustomApi: useCustom,
             injectionTemplate: template,
-            adaptiveCadenceEnabled: adaptiveCadence
+            adaptiveCadenceEnabled: adaptiveCadence,
+            maxSceneTokens: sceneTok,
+            maxTotalMemoryTokens: memTok
         });
+
+        // 联动同步 HUD 面板输入框数值
+        const hudSceneTok = document.getElementById('pm-setting-scene-tokens');
+        if (hudSceneTok && document.activeElement !== hudSceneTok) hudSceneTok.value = sceneTok;
+        const hudMemTok = document.getElementById('pm-setting-tokens');
+        if (hudMemTok && document.activeElement !== hudMemTok) hudMemTok.value = memTok;
+        const hudTab2SceneTok = document.getElementById('pm-scene-max-tokens');
+        if (hudTab2SceneTok && document.activeElement !== hudTab2SceneTok) hudTab2SceneTok.value = sceneTok;
     };
 
     ['input', 'change'].forEach(evt => {
         content.querySelector('#pm-native-custom-api-url')?.addEventListener(evt, syncNativeInputs);
         content.querySelector('#pm-native-custom-api-key')?.addEventListener(evt, syncNativeInputs);
         content.querySelector('#pm-native-custom-api-model')?.addEventListener(evt, syncNativeInputs);
+        content.querySelector('#pm-native-scene-tokens')?.addEventListener(evt, syncNativeInputs);
+        content.querySelector('#pm-native-tokens')?.addEventListener(evt, syncNativeInputs);
     });
 
     content.querySelector('#pm-native-import-st-api-btn')?.addEventListener('click', () => {
@@ -1092,6 +1118,16 @@ function renderPanelContent() {
                 </div>
                 <div style="font-size: 12px; color: #475569; margin-bottom: 12px; line-height: 1.4;">
                     记录当前正在发生的客观局势。拥有独立硬 Token 预算（上限 ~${settings.maxSceneTokens || 150}），绝不遗忘此时此刻。
+                </div>
+
+                <div class="pm-grid-2col pm-mb-8" style="background: rgba(37, 99, 235, 0.04); border: 1px dashed #bfdbfe; border-radius: 6px; padding: 6px 10px; align-items: center;">
+                    <div class="pm-input-row" style="margin-bottom: 0;">
+                        <label class="pm-input-label" style="font-weight: 600; color: #1e40af;"><i class="fa-solid fa-sliders"></i> 快照 Token 预算上限 (Tok):</label>
+                        <input type="number" id="pm-scene-max-tokens" class="pm-input" min="50" max="800" value="${settings.maxSceneTokens || 150}" title="现场快照所允许占用的独立硬 Token 预算 (默认 150，范围 50~800)">
+                    </div>
+                    <div class="pm-input-row" style="margin-bottom: 0; display: flex; align-items: center; justify-content: flex-start;">
+                        <span style="font-size: 11px; color: #64748b; line-height: 1.4;">💡 独立硬预算，超额自动截断保底</span>
+                    </div>
                 </div>
 
                 <!-- 现场快照时光机操作条 -->
@@ -1624,35 +1660,94 @@ function bindPanelEvents(container) {
         });
     });
 
-    // 提炼参数与 Token 预算
+    // 提炼参数与 Token 预算 (实时双向联动 + 立即持久化落盘)
+    container.querySelector('#pm-setting-freq')?.addEventListener('input', (e) => {
+        const raw = parseInt(e.target.value);
+        if (!isNaN(raw) && raw >= 1) updateSettings({ asyncFrequency: raw });
+    });
     container.querySelector('#pm-setting-freq')?.addEventListener('change', (e) => {
         const val = Math.max(1, parseInt(e.target.value) || 3);
         updateSettings({ asyncFrequency: val });
+        saveSettingsImmediately();
     });
 
+    container.querySelector('#pm-setting-slice')?.addEventListener('input', (e) => {
+        const raw = parseInt(e.target.value);
+        if (!isNaN(raw) && raw >= 2 && raw <= 15) updateSettings({ digestSliceCount: raw });
+    });
     container.querySelector('#pm-setting-slice')?.addEventListener('change', (e) => {
         const val = Math.max(2, Math.min(15, parseInt(e.target.value) || 6));
         updateSettings({ digestSliceCount: val });
+        saveSettingsImmediately();
     });
 
+    container.querySelector('#pm-setting-tokens')?.addEventListener('input', (e) => {
+        const raw = parseInt(e.target.value);
+        if (!isNaN(raw) && raw >= 150 && raw <= 2500) {
+            updateSettings({ maxTotalMemoryTokens: raw });
+            const nativeTok = document.getElementById('pm-native-tokens');
+            if (nativeTok && document.activeElement !== nativeTok) nativeTok.value = raw;
+        }
+    });
     container.querySelector('#pm-setting-tokens')?.addEventListener('change', (e) => {
         const val = Math.max(150, Math.min(2500, parseInt(e.target.value) || 450));
         updateSettings({ maxTotalMemoryTokens: val });
+        saveSettingsImmediately();
+        const nativeTok = document.getElementById('pm-native-tokens');
+        if (nativeTok && document.activeElement !== nativeTok) nativeTok.value = val;
     });
 
+    container.querySelector('#pm-setting-scene-tokens')?.addEventListener('input', (e) => {
+        const raw = parseInt(e.target.value);
+        if (!isNaN(raw) && raw >= 50 && raw <= 800) {
+            updateSettings({ maxSceneTokens: raw });
+            const nativeScene = document.getElementById('pm-native-scene-tokens');
+            if (nativeScene && document.activeElement !== nativeScene) nativeScene.value = raw;
+            const tab2Scene = document.getElementById('pm-scene-max-tokens');
+            if (tab2Scene && document.activeElement !== tab2Scene) tab2Scene.value = raw;
+        }
+    });
     container.querySelector('#pm-setting-scene-tokens')?.addEventListener('change', (e) => {
         const val = Math.max(50, Math.min(800, parseInt(e.target.value) || 150));
         updateSettings({ maxSceneTokens: val });
+        saveSettingsImmediately();
+        const nativeScene = document.getElementById('pm-native-scene-tokens');
+        if (nativeScene && document.activeElement !== nativeScene) nativeScene.value = val;
+        const tab2Scene = document.getElementById('pm-scene-max-tokens');
+        if (tab2Scene && document.activeElement !== tab2Scene) tab2Scene.value = val;
+    });
+
+    // Tab 2 快照独立 Token 上限实时双向绑定
+    container.querySelector('#pm-scene-max-tokens')?.addEventListener('input', (e) => {
+        const raw = parseInt(e.target.value);
+        if (!isNaN(raw) && raw >= 50 && raw <= 800) {
+            updateSettings({ maxSceneTokens: raw });
+            const hudScene = document.getElementById('pm-setting-scene-tokens');
+            if (hudScene && document.activeElement !== hudScene) hudScene.value = raw;
+            const nativeScene = document.getElementById('pm-native-scene-tokens');
+            if (nativeScene && document.activeElement !== nativeScene) nativeScene.value = raw;
+        }
+    });
+    container.querySelector('#pm-scene-max-tokens')?.addEventListener('change', (e) => {
+        const val = Math.max(50, Math.min(800, parseInt(e.target.value) || 150));
+        updateSettings({ maxSceneTokens: val });
+        saveSettingsImmediately();
+        const hudScene = document.getElementById('pm-setting-scene-tokens');
+        if (hudScene && document.activeElement !== hudScene) hudScene.value = val;
+        const nativeScene = document.getElementById('pm-native-scene-tokens');
+        if (nativeScene && document.activeElement !== nativeScene) nativeScene.value = val;
     });
 
     container.querySelector('#pm-setting-max-pinned')?.addEventListener('change', (e) => {
         const val = Math.max(1, Math.min(15, parseInt(e.target.value) || 5));
         updateSettings({ maxPinnedCount: val });
+        saveSettingsImmediately();
     });
 
     container.querySelector('#pm-setting-max-triggered')?.addEventListener('change', (e) => {
         const val = Math.max(1, Math.min(30, parseInt(e.target.value) || 5));
         updateSettings({ maxTriggeredCount: val });
+        saveSettingsImmediately();
     });
 
     container.querySelector('#pm-setting-inject-pos')?.addEventListener('change', (e) => {
@@ -1998,6 +2093,14 @@ function bindPanelEvents(container) {
             worldBookBoostScore: wbBoost
         });
 
+        // 联动同步原生抽屉与现场快照界面的数值
+        const nativeSceneTok = document.getElementById('pm-native-scene-tokens');
+        if (nativeSceneTok && document.activeElement !== nativeSceneTok) nativeSceneTok.value = sceneTok;
+        const nativeMemTok = document.getElementById('pm-native-tokens');
+        if (nativeMemTok && document.activeElement !== nativeMemTok) nativeMemTok.value = memTok;
+        const sceneTabMaxTok = document.getElementById('pm-scene-max-tokens');
+        if (sceneTabMaxTok && document.activeElement !== sceneTabMaxTok) sceneTabMaxTok.value = sceneTok;
+
         const ok = saveSettingsImmediately();
         const btn = container.querySelector('#pm-save-all-settings-btn');
         if (btn) {
@@ -2013,7 +2116,7 @@ function bindPanelEvents(container) {
         }
     });
 
-    // 保存快照
+    // 保存快照 (同步保存现场内容与快照 Token 上限)
     container.querySelector('#pm-save-scene-btn')?.addEventListener('click', () => {
         const rawLocation = container.querySelector('#pm-scene-location')?.value || '';
         const rawTime = container.querySelector('#pm-scene-time')?.value || '';
@@ -2021,6 +2124,14 @@ function bindPanelEvents(container) {
         const rawTension = container.querySelector('#pm-scene-tension')?.value || '';
         const rawUnresolved = container.querySelector('#pm-scene-unresolved')?.value || '';
         const rawChars = container.querySelector('#pm-scene-characters')?.value?.trim() || '';
+
+        // 同步检查与保存现场快照 Token 上限
+        const rawSceneTok = parseInt(container.querySelector('#pm-scene-max-tokens')?.value);
+        if (!isNaN(rawSceneTok)) {
+            const sceneTok = Math.max(50, Math.min(800, rawSceneTok));
+            updateSettings({ maxSceneTokens: sceneTok });
+            saveSettingsImmediately();
+        }
 
         let charsToSave;
         if (!rawChars || rawChars === '自动' || rawChars.toLowerCase() === 'auto') {
@@ -2044,7 +2155,7 @@ function bindPanelEvents(container) {
             btn.innerHTML = '<i class="fa-solid fa-check-double"></i> 快照已保存';
             setTimeout(() => { btn.innerHTML = '<i class="fa-solid fa-check"></i> 保存快照变更'; }, 1500);
         }
-        window.toastr?.success?.('现场快照已更新保存', '持续记忆');
+        window.toastr?.success?.('现场快照与上限设置已成功保存', '持续记忆');
     });
 
     // 现场快照时光机：一键撤销回滚

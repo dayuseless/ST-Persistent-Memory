@@ -1,6 +1,6 @@
 # SillyTavern 持续记忆插件 (ST-Persistent-Memory)
 
-[![Version](https://img.shields.io/badge/version-v0.1.34-blue.svg)](https://github.com/dayuseless/ST-Persistent-Memory)
+[![Version](https://img.shields.io/badge/version-v0.1.35-blue.svg)](https://github.com/dayuseless/ST-Persistent-Memory)
 [![SillyTavern](https://img.shields.io/badge/SillyTavern-1.12.0+-purple.svg)](https://github.com/SillyTavern/SillyTavern)
 [![License](https://img.shields.io/badge/license-MIT-green.svg)](LICENSE)
 
@@ -77,7 +77,7 @@
 
 ### 方式二：手动离线包安装
 
-1. 从 [Releases 页面](https://github.com/dayuseless/ST-Persistent-Memory/releases) 下载 `ST-Persistent-Memory-v0.1.34.zip`。
+1. 从 [Releases 页面](https://github.com/dayuseless/ST-Persistent-Memory/releases) 下载 `ST-Persistent-Memory-v0.1.35.zip`。
 2. 解压到 SillyTavern 的扩展目录中：
    ```text
    SillyTavern/public/scripts/extensions/third-party/ST-Persistent-Memory/
@@ -158,6 +158,23 @@ window.__persistentMemory.digestNow();
 ---
 
 ## 📝 版本历史
+
+### v0.1.35 (现场快照与记忆 Token 上限即时持久化修复、原生抽屉双向联动与防回滚加固)
+
+- **现场快照与记忆 Token 预算即时落盘修复 (Instant Persistence)**：
+  - 彻底修复 `maxSceneTokens` (现场快照上限) 与 `maxTotalMemoryTokens` (记忆总 Token 预算) 修改后因防抖取消导致的“修改保存之后还是原样”的痛点问题；
+  - `saveSettingsImmediately()` 引入真实宿主即时持久化链路，直调 `/script.js` 宿主保存端点，告别 2000ms 防抖延迟；
+  - 针对数字输入框同时监听 `input` 与 `change` 事件，确保无论是按上下微调、直接输入、切换 Tab 还是立即刷新，配置修改始终牢固落盘生效。
+- **SillyTavern 原生扩展抽屉双向联动 (Native Drawer Token Controls)**：
+  - 在酒馆原生抽屉直接提供“现场快照上限 (Tok)”与“记忆总 Token 预算”快捷调节入口，原生抽屉保存与 HUD 控制台配置实现双向无缝联动同步；
+  - 修复原生抽屉保存时缺少 Token 预算字段导致配置被默认值覆盖的竞态隐患。
+- **现场快照 (Scene Tab) 上限配置入口增设与协同保存**：
+  - 在 HUD 控制台 Tab 2 (现场快照) 顶部直接增设“快照 Token 预算上限 (Tok)”调节输入框；
+  - 点击“保存快照变更”按钮时，自动协同保存当期现场快照与快照预算上限，支持单点一键生效。
+- **本地存储双重容灾与防覆盖防御 (Anti-Revert Guard)**：
+  - `getSettings()` 新增防回滚恢复机制：当检测到宿主重载的 `extensionSettings` 依然为旧默认值而 `localStorage` 备份中存在用户自定义设置时，自动以用户自定义预算优先恢复，彻底杜绝重启回滚。
+- **测试矩阵扩充至 95 项 (95/95 全绿通过)**：
+  - 新增 **T95** 针对快照上限与总 Token 预算即时落盘、localStorage 备份防护、宿主旧默认值防回滚恢复与现场快照协同保存的自动化测试覆盖。
 
 ### v0.1.34 (数据迁移与导入导出解耦：跨版本平滑升级与备份服务模块化)
 

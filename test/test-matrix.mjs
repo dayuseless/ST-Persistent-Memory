@@ -3036,24 +3036,24 @@ Intermediate analysis details...
     });
 
     // ─────────────────────────────────────────────────────────────
-    // T71: 全工程版本标识严格一致性核验 (0.1.34)
+    // T71: 全工程版本标识严格一致性核验 (0.1.35)
     // ─────────────────────────────────────────────────────────────
-    test('T71: 全工程版本标识严格一致性核验 (manifest, config, index 与各模块头部统一为 0.1.34)', () => {
+    test('T71: 全工程版本标识严格一致性核验 (manifest, config, index 与各模块头部统一为 0.1.35)', () => {
         const currentFile = fileURLToPath(import.meta.url);
         const rootDir = path.resolve(path.dirname(currentFile), '../');
 
         // 1. manifest.json
         const manifestPath = path.join(rootDir, 'manifest.json');
         const manifest = JSON.parse(fs.readFileSync(manifestPath, 'utf8'));
-        assert.strictEqual(manifest.version, '0.1.34', 'manifest.json 版本号应为 0.1.34');
+        assert.strictEqual(manifest.version, '0.1.35', 'manifest.json 版本号应为 0.1.35');
 
         // 2. src/config.js
-        assert.strictEqual(EXTENSION_VERSION, '0.1.34', 'config.js EXTENSION_VERSION 应为 0.1.34');
+        assert.strictEqual(EXTENSION_VERSION, '0.1.35', 'config.js EXTENSION_VERSION 应为 0.1.35');
 
         // 3. index.js
         const indexPath = path.join(rootDir, 'index.js');
         const indexContent = fs.readFileSync(indexPath, 'utf8');
-        assert.ok(indexContent.includes('v0.1.34'), 'index.js 头部必须标注 v0.1.34');
+        assert.ok(indexContent.includes('v0.1.35'), 'index.js 头部必须标注 v0.1.35');
         assert.ok(!indexContent.includes('v0.1.33'), 'index.js 严禁残留旧版本 v0.1.33 版本头');
 
         // 4. 各核心模块头部注释版本检查
@@ -3077,8 +3077,8 @@ Intermediate analysis details...
             const content = fs.readFileSync(filePath, 'utf8');
             const first10Lines = content.split('\n').slice(0, 10).join('\n');
             assert.ok(
-                first10Lines.includes('v0.1.34') || first10Lines.includes('0.1.34'),
-                `${relPath} 头部注释必须包含 0.1.34 版本标识`
+                first10Lines.includes('v0.1.35') || first10Lines.includes('0.1.35'),
+                `${relPath} 头部注释必须包含 0.1.35 版本标识`
             );
             assert.ok(
                 !first10Lines.includes('0.1.33') && !first10Lines.includes('v0.1.33'),
@@ -3931,7 +3931,7 @@ Intermediate analysis details...
         // 4. importMemoryData 代理调用验证
         const newBackup = {
             plugin: MODULE_NAME,
-            version: '0.1.34',
+            version: '0.1.35',
             memories: [
                 { id: 'new-mem-99', content: '全新引入的公共历史', scope: 'world', type: 'fact' }
             ]
@@ -3940,6 +3940,58 @@ Intermediate analysis details...
         assert.strictEqual(importRes.success, true);
         assert.strictEqual(importRes.imported, 1);
         assert.ok(getState().memories.some(m => m.content === '全新引入的公共历史'));
+    });
+
+    // ─────────────────────────────────────────────────────────────
+    // T95: 现场快照上限与记忆 Token 预算即时持久化与防回滚恢复测试
+    // ─────────────────────────────────────────────────────────────
+    test('T95: 现场快照上限与记忆 Token 预算即时持久化与防回滚恢复测试', () => {
+        // 1. 模拟用户通过 HUD 或原生抽屉修改快照上限与总 Token 预算
+        updateSettings({
+            maxSceneTokens: 280,
+            maxTotalMemoryTokens: 850
+        });
+        const saveOk = saveSettingsImmediately();
+        assert.strictEqual(saveOk, true, '立即持久化保存必须成功返回');
+
+        // 2. 检查内存与运行期配置缓存是否即时生效
+        const currentSettings = getSettings();
+        assert.strictEqual(currentSettings.maxSceneTokens, 280, 'maxSceneTokens 必须即时生效为 280');
+        assert.strictEqual(currentSettings.maxTotalMemoryTokens, 850, 'maxTotalMemoryTokens 必须即时生效为 850');
+
+        // 3. 检查 localStorage 备份中是否包含修改后的 Token 预算
+        const rawBackup = mockLocalStorage['ST_PM_SETTINGS_BACKUP'];
+        assert(rawBackup, 'localStorage 中必须存在 ST_PM_SETTINGS_BACKUP 备份');
+        const parsedBackup = JSON.parse(rawBackup);
+        assert.strictEqual(parsedBackup.maxSceneTokens, 280, 'localStorage 中快照上限必须更新为 280');
+        assert.strictEqual(parsedBackup.maxTotalMemoryTokens, 850, 'localStorage 中总预算必须更新为 850');
+
+        // 4. 模拟页面刷新或宿主重启时，宿主 extensionSettings 仅载入了旧默认配置的情景 (防覆盖恢复)
+        mockContext.extensionSettings[MODULE_NAME] = {
+            maxSceneTokens: 150,
+            maxTotalMemoryTokens: 450
+        };
+        // 重新调用 getSettings()，必须自动触发防御机制，从 localStorage 备份中恢复用户自定义的 280 与 850
+        const restoredSettings = getSettings();
+        assert.strictEqual(restoredSettings.maxSceneTokens, 280, '面对宿主旧默认值时，必须优先以 localStorage 自定义快照上限恢复');
+        assert.strictEqual(restoredSettings.maxTotalMemoryTokens, 850, '面对宿主旧默认值时，必须优先以 localStorage 自定义总预算恢复');
+
+        // 5. 现场快照内容修改与持久化验证
+        updateScene({
+            location: '汴京御街樊楼三层雅间',
+            time: '宣和五年上元夜，华灯初上',
+            action: '凭栏远眺千门灯火，暗记内廷防卫换防时辰',
+            tension: '暗潮汹涌，各怀机心',
+            unresolved: '接头人留下的半块玉佩尚未验看真伪'
+        }, '测试现场更新');
+        const s = getState();
+        assert.strictEqual(s.scene.location, '汴京御街樊楼三层雅间');
+        assert.strictEqual(s.scene.tension, '暗潮汹涌，各怀机心');
+        assert(s.state_revision >= 1, '现场状态保存必须自增 state_revision');
+
+        // 清理现场以便后续测试
+        updateSettings({ maxSceneTokens: 150, maxTotalMemoryTokens: 450 });
+        saveSettingsImmediately();
     });
 
     console.log(`\n======================================================`);

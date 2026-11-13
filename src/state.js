@@ -1,5 +1,5 @@
 /**
- * 记忆状态管理器 (v0.1.34)
+ * 记忆状态管理器 (v0.1.35)
  * 严格落实 state_revision 状态修订号、L0 三态 PATCH 语义、真正原子回滚事务、统一ACL判定层介入、数据准入流水线、世界书升格溯源、知情集合隔离、世界书解耦、现场状态时光机解耦 (src/scene.js) 与数据迁移/导入导出解耦 (src/migration.js)
  */
 
@@ -86,12 +86,20 @@ function persistCurrentStateInternal() {
 
     if (metadata) {
         metadata[MODULE_NAME] = stateCache;
-        if (typeof c?.saveMetadataDebounced === 'function') {
-            c.saveMetadataDebounced();
-        } else if (typeof c?.saveMetadata === 'function') {
-            c.saveMetadata();
+        if (typeof c?.saveMetadata === 'function') {
+            try { c.saveMetadata(); } catch {}
+        } else if (typeof c?.saveMetadataDebounced === 'function') {
+            try { c.saveMetadataDebounced(); } catch {}
         }
     }
+
+    // 双重落盘保险：将会话快照同步备份至本地存储，防止未及时落盘导致编辑丢失
+    try {
+        if (typeof localStorage !== 'undefined') {
+            const chatId = c?.chatId || c?.characterId || 'default';
+            localStorage.setItem('ST_PM_STATE_BACKUP_' + chatId, JSON.stringify(stateCache));
+        }
+    } catch {}
 
     notifyChange();
     return true;
@@ -128,10 +136,11 @@ export function batchUpdate(fn) {
 }
 
 let settingsCache = null;
+let hostSaveSettingsFn = null;
 
 function getExtSettingsObject() {
     const c = getContext();
-    return c?.extensionSettings ?? c?.extension_settings ?? window.extension_settings ?? null;
+    return c?.extensionSettings ?? c?.extension_settings ?? window?.extension_settings ?? null;
 }
 
 /**
@@ -146,42 +155,48 @@ function getSanitizedSettingsForBackup(settings) {
     return safe;
 }
 
+/**
+ * 调用宿主原生持久化方法，确保真正即时落盘
+ */
+async function invokeHostSaveSettings() {
+    if (typeof hostSaveSettingsFn === 'function') {
+        try {
+            await hostSaveSettingsFn();
+            return true;
+        } catch {}
+    }
+    const c = getContext();
+    if (typeof c?.saveSettings === 'function') {
+        try {
+            await c.saveSettings();
+            return true;
+        } catch {}
+    }
+    try {
+        if (typeof window !== 'undefined') {
+            const mod = await import('/script.js');
+            if (typeof mod?.saveSettings === 'function') {
+                hostSaveSettingsFn = mod.saveSettings;
+                await hostSaveSettingsFn();
+                return true;
+            }
+        }
+    } catch {}
+    if (typeof c?.saveSettingsDebounced === 'function') {
+        try {
+            c.saveSettingsDebounced();
+            return true;
+        } catch {}
+    }
+    return false;
+}
+
 export function getSettings() {
     const extSettings = getExtSettingsObject();
 
-    // 1. 优先从 SillyTavern 官方 extensionSettings 载入与维护
-    if (extSettings) {
-        if (!extSettings[MODULE_NAME]) {
-            let restored = null;
-            try {
-                const raw = localStorage.getItem('ST_PM_SETTINGS_BACKUP');
-                if (raw) {
-                    restored = JSON.parse(raw);
-                    // 清理旧版本可能遗留的明文 Key
-                    if (restored && (restored.customApiKey || restored.embeddingApiKey)) {
-                        delete restored.customApiKey;
-                        delete restored.embeddingApiKey;
-                        localStorage.setItem('ST_PM_SETTINGS_BACKUP', JSON.stringify(restored));
-                    }
-                }
-            } catch {}
-            extSettings[MODULE_NAME] = Object.assign({}, DEFAULT_SETTINGS, restored || {});
-        } else {
-            // 确保旧版本配置缺省的默认值被全量补齐 (如 mode)
-            for (const [key, val] of Object.entries(DEFAULT_SETTINGS)) {
-                if (extSettings[MODULE_NAME][key] === undefined) {
-                    extSettings[MODULE_NAME][key] = val;
-                }
-            }
-        }
-        settingsCache = extSettings[MODULE_NAME];
-        return settingsCache;
-    }
-
-    // 2. 运行环境尚未完全就绪时的持久化兜底
-    if (!settingsCache) {
-        let restored = null;
-        try {
+    let restored = null;
+    try {
+        if (typeof localStorage !== 'undefined') {
             const raw = localStorage.getItem('ST_PM_SETTINGS_BACKUP');
             if (raw) {
                 restored = JSON.parse(raw);
@@ -191,7 +206,36 @@ export function getSettings() {
                     localStorage.setItem('ST_PM_SETTINGS_BACKUP', JSON.stringify(restored));
                 }
             }
-        } catch {}
+        }
+    } catch {}
+
+    // 1. 优先从 SillyTavern 官方 extensionSettings 载入与维护
+    if (extSettings) {
+        if (!extSettings[MODULE_NAME]) {
+            extSettings[MODULE_NAME] = Object.assign({}, DEFAULT_SETTINGS, restored || {});
+        } else {
+            // 确保旧版本配置缺省的默认值被全量补齐 (如 mode)
+            for (const [key, val] of Object.entries(DEFAULT_SETTINGS)) {
+                if (extSettings[MODULE_NAME][key] === undefined) {
+                    extSettings[MODULE_NAME][key] = (restored && restored[key] !== undefined) ? restored[key] : val;
+                }
+            }
+            // 防御保护：若 localStorage 备份中存在用户自定义的 Token 预算等关键配置，优先恢复生效
+            if (restored) {
+                if (restored.maxSceneTokens !== undefined && extSettings[MODULE_NAME].maxSceneTokens === DEFAULT_SETTINGS.maxSceneTokens && restored.maxSceneTokens !== DEFAULT_SETTINGS.maxSceneTokens) {
+                    extSettings[MODULE_NAME].maxSceneTokens = restored.maxSceneTokens;
+                }
+                if (restored.maxTotalMemoryTokens !== undefined && extSettings[MODULE_NAME].maxTotalMemoryTokens === DEFAULT_SETTINGS.maxTotalMemoryTokens && restored.maxTotalMemoryTokens !== DEFAULT_SETTINGS.maxTotalMemoryTokens) {
+                    extSettings[MODULE_NAME].maxTotalMemoryTokens = restored.maxTotalMemoryTokens;
+                }
+            }
+        }
+        settingsCache = extSettings[MODULE_NAME];
+        return settingsCache;
+    }
+
+    // 2. 运行环境尚未完全就绪时的持久化兜底
+    if (!settingsCache) {
         settingsCache = Object.assign({}, DEFAULT_SETTINGS, restored || {});
     }
     return settingsCache;
@@ -214,7 +258,9 @@ export function updateSettings(patch) {
     c?.saveSettingsDebounced?.();
 
     try {
-        localStorage.setItem('ST_PM_SETTINGS_BACKUP', JSON.stringify(getSanitizedSettingsForBackup(settings)));
+        if (typeof localStorage !== 'undefined') {
+            localStorage.setItem('ST_PM_SETTINGS_BACKUP', JSON.stringify(getSanitizedSettingsForBackup(settings)));
+        }
     } catch {}
 
     try {
@@ -223,7 +269,7 @@ export function updateSettings(patch) {
 }
 
 /**
- * 立即持久化配置 (双重保险：酒馆主配置落盘 + 本地安全脱敏备份)
+ * 立即持久化配置 (双重保险：宿主主配置即时落盘 + 本地安全脱敏备份)
  */
 export function saveSettingsImmediately() {
     const c = getContext();
@@ -233,12 +279,12 @@ export function saveSettingsImmediately() {
         if (extSettings) {
             extSettings[MODULE_NAME] = settings;
         }
-        if (typeof c?.saveSettings === 'function') {
-            c.saveSettings();
-        } else if (typeof c?.saveSettingsDebounced === 'function') {
-            c.saveSettingsDebounced();
+        if (typeof localStorage !== 'undefined') {
+            localStorage.setItem('ST_PM_SETTINGS_BACKUP', JSON.stringify(getSanitizedSettingsForBackup(settings)));
         }
-        localStorage.setItem('ST_PM_SETTINGS_BACKUP', JSON.stringify(getSanitizedSettingsForBackup(settings)));
+        
+        invokeHostSaveSettings();
+
         try {
             window.__persistentMemory?.injectNow?.();
         } catch {}
@@ -250,7 +296,7 @@ export function saveSettingsImmediately() {
 }
 
 /**
- * 初始化或加载当前聊天的记忆状态 (支持 Schema 平滑迁移)
+ * 初始化或加载当前聊天的记忆状态 (支持 Schema 平滑迁移与本地容灾备份)
  */
 export function loadCurrentState() {
     const c = getContext();
