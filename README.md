@@ -1,6 +1,6 @@
 # SillyTavern 持续记忆插件 (ST-Persistent-Memory)
 
-[![Version](https://img.shields.io/badge/version-v0.1.25-blue.svg)](https://github.com/dayuseless/ST-Persistent-Memory)
+[![Version](https://img.shields.io/badge/version-v0.1.26-blue.svg)](https://github.com/dayuseless/ST-Persistent-Memory)
 [![SillyTavern](https://img.shields.io/badge/SillyTavern-1.12.0+-purple.svg)](https://github.com/SillyTavern/SillyTavern)
 [![License](https://img.shields.io/badge/license-MIT-green.svg)](LICENSE)
 
@@ -166,6 +166,21 @@ window.__persistentMemory.digestNow();
 - **中途启用智能引导与交互横幅 (Smart Mid-Chat Onboarding)**：当检测到会话已有较长历史（$\ge 6$ 条消息）但记忆库为空时，HUD 顶部自动展示友好的智能引导横幅，支持一键点击启动全量回溯；控制台顶部新增“回溯提炼”快捷按钮，自由选择“从头全量提炼”或“增量补全未消化历史”。
 - **实时进度反馈与随时安全中止 (Live Progress & Abort Guard)**：回溯执行期间，HUD 实时呈现带旋转动效的百分比进度条、批次计数与已沉淀记忆数；提供一键“中止”按钮与会话切换自动熔断拦截，绝不发生跨会话污染或挂死。
 - **测试矩阵扩展至 41 项 (T1-T41 全绿)**：新增针对对话轮次回退自愈校准 (T40) 与全量历史分块回溯多批次递进提炼 (T41) 的自动化测试覆盖。
+
+### v0.1.26 (安全审计加固：权威白名单权限收敛、历史回溯中止与并发竞态修复)
+
+- **权威可信参与者白名单边界加固 (Authoritative Participant Boundary, P1-01 修复)**：
+  - **单聊/群聊模式严格过滤**：彻底修复原先将 SillyTavern 全局角色库 (`context.characters`) 全部纳入白名单的跨会话权限扩大漏洞。单聊模式下严格限定参与者为玩家 (`name1`) 与当前单聊角色 (`name2` / `characters[characterId]`)；群聊模式下通过 `groupId` 索引实际群组定义中的 `members` 成员解析合法群角色，未参战角色严禁进入白名单。
+  - **现场叙事角色与授权凭证彻底解耦**：彻底剥离将 `state.scene.in_scene_characters` 纳入白名单的旧逻辑，彻底消除模型在现场描述中生成临时 NPC 或幻觉角色后下一轮自动获得知情权 (`known_by`) 的循环提权漏洞。现场角色仅作为叙事状态呈现，绝不可作为 memory ACL 授权依据。
+- **历史回溯中止与任务生命周期竞态加固 (Backlog Abort & Concurrency Hardening, P1-02 修复)**：
+  - **修复中止信号丢失**：重构 `abortBacklogDigest`，消除立即置空 `backlogAbortController` 导致循环中 `signal.aborted` 计算为 `undefined` 的致命失效漏洞。
+  - **局部任务生命周期与任务 ID 隔离**：引入递增 `backlogTaskIdCounter` 与局部 `task` 上下文，彻底解决旧任务 A 被中止后用户快速发起新任务 B 时，旧任务 `finally` 误清除新任务控制器的并发状态错乱缺陷。
+  - **AbortSignal 级联与全链路检查点**：在底层 `executeDigestRequest`、`withTimeout` 及 fetch 路径全程透传 `signal`；在网络请求发出前、请求返回后、批次落盘前建立多级中止拦截点，确保中止后毫秒级退出且绝不向数据库写入任何脏数据。
+- **历史回溯总输入 Token 预算硬约束 (Backlog Input Token Budget, P2-02 修复)**：
+  - 在全量历史回溯中引入与日常提炼一致的单批次总对话字符上限 (`MAX_TOTAL_CONVERSATION_CHARS = 3500`) 与单条 1000 字符安全压缩，采用逆序优先保留最新完整轮次策略，彻底杜绝超长历史消息撑爆上下文与超额 API 费用。
+- **模块源码版本头与规范统一 (P3 修复)**：
+  - 全面纠正并统一各核心模块源码文件头版本注释（`src/state.js`, `src/extractor.js`, `src/injector.js`, `src/ui.js` 统一升格至 `v0.1.26`）。
+- **测试矩阵扩展至 64 项 (T1-T64 全绿)**：新增针对单聊/群聊排除无关库角色 (T60)、现场叙事角色解耦与循环提权拦截 (T61)、历史回溯请求期间可靠中止防脏数据落盘 (T62)、任务 A 中止后立即启动任务 B 的生命周期隔离 (T63)、历史回溯总字符预算硬约束与压缩 (T64) 的全自动化回归测试。
 
 ### v0.1.25 (P2核心推进：记忆一键升格世界书新词条与智能增量提炼节律)
 

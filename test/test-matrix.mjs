@@ -108,7 +108,9 @@ import {
     triggerAsyncDigest,
     triggerBacklogDigest,
     abortBacklogDigest,
-    findMessageIndexByTurn
+    isBacklogDigestRunning,
+    findMessageIndexByTurn,
+    getContextParticipants
 } from '../src/extractor.js';
 import { renderMemoryCard } from '../src/ui.js';
 import {
@@ -2379,6 +2381,248 @@ Intermediate analysis details...
         await triggerAsyncDigest(false);
         assert.strictEqual(rawCallCount, 1, '达到最大推迟轮数时，即使字数不足也必须执行保底提炼');
         assert.strictEqual(state.last_digest_floor, 22, '保底提炼后楼层推进至 22');
+    });
+
+    // ─────────────────────────────────────────────────────────────
+    // T60: 权威参与者白名单边界加固 (单聊与群聊模式下排除角色库无关角色，P1-01 修复)
+    // ─────────────────────────────────────────────────────────────
+    test('T60: 权威参与者白名单严格隔离 (单聊/群聊模式坚决排除角色库中未参战角色)', () => {
+        // 场景 A: 单聊模式 (1-on-1 Chat)
+        // 角色库包含角色A、角色B、角色C，但当前仅与角色A单聊 (characterId = 0, name2 = '角色A')
+        const singleCtx = {
+            name1: '玩家',
+            name2: '角色A',
+            characterId: 0,
+            groupId: null,
+            characters: [
+                { name: '角色A', avatar: 'charA.png' },
+                { name: '角色B', avatar: 'charB.png' },
+                { name: '角色C', avatar: 'charC.png' }
+            ]
+        };
+
+        const singleParts = getContextParticipants(singleCtx);
+        assert.strictEqual(singleParts.has('玩家'), true, '玩家必须在白名单内');
+        assert.strictEqual(singleParts.has('角色A'), true, '当前激活角色A必须在白名单内');
+        assert.strictEqual(singleParts.has('角色B'), false, '单聊模式下，未参聊的角色B严禁进入白名单');
+        assert.strictEqual(singleParts.has('角色C'), false, '单聊模式下，未参聊的角色C严禁进入白名单');
+
+        // 测试 Schema 拒绝：模型尝试在单聊中为局外角色B建立 private 记忆
+        const payloadB = {
+            new_memories: [{ content: '角色B在暗中监视', type: 'fact', scope: 'character', character: '角色B' }]
+        };
+        const resB = validateExtractedPayload(payloadB, [], singleParts);
+        assert.strictEqual(resB.new_memories.length, 0, '模型为局外角色B生成的私密记忆必须被 ACL 拦截丢弃');
+
+        // 测试 Schema 拒绝：模型尝试在单聊中将记忆分享给局外角色C (known_by)
+        const payloadShared = {
+            new_memories: [{ content: '秘密据点位置', type: 'fact', scope: 'shared', known_by: ['角色A', '角色C'] }]
+        };
+        const resShared = validateExtractedPayload(payloadShared, [], singleParts);
+        assert.strictEqual(resShared.new_memories.length, 0, '共享记忆知情者中包含局外角色C时必须被 ACL 拦截丢弃');
+
+        // 场景 B: 群聊模式 (Group Chat)
+        // 当前群聊包含角色A、角色B，但角色C依然不在群内
+        const groupCtx = {
+            name1: '玩家',
+            groupId: 'group_test_01',
+            groups: [
+                { id: 'group_test_01', name: '探索小队', members: ['charA.png', 'charB.png'] }
+            ],
+            characters: [
+                { name: '角色A', avatar: 'charA.png' },
+                { name: '角色B', avatar: 'charB.png' },
+                { name: '角色C', avatar: 'charC.png' }
+            ]
+        };
+
+        const groupParts = getContextParticipants(groupCtx);
+        assert.strictEqual(groupParts.has('玩家'), true);
+        assert.strictEqual(groupParts.has('角色A'), true, '群成员角色A应在白名单内');
+        assert.strictEqual(groupParts.has('角色B'), true, '群成员角色B应在白名单内');
+        assert.strictEqual(groupParts.has('角色C'), false, '非群成员角色C绝不可进入群白名单');
+    });
+
+    // ─────────────────────────────────────────────────────────────
+    // T61: 现场叙事角色 (in_scene_characters) 与授权凭证彻底解耦，阻断循环提权漏洞 (P1-01 修复)
+    // ─────────────────────────────────────────────────────────────
+    test('T61: 现场叙事角色与授权凭证彻底解耦 (模型生成的现场角色绝不可获得知情权与归属权)', () => {
+        const ctx = {
+            name1: '玩家',
+            name2: '角色A',
+            characterId: 0,
+            groupId: null,
+            characters: [{ name: '角色A' }]
+        };
+
+        // 现场描述中存在模型生成的临时 NPC 与局外人物
+        const stateWithNpc = {
+            scene: {
+                in_scene_characters: ['角色A', '酒馆老板NPC', '神秘黑衣刺客']
+            }
+        };
+
+        const parts = getContextParticipants(ctx, stateWithNpc);
+        assert.strictEqual(parts.has('玩家'), true);
+        assert.strictEqual(parts.has('角色A'), true);
+        assert.strictEqual(parts.has('酒馆老板NPC'), false, '模型现场描述中的 NPC 绝不可被吸收为可信授权者');
+        assert.strictEqual(parts.has('神秘黑衣刺客'), false, '模型生成的现场人物绝不可作为授权凭证');
+
+        // 模型尝试向神秘黑衣刺客赋予已知权 (known_by)
+        const payloadNpc = {
+            new_memories: [
+                {
+                    content: '密道地图在城西古井',
+                    type: 'fact',
+                    scope: 'shared',
+                    known_by: ['角色A', '神秘黑衣刺客']
+                },
+                {
+                    content: '老板私藏假酒',
+                    type: 'fact',
+                    scope: 'character',
+                    character: '酒馆老板NPC'
+                }
+            ]
+        };
+
+        const res = validateExtractedPayload(payloadNpc, [], parts);
+        assert.strictEqual(res.new_memories.length, 0, '模型借由现场名单试图扩大知情权限必须全部被 Fail-Closed 拦截');
+    });
+
+    // ─────────────────────────────────────────────────────────────
+    // T62: 历史回溯在请求执行期间被 abortBacklogDigest() 可靠中止 (P1-02 修复)
+    // ─────────────────────────────────────────────────────────────
+    await testAsync('T62: 历史回溯在请求执行期间被 abortBacklogDigest() 可靠中断并防止脏数据落盘', async () => {
+        const state = getState();
+        state.memories = [];
+        state.last_digest_floor = 0;
+
+        mockContext.chat = [];
+        for (let i = 1; i <= 8; i++) {
+            mockContext.chat.push({ is_user: true, mes: `历史问题 ${i}` });
+            mockContext.chat.push({ is_user: false, name: '角色A', mes: `历史回答 ${i}` });
+        }
+
+        let resolveReq = null;
+        mockContext.generateRaw = () => new Promise(resolve => {
+            resolveReq = resolve;
+        });
+
+        // 启动历史回溯
+        const backlogPromise = triggerBacklogDigest({ fromStart: true, chunkSize: 4 });
+
+        // 验证任务已进入运行态
+        assert.strictEqual(isBacklogDigestRunning(), true, '启动后 isBacklogDigestRunning 应为 true');
+
+        // 在网络请求等待期间，模拟用户点击“中止”按钮
+        abortBacklogDigest();
+        assert.strictEqual(isBacklogDigestRunning(), false, '调用 abort 后 isBacklogDigestRunning 应立即为 false');
+
+        // 随后异步响应返回
+        if (resolveReq) {
+            resolveReq(JSON.stringify({
+                scene: { location: '迟到地点' },
+                new_memories: [{ content: '迟到不应落盘的记忆', type: 'fact', scope: 'world' }]
+            }));
+        }
+
+        const res = await backlogPromise;
+        assert.strictEqual(res.success, false, '中止任务返回 success 必须为 false');
+        assert.strictEqual(res.aborted, true, '中止任务必须明确标记 aborted: true');
+        assert.strictEqual(state.memories.length, 0, '已被中止的批次绝不可向记忆库落盘脏数据');
+        assert.strictEqual(state.last_digest_floor, 0, '已被中止的任务不可推进 floor');
+    });
+
+    // ─────────────────────────────────────────────────────────────
+    // T63: 历史回溯任务 A 中止后立即启动任务 B，生命周期隔离不冲突 (P1-02 修复)
+    // ─────────────────────────────────────────────────────────────
+    await testAsync('T63: 历史回溯任务 A 中止后立即启动任务 B，任务生命周期隔离且旧任务不清除新任务状态', async () => {
+        const state = getState();
+        state.memories = [];
+        state.last_digest_floor = 0;
+
+        mockContext.chat = [
+            { is_user: true, mes: '消息1' },
+            { is_user: false, name: '角色A', mes: '回答1' },
+            { is_user: true, mes: '消息2' },
+            { is_user: false, name: '角色A', mes: '回答2' }
+        ];
+
+        let resolveTaskA = null;
+        mockContext.generateRaw = () => new Promise(resolve => {
+            resolveTaskA = resolve;
+        });
+
+        // 启动任务 A
+        const taskAPromise = triggerBacklogDigest({ fromStart: true, chunkSize: 4 });
+
+        // 中止任务 A
+        abortBacklogDigest();
+
+        // 立即切换为任务 B 的快速响应接口并启动任务 B
+        mockContext.generateRaw = async () => JSON.stringify({
+            scene: { location: '任务B成功地点' },
+            new_memories: [{ content: '任务B沉淀的核心事实', type: 'fact', scope: 'world' }]
+        });
+
+        const taskBPromise = triggerBacklogDigest({ fromStart: true, chunkSize: 4 });
+
+        // 任务 B 正常完成
+        const resB = await taskBPromise;
+        assert.strictEqual(resB.success, true, '任务 B 应当成功执行完成');
+        assert.strictEqual(state.memories.length, 1, '任务 B 的有效记忆应成功写入');
+        assert.strictEqual(state.memories[0].content, '任务B沉淀的核心事实');
+
+        // 模拟任务 A 的延迟响应返回
+        if (resolveTaskA) {
+            resolveTaskA(JSON.stringify({
+                scene: { location: '任务A迟到地点' },
+                new_memories: []
+            }));
+        }
+        const resA = await taskAPromise;
+        assert.strictEqual(resA.aborted, true, '任务 A 应保持中止状态');
+
+        // 验证任务 A 结束时绝未破坏全局状态
+        assert.strictEqual(isBacklogDigestRunning(), false);
+    });
+
+    // ─────────────────────────────────────────────────────────────
+    // T64: 历史回溯批次总对话字符受到 MAX_TOTAL_CONVERSATION_CHARS 严格约束与安全压缩 (P2-02 修复)
+    // ─────────────────────────────────────────────────────────────
+    await testAsync('T64: 历史回溯批次总对话字符受 MAX_TOTAL_CONVERSATION_CHARS 严格预算约束，防上下文膨胀', async () => {
+        const state = getState();
+        state.memories = [];
+        state.last_digest_floor = 0;
+
+        // 构建 10 条超长消息 (单条 800 字符，总字数达 8000 字符)
+        mockContext.chat = [];
+        for (let i = 1; i <= 10; i++) {
+            const longText = `[超长叙事段落 ${i}] ` + '一段极为详尽的古代战役长篇叙述与对话细节内容。'.repeat(60);
+            mockContext.chat.push({ is_user: i % 2 === 1, name: '角色A', mes: longText });
+        }
+
+        let capturedPrompt = '';
+        mockContext.generateRaw = async ({ prompt }) => {
+            capturedPrompt = prompt;
+            return JSON.stringify({
+                scene: { location: '压缩测试场景' },
+                new_memories: []
+            });
+        };
+
+        const res = await triggerBacklogDigest({ fromStart: true, chunkSize: 10 });
+        assert.strictEqual(res.success, true);
+
+        // 提取 prompt 中注入的对话记录部分
+        const match = capturedPrompt.match(/=== BEGIN UNTRUSTED DIALOGUE TRACE ===([\s\S]*?)=== END UNTRUSTED DIALOGUE TRACE ===/);
+        assert.ok(match, 'Prompt 应包含对话追踪区');
+        const extractedDialogue = match[1].trim();
+
+        // 验证总字符数被限制在 3500 左右 (加上角色名标签前缀不会超过 4500)
+        assert(extractedDialogue.length <= 4500, `回溯批次对话总字数应受安全上限保护 (实际为 ${extractedDialogue.length} 字符，严禁达 8000 字符)`);
+        assert(extractedDialogue.includes('[中间叙事已压缩]'), '超长单条消息应包含压缩标记');
     });
 
     console.log(`\n======================================================`);

@@ -1,5 +1,5 @@
 /**
- * 提炼引擎 (v0.1.12)
+ * 提炼引擎 (v0.1.26)
  * 严格落实：状态版本并发保护 (state_revision)、独立API/generateRaw自包含请求、严格拒绝型 Schema 验证、知情者权威名单白名单核验、显式生命周期流转、知情范围隔离与高阶宏观归并 (Consolidation)
  */
 
@@ -13,32 +13,68 @@ function getContext() {
 /**
  * 获取当前场景与会话的可信参与者名单 (Trusted Participants)
  * 用于对提炼产出的 known_by 和归属角色进行权威边界白名单校验
+ *
+ * 核心安全纪律 (ACL Invariant):
+ * 1. 单聊模式：仅包含玩家 (name1) 与当前激活角色 (name2 或 characters[characterId])。严禁将角色库中未参战的其他角色混入！
+ * 2. 群聊模式：仅包含玩家 (name1) 与当前群组真实成员 (通过 groupId 索引 groups[groupId].members 解析出的角色)。
+ * 3. 严禁将模型生成的现场名单 (state.scene.in_scene_characters) 纳入授权凭证！防范循环越权漏洞。
  */
 export function getContextParticipants(c, state = null) {
     const participants = new Set();
-    if (c) {
-        if (c.name1 && typeof c.name1 === 'string' && c.name1.trim()) {
-            participants.add(c.name1.trim());
-        }
-        if (c.name2 && typeof c.name2 === 'string' && c.name2.trim()) {
-            participants.add(c.name2.trim());
-        }
-        if (Array.isArray(c.characters)) {
-            c.characters.forEach(ch => {
-                if (ch && typeof ch.name === 'string' && ch.name.trim()) {
-                    participants.add(ch.name.trim());
+    if (!c) return participants;
+
+    // 1. 玩家身份 (User)
+    if (c.name1 && typeof c.name1 === 'string' && c.name1.trim()) {
+        participants.add(c.name1.trim());
+    }
+
+    // 2. 检查是否为群聊 (Group Chat)
+    // SillyTavern 群聊特征：存在 c.groupId 且匹配 c.groups 中的群组定义
+    const isGroupChat = Boolean(c.groupId);
+    if (isGroupChat && Array.isArray(c.groups)) {
+        const activeGroup = c.groups.find(g => String(g.id) === String(c.groupId));
+        if (activeGroup && Array.isArray(activeGroup.members)) {
+            const memberSet = new Set(activeGroup.members.map(m => String(m).trim().toLowerCase()));
+            if (Array.isArray(c.characters)) {
+                c.characters.forEach(ch => {
+                    if (ch && typeof ch.name === 'string' && ch.name.trim()) {
+                        const avatarName = String(ch.avatar || '').trim().toLowerCase();
+                        const charName = ch.name.trim().toLowerCase();
+                        if (memberSet.has(avatarName) || memberSet.has(charName)) {
+                            participants.add(ch.name.trim());
+                        }
+                    }
+                });
+            }
+            // 兼容 group.members 直接存储角色名字的情形 (无后缀)
+            activeGroup.members.forEach(m => {
+                if (typeof m === 'string' && m.trim() && !m.includes('.')) {
+                    participants.add(m.trim());
                 }
             });
         }
-    }
-    const s = state || getState?.();
-    if (s && s.scene && Array.isArray(s.scene.in_scene_characters)) {
-        s.scene.in_scene_characters.forEach(name => {
-            if (typeof name === 'string' && name.trim()) {
-                participants.add(name.trim());
+    } else {
+        // 3. 单聊模式 (1-on-1 Chat):
+        // 严格仅认可当前会话激活的角色 (name2 或 characters[characterId])
+        // 严禁将用户角色库 (characters) 中未参战的其他角色混入！
+        if (c.name2 && typeof c.name2 === 'string' && c.name2.trim()) {
+            participants.add(c.name2.trim());
+        } else if (Array.isArray(c.characters) && c.characterId !== undefined && c.characters[c.characterId]) {
+            const activeChar = c.characters[c.characterId];
+            if (activeChar && typeof activeChar.name === 'string' && activeChar.name.trim()) {
+                participants.add(activeChar.name.trim());
             }
-        });
+        }
     }
+
+    // 兜底保护：若环境仅有单一角色对象且未标明 name2/characterId
+    if (participants.size <= 1 && Array.isArray(c.characters) && c.characters.length === 1) {
+        const onlyChar = c.characters[0];
+        if (onlyChar?.name && typeof onlyChar.name === 'string' && onlyChar.name.trim()) {
+            participants.add(onlyChar.name.trim());
+        }
+    }
+
     return participants;
 }
 
@@ -568,26 +604,59 @@ export function extractAndApplySyncTag(rawText) {
 const DIGEST_REQUEST_TIMEOUT_MS = 45000; // P2-03: 45秒提炼请求硬超时，防并发锁长久挂起
 const TEST_CONNECTION_TIMEOUT_MS = 15000; // P2-03: 15秒接口连通性测试超时
 
-export function withTimeout(startRequest, timeoutMs, label) {
+/**
+ * 包装带超时与主动中止控制的 Promise
+ * 注：原生酒馆接口 (c.generateRaw / c.generateQuietPrompt) 本身不提供宿主底层的 cancellation handle，
+ * 此处超时或中止时立即向调用方拒绝 (reject) 并释放任务锁，确保后续任务不被挂起阻断；
+ * 自定义 fetch API 则会通过绑定的 AbortController 真正终止网络传输。
+ */
+export function withTimeout(startRequest, timeoutMs, label, abortSignal = null) {
     return new Promise((resolve, reject) => {
         let settled = false;
+        let onAbort = null;
+
+        const cleanup = () => {
+            clearTimeout(timeoutId);
+            if (onAbort && abortSignal) {
+                try { abortSignal.removeEventListener('abort', onAbort); } catch {}
+            }
+        };
+
         const timeoutId = setTimeout(() => {
             if (settled) return;
             settled = true;
+            cleanup();
             reject(new Error(`${label}超时 (超过 ${timeoutMs / 1000} 秒未响应)`));
         }, timeoutMs);
+
+        if (abortSignal) {
+            if (abortSignal.aborted) {
+                settled = true;
+                cleanup();
+                return reject(new Error(`${label}已被中止取消`));
+            }
+            onAbort = () => {
+                if (settled) return;
+                settled = true;
+                cleanup();
+                reject(new Error(`${label}已被用户手动中止取消`));
+            };
+            try {
+                abortSignal.addEventListener('abort', onAbort, { once: true });
+            } catch {}
+        }
 
         Promise.resolve()
             .then(startRequest)
             .then(value => {
                 if (settled) return;
                 settled = true;
-                clearTimeout(timeoutId);
+                cleanup();
                 resolve(value);
             }, error => {
                 if (settled) return;
                 settled = true;
-                clearTimeout(timeoutId);
+                cleanup();
                 reject(error);
             });
     });
@@ -629,7 +698,11 @@ export function filterMemoriesForDigest(memories, {
  * 2. 否则优先调用酒馆 context.generateRaw 发送单轮自包含 Prompt (不带全量聊天历史，杜绝 DeepSeek reasoning_content 错误)
  * 3. 兜底回退至 context.generateQuietPrompt
  */
-async function executeDigestRequest(c, digestPrompt, settings) {
+async function executeDigestRequest(c, digestPrompt, settings, abortSignal = null) {
+    if (abortSignal?.aborted) {
+        throw new Error('提炼请求已被主动中止');
+    }
+
     // 方案 A: 独立 API 直连 (彻底解耦)
     if (settings?.useCustomApi && settings?.customApiUrl) {
         let baseUrl = settings.customApiUrl.trim().replace(/\/+$/, '');
@@ -646,6 +719,14 @@ async function executeDigestRequest(c, digestPrompt, settings) {
         const timeoutId = setTimeout(() => {
             controller.abort();
         }, DIGEST_REQUEST_TIMEOUT_MS);
+
+        let onExternalAbort = null;
+        if (abortSignal) {
+            onExternalAbort = () => controller.abort();
+            try {
+                abortSignal.addEventListener('abort', onExternalAbort, { once: true });
+            } catch {}
+        }
 
         try {
             const res = await fetch(targetUrl, {
@@ -672,12 +753,18 @@ async function executeDigestRequest(c, digestPrompt, settings) {
             if (!content) throw new Error('独立 API 返回内容为空');
             return content;
         } catch (fetchErr) {
+            if (abortSignal?.aborted) {
+                throw new Error('提炼请求已被用户主动中止');
+            }
             if (fetchErr.name === 'AbortError') {
                 throw new Error(`独立提炼 API 请求超时 (超过 ${DIGEST_REQUEST_TIMEOUT_MS / 1000} 秒未响应)`);
             }
             throw fetchErr;
         } finally {
             clearTimeout(timeoutId);
+            if (onExternalAbort && abortSignal) {
+                try { abortSignal.removeEventListener('abort', onExternalAbort); } catch {}
+            }
         }
     }
 
@@ -686,7 +773,8 @@ async function executeDigestRequest(c, digestPrompt, settings) {
         return await withTimeout(
             () => c.generateRaw({ prompt: digestPrompt, responseLength: 2048 }),
             DIGEST_REQUEST_TIMEOUT_MS,
-            '原生 generateRaw 提炼请求'
+            '原生 generateRaw 提炼请求',
+            abortSignal
         );
     }
 
@@ -695,7 +783,8 @@ async function executeDigestRequest(c, digestPrompt, settings) {
         return await withTimeout(
             () => c.generateQuietPrompt({ quietPrompt: digestPrompt, responseLength: 2048, removeReasoning: true }),
             DIGEST_REQUEST_TIMEOUT_MS,
-            '原生 generateQuietPrompt 提炼请求'
+            '原生 generateQuietPrompt 提炼请求',
+            abortSignal
         );
     }
 
@@ -1449,12 +1538,15 @@ export function findMessageIndexByTurn(chat, targetTurn) {
 }
 
 let isBacklogRunning = false;
-let backlogAbortController = null;
+let backlogTaskIdCounter = 0;
+let currentBacklogTask = null; // { id: number, controller: AbortController, aborted: boolean }
 
 export function abortBacklogDigest() {
-    if (backlogAbortController) {
-        backlogAbortController.abort();
-        backlogAbortController = null;
+    if (currentBacklogTask) {
+        currentBacklogTask.aborted = true;
+        try {
+            currentBacklogTask.controller.abort();
+        } catch {}
     }
     isBacklogRunning = false;
     console.log(`[${MODULE_NAME}] [Backlog] 用户已请求中断全量历史提炼任务`);
@@ -1493,8 +1585,14 @@ export async function triggerBacklogDigest(options = {}) {
         return { success: false, reason: '无法获取有效会话标识' };
     }
 
+    const taskId = ++backlogTaskIdCounter;
+    const task = {
+        id: taskId,
+        controller: new AbortController(),
+        aborted: false
+    };
+    currentBacklogTask = task;
     isBacklogRunning = true;
-    backlogAbortController = new AbortController();
 
     const fromStart = Boolean(options.fromStart);
     const chunkSize = Math.max(4, Math.min(16, Number(options.chunkSize) || 8));
@@ -1509,7 +1607,10 @@ export async function triggerBacklogDigest(options = {}) {
 
     const totalMessages = chat.length;
     if (startMsgIdx >= totalMessages - 1) {
-        isBacklogRunning = false;
+        if (currentBacklogTask?.id === taskId) {
+            isBacklogRunning = false;
+            currentBacklogTask = null;
+        }
         return { success: true, batchesProcessed: 0, totalMemories: state.memories.length, reason: '当前历史均已提炼完成，无新增未消化轮次' };
     }
 
@@ -1530,18 +1631,22 @@ export async function triggerBacklogDigest(options = {}) {
     }
 
     if (batches.length === 0) {
-        isBacklogRunning = false;
+        if (currentBacklogTask?.id === taskId) {
+            isBacklogRunning = false;
+            currentBacklogTask = null;
+        }
         return { success: true, batchesProcessed: 0, totalMemories: state.memories.length, reason: '未生成有效批次' };
     }
 
     console.log(`[${MODULE_NAME}] [Backlog] 启动历史全量提炼: 会话 ${startChatId}, 起始消息 ${startMsgIdx}, 消息总数 ${totalMessages}, 共划分为 ${batches.length} 个递进批次`);
 
     let batchesProcessed = 0;
+    const isAborted = () => task.aborted || task.controller.signal.aborted;
 
     try {
         for (let i = 0; i < batches.length; i++) {
             // 检查取消信号
-            if (backlogAbortController?.signal.aborted) {
+            if (isAborted()) {
                 console.log(`[${MODULE_NAME}] [Backlog] 任务已被用户中止 (已完成 ${batchesProcessed}/${batches.length} 批)`);
                 return { success: false, aborted: true, batchesProcessed, totalMemories: getState().memories.length, reason: '任务已被用户中止' };
             }
@@ -1556,16 +1661,25 @@ export async function triggerBacklogDigest(options = {}) {
             const batch = batches[i];
             const batchSlice = chat.slice(batch.start, batch.end);
 
-            // 格式化当前批次的对话文本
+            // 格式化当前批次的对话文本 (P2-02 修复：单批总对话字符预算约束，逆序优先保留最新)
             const MAX_SINGLE_MSG_CHARS = 1000;
+            const MAX_TOTAL_CONVERSATION_CHARS = 3500;
             const formattedMsgs = [];
-            for (const m of batchSlice) {
+            let accumulatedChars = 0;
+
+            for (let j = batchSlice.length - 1; j >= 0; j--) {
+                const m = batchSlice[j];
                 const sender = m.is_user ? (c.name1 || 'User') : (m.name || 'AI');
                 let rawMes = typeof m.mes === 'string' ? m.mes.trim() : '';
                 if (rawMes.length > MAX_SINGLE_MSG_CHARS) {
                     rawMes = rawMes.slice(0, 600) + '\n...[中间叙事已压缩]...\n' + rawMes.slice(-300);
                 }
-                formattedMsgs.push(`[${sender}]: ${rawMes}`);
+                const formatted = `[${sender}]: ${rawMes}`;
+                if (accumulatedChars + formatted.length > MAX_TOTAL_CONVERSATION_CHARS && formattedMsgs.length >= 2) {
+                    break;
+                }
+                formattedMsgs.unshift(formatted);
+                accumulatedChars += formatted.length;
             }
             const conversationText = formattedMsgs.join('\n\n');
 
@@ -1660,13 +1774,28 @@ ${conversationText}
   ]
 }`;
 
-            const response = await executeDigestRequest(c, digestPrompt, settings);
+            let response = null;
+            try {
+                response = await executeDigestRequest(c, digestPrompt, settings, task.controller.signal);
+            } catch (reqErr) {
+                if (isAborted()) {
+                    console.log(`[${MODULE_NAME}] [Backlog] 请求异常期间检测到任务已被用户中止`);
+                    return { success: false, aborted: true, batchesProcessed, totalMemories: getState().memories.length, reason: '任务已被用户中止' };
+                }
+                console.warn(`[${MODULE_NAME}] [Backlog] 批次 ${i + 1} 请求失败: ${reqErr.message}，跳过本批`);
+                continue;
+            }
+
             if (!response) {
                 console.warn(`[${MODULE_NAME}] [Backlog] 批次 ${i + 1} 未收到有效回复，跳过本批`);
                 continue;
             }
 
-            // 再次验证会话是否发生切换
+            // 再次验证会话是否发生切换与取消
+            if (isAborted()) {
+                console.log(`[${MODULE_NAME}] [Backlog] 批次 ${i + 1} 请求返回后检测到任务已被用户中止，丢弃本批结果`);
+                return { success: false, aborted: true, batchesProcessed, totalMemories: getState().memories.length, reason: '任务已被用户中止' };
+            }
             if (getChatIdentifier(c) !== startChatId) {
                 return { success: false, aborted: true, batchesProcessed, totalMemories: getState().memories.length, reason: '切换会话安全中断' };
             }
@@ -1680,6 +1809,9 @@ ${conversationText}
             }
 
             if (isQuietDigestPayload(rawPayload)) {
+                if (isAborted()) {
+                    return { success: false, aborted: true, batchesProcessed, totalMemories: getState().memories.length, reason: '任务已被用户中止' };
+                }
                 const turnAtBatchEnd = getChatTurnCount(chat.slice(0, batch.end));
                 const quietSummary = unwrapJsonPayload(rawPayload)?.summary || '阶段情境平稳，无新增记忆';
                 batchUpdate(() => {
@@ -1697,6 +1829,9 @@ ${conversationText}
             const payload = validateExtractedPayload(rawPayload, curState.memories || [], participants);
 
             if (payload) {
+                if (isAborted()) {
+                    return { success: false, aborted: true, batchesProcessed, totalMemories: getState().memories.length, reason: '任务已被用户中止' };
+                }
                 const turnAtBatchEnd = getChatTurnCount(chat.slice(0, batch.end));
                 let batchSummary = '';
 
@@ -1730,6 +1865,10 @@ ${conversationText}
             }
         }
 
+        if (isAborted()) {
+            return { success: false, aborted: true, batchesProcessed, totalMemories: getState().memories.length, reason: '任务已被用户中止' };
+        }
+
         const finalState = getState();
         finalState.last_digest_summary = `全量历史提炼完成：共消化 ${batchesProcessed}/${batches.length} 批次，当前共 ${finalState.memories.length} 条记忆`;
         saveCurrentState();
@@ -1756,7 +1895,9 @@ ${conversationText}
             totalMemories: finalState.memories.length
         };
     } finally {
-        isBacklogRunning = false;
-        backlogAbortController = null;
+        if (currentBacklogTask?.id === taskId) {
+            isBacklogRunning = false;
+            currentBacklogTask = null;
+        }
     }
 }
