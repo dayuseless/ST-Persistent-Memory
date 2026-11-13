@@ -182,15 +182,42 @@ export function isQuietDigestPayload(raw) {
 }
 
 /**
+ * 思考型推理模型 (DeepSeek-R1, QwQ, Claude thinking 等) 思维链深度清洗器
+ * 1. 完整闭合思考标签：<think>...</think>, <thought>...</thought>, <thinking>...</thinking>, [Thinking Process: ...] 等
+ * 2. Markdown 块级思考标签：```thought ... ```
+ * 3. 未闭合思考标签：当 <think> 未闭合但后续包含合法的 JSON 起始括号 '{' 时，精准保留 JSON；无 JSON 时整段剥除
+ */
+export function stripThinkingTags(raw) {
+    if (!raw || typeof raw !== 'string') return '';
+    let text = raw.trim();
+
+    // 1. 剥离标准闭合的思维链标签
+    text = text.replace(/<(?:think|thought|thinking)>[\s\S]*?<\/(?:think|thought|thinking)>/gi, '');
+    text = text.replace(/```(?:thought|thinking)[\s\S]*?```/gi, '');
+    text = text.replace(/\[(?:Thinking Process|Thinking|思考过程)[\s\S]*?\]/gi, '');
+
+    // 2. 处理未闭合的思考标签 (例如模型直接输出 <think> 后因 Token 限制或粗心未闭合即输出主体)
+    if (/<(?:think|thought|thinking)>/i.test(text)) {
+        // 查找是否在未闭合标签之后存在有效的 JSON 或 Markdown 代码块起始
+        const jsonMatch = text.search(/```(?:json)?\s*\{|\{/i);
+        if (jsonMatch !== -1) {
+            text = text.substring(jsonMatch);
+        } else {
+            text = text.replace(/<(?:think|thought|thinking)>[\s\S]*$/gi, '');
+        }
+    }
+
+    return text.trim();
+}
+
+/**
  * 鲁棒的 JSON 清洗与边界解析器
  */
 export function cleanAndParseJson(raw) {
     if (!raw || typeof raw !== 'string') return null;
 
-    let text = raw.trim();
-
-    // 1. 剥离思考链标签 (如 DeepSeek R1 / Claude thinking，兼容未闭合的 <think>)
-    text = text.replace(/<think>[\s\S]*?(?:<\/think>|$)/gi, '').trim();
+    // 1. 剥离思考链与推理标签 (兼容 DeepSeek-R1 / QwQ / Claude thinking 及未闭合思考标签)
+    let text = stripThinkingTags(raw);
 
     // 2. 优先提取 Markdown 代码块内部内容 (```json ... ```)，兼容截断未闭合的代码块
     const codeBlockMatch = text.match(/```(?:json)?\s*([\s\S]*?)\s*```/i);
@@ -896,6 +923,7 @@ export async function triggerAsyncDigest(force = false) {
 9. 【严格标准 JSON 与双引号防破坏】：
    - 输出必须是严格合法的标准 JSON，不得有末尾多余逗号。
    - content、action 等字符串内部如果出现角色台词或对话引用，务必使用中文全角引号（“...”）或反斜杠转义（\"），严禁输出未转义的双引号破坏 JSON 语法结构。
+10. 【推理与思考模型指引 (DeepSeek-R1 / QwQ 等)】：若为具备思维链能力的推理模型，请保持内部思考高度紧凑，最终务必严格输出标准 JSON 对象，禁止在 JSON 外输出任何多余闲聊。
 
 【已有现场状态】：
 ${currentScene}
@@ -1062,7 +1090,7 @@ function applyExtractedData(payload, floor = 0) {
 
         // 1. PATCH 语义更新现场快照 (精准区分继承与清空)
         if (payload.scene && typeof payload.scene === 'object') {
-            updateScene(payload.scene);
+            updateScene(payload.scene, '模型提炼');
             sceneUpdated = true;
         }
 

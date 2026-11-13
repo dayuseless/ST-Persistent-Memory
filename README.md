@@ -1,6 +1,6 @@
 # SillyTavern 持续记忆插件 (ST-Persistent-Memory)
 
-[![Version](https://img.shields.io/badge/version-v0.1.23-blue.svg)](https://github.com/dayuseless/ST-Persistent-Memory)
+[![Version](https://img.shields.io/badge/version-v0.1.24-blue.svg)](https://github.com/dayuseless/ST-Persistent-Memory)
 [![SillyTavern](https://img.shields.io/badge/SillyTavern-1.12.0+-purple.svg)](https://github.com/SillyTavern/SillyTavern)
 [![License](https://img.shields.io/badge/license-MIT-green.svg)](LICENSE)
 
@@ -77,7 +77,7 @@
 
 ### 方式二：手动离线包安装
 
-1. 从 [Releases 页面](https://github.com/dayuseless/ST-Persistent-Memory/releases) 下载 `ST-Persistent-Memory-v0.1.23.zip`。
+1. 从 [Releases 页面](https://github.com/dayuseless/ST-Persistent-Memory/releases) 下载 `ST-Persistent-Memory-v0.1.24.zip`。
 2. 解压到 SillyTavern 的扩展目录中：
    ```text
    SillyTavern/public/scripts/extensions/third-party/ST-Persistent-Memory/
@@ -166,6 +166,24 @@ window.__persistentMemory.digestNow();
 - **中途启用智能引导与交互横幅 (Smart Mid-Chat Onboarding)**：当检测到会话已有较长历史（$\ge 6$ 条消息）但记忆库为空时，HUD 顶部自动展示友好的智能引导横幅，支持一键点击启动全量回溯；控制台顶部新增“回溯提炼”快捷按钮，自由选择“从头全量提炼”或“增量补全未消化历史”。
 - **实时进度反馈与随时安全中止 (Live Progress & Abort Guard)**：回溯执行期间，HUD 实时呈现带旋转动效的百分比进度条、批次计数与已沉淀记忆数；提供一键“中止”按钮与会话切换自动熔断拦截，绝不发生跨会话污染或挂死。
 - **测试矩阵扩展至 41 项 (T1-T41 全绿)**：新增针对对话轮次回退自愈校准 (T40) 与全量历史分块回溯多批次递进提炼 (T41) 的自动化测试覆盖。
+
+### v0.1.24 (P1核心增强：现场快照时光机、思考型推理模型适配与自定义注入模板)
+
+- **现场快照时光机与一键回滚 (Snapshot History & Rollback)**：
+  - 内部自动维护最近 10 次快照变更历史栈，具备连续变更去重保护与原因追踪（记录模型提炼、手动保存等来源）。
+  - HUD 现场快照面板增加 **“↩ 撤销回滚”** 专属按钮与当前历史版本计数，支持一键秒级还原至上一快照。
+  - 提供可折叠的 **“快照时光机”** 历史版本列表，实时预览历史版本地点、动作、轮次与时间戳，支持一键将现场恢复至任意历史快照，彻底根治模型脑补与幻觉导致的情境偏移。
+- **思考型推理模型 (`<think>`) 深度适配与防截断自愈 (Reasoning Model Adaptation)**：
+  - 新增深度思考链清洗器 `stripThinkingTags`，原生适配 DeepSeek-R1、QwQ、Claude 等前沿思考推理模型，自动彻底清洗各类 `<think>`、`<thought>`、`[Thinking Process: ...]` 等思维链标签。
+  - 智能未闭合思考标签自愈：若模型因 Token 限制或截断未输出 `</think>` 但输出了合法 JSON，清洗器精准定位 JSON 起始，绝不吞没有效数据。
+  - 优化提炼 System Prompt，指引具备思维链的模型保持内部推导紧凑，确保 100% 聚焦输出合法标准 JSON。
+- **自定义提示词注入格式模板 (Custom Injection Templates)**：
+  - 在设置面板与原生扩展抽屉新增 **提示词注入格式模板选择器**，支持 4 种模板无缝切换：
+    - 🇨🇳 **标准中文 Standard**（默认，经典中文 RP 首选）
+    - 🏷️ **结构化 XML**（`<persistent_memory><scene_state>...</scene_state><active_memories>...</active_memories></persistent_memory>`，推荐 Claude 3.5 Sonnet / GPT-4o，标签遵守度极佳）
+    - 🇬🇧 **英文原生 English**（`[Current Scene State]`, `Location:`, `Statement/Promise:`, 原生英文前缀，绝不带偏英文角色卡语言）
+    - ⚡ **极简紧凑 Compact**（去掉多余装饰行与空隙，极致节省 Token 开销）
+- **测试矩阵扩展至 57 项 (T1-T57 全绿)**：新增针对现场快照时光机入栈与回滚 (T55)、思考型模型标签清洗与未闭合自愈 (T56)、自定义注入格式模板渲染与预算自洽 (T57) 的全自动化测试覆盖。
 
 ### v0.1.23 (P0交互增强：实时搜索、批量管理、主流API预设与动态预算弹性扩容)
 

@@ -55,7 +55,8 @@ import {
     MEMORY_LIFECYCLE,
     MEMORY_SCOPE,
     DEFAULT_SETTINGS,
-    DEFAULT_STATE
+    DEFAULT_STATE,
+    INJECTION_TEMPLATES
 } from '../src/config.js';
 
 import {
@@ -76,7 +77,11 @@ import {
     saveCurrentState,
     getActiveWorldBookInfo,
     syncMemoryDeltaToWorldInfo,
-    applyInactivitySleep
+    applyInactivitySleep,
+    rollbackScene,
+    restoreSceneSnapshot,
+    getSceneHistory,
+    pushSceneSnapshot
 } from '../src/state.js';
 
 import {
@@ -88,6 +93,7 @@ import {
 
 import {
     cleanAndParseJson,
+    stripThinkingTags,
     repairTruncatedJson,
     unwrapJsonPayload,
     isQuietDigestPayload,
@@ -2024,6 +2030,199 @@ async function runTests() {
 
         // 还原默认设置
         updateSettings({ maxTotalMemoryTokens: 450, maxPinnedCount: 5, maxTriggeredCount: 5 });
+    });
+
+    // ─────────────────────────────────────────────────────────────
+    // T55: 现场快照时光机历史栈入栈、去重、一键回滚与指定历史版本恢复 (P1 核心)
+    // ─────────────────────────────────────────────────────────────
+    test('T55: 现场快照时光机历史栈入栈、去重、一键回滚与指定历史版本恢复', () => {
+        mockContext.chatMetadata = {
+            [MODULE_NAME]: JSON.parse(JSON.stringify(DEFAULT_STATE))
+        };
+        loadCurrentState();
+
+        const s = getState();
+        // 初始快照
+        updateScene({
+            location: '清幽竹林',
+            time: '清晨',
+            action: '两人漫步在竹林小径上'
+        }, '初始设定');
+
+        assert.strictEqual(s.scene.location, '清幽竹林');
+        assert.strictEqual(s.scene_history.length, 0, '初始第一次快照尚未发生变更，历史栈为空');
+
+        // 第二次快照变更（触发第一次历史入栈）
+        updateScene({
+            location: '荒废破庙',
+            time: '午后阴雨',
+            action: '两人推开破庙大门躲雨'
+        }, '手动保存');
+
+        assert.strictEqual(s.scene.location, '荒废破庙');
+        assert.strictEqual(s.scene_history.length, 1, '发生实质变更后，先前的快照应入栈历史');
+        assert.strictEqual(s.scene_history[0].scene.location, '清幽竹林');
+
+        // 重复相同内容，不应入栈
+        updateScene({
+            location: '荒废破庙',
+            time: '午后阴雨',
+            action: '两人推开破庙大门躲雨'
+        }, '重复保存');
+        assert.strictEqual(s.scene_history.length, 1, '无实质变更的更新绝不重复入栈历史栈');
+
+        // 第三次变更（模拟模型提炼）
+        updateScene({
+            action: '在佛像后发现了刻着文字的暗格'
+        }, '模型提炼');
+        assert.strictEqual(s.scene.action, '在佛像后发现了刻着文字的暗格');
+        assert.strictEqual(s.scene_history.length, 2);
+        assert.strictEqual(s.scene_history[1].scene.action, '两人推开破庙大门躲雨');
+
+        // 执行一键撤销回滚 (Rollback)
+        const rollRes = rollbackScene();
+        assert.ok(rollRes.success, '回滚应成功');
+        assert.strictEqual(s.scene.action, '两人推开破庙大门躲雨', '回滚后动作应恢复为上一版本');
+        assert.strictEqual(s.scene_history.length, 1, '回滚后历史栈顶应被弹出');
+
+        // 测试指定版本恢复 (Restore)
+        const restRes = restoreSceneSnapshot(0);
+        assert.ok(restRes.success, '恢复指定索引应成功');
+        assert.strictEqual(s.scene.location, '清幽竹林', '应成功恢复为最初的竹林快照');
+    });
+
+    // ─────────────────────────────────────────────────────────────
+    // T56: 思考型推理模型思维链清洗与未闭合 <think> 自愈 (P1 核心)
+    // ─────────────────────────────────────────────────────────────
+    test('T56: 思考型模型 (<think>) 深度清洗、未闭合思考标签自愈与多类型思维链免疫', () => {
+        // 场景 1: 标准完整闭合思考链 <think>...</think>
+        const r1Output = `
+<think>
+用户想要从对话中提取关键情境。
+当前发生的事件是：双方在聚宝阁进行了灵石交割。
+地点：聚宝阁内堂。
+动作：李四将储物袋递给张三。
+</think>
+\`\`\`json
+{
+  "scene": {
+    "location": "聚宝阁内堂",
+    "action": "李四将装有五千灵石的储物袋递给张三"
+  },
+  "new_memories": [
+    {
+      "type": "fact",
+      "content": "李四在聚宝阁向张三交付了五千灵石",
+      "scope": "world"
+    }
+  ]
+}
+\`\`\`
+`;
+        const p1 = cleanAndParseJson(r1Output);
+        assert.ok(p1, '闭合的 <think> 思维链应被干净剥离并成功解析 JSON');
+        assert.strictEqual(p1.scene.location, '聚宝阁内堂');
+        assert.strictEqual(p1.new_memories[0].content, '李四在聚宝阁向张三交付了五千灵石');
+
+        // 场景 2: 未闭合的 <think> 标签（因 Token 紧张或截断未输出 </think>，但已输出了 JSON 起始）
+        const unclosedThinkOutput = `
+<think>
+正在分析对话...
+这里需要更新现场快照和新增事实。
+{
+  "scene": {
+    "location": "落日森林外围",
+    "action": "三人背靠背警惕着周围林中的异响"
+  }
+}
+`;
+        const p2 = cleanAndParseJson(unclosedThinkOutput);
+        assert.ok(p2, '未闭合的 <think> 标签应智能定位 JSON 起始，绝不吞没后续合法数据');
+        assert.strictEqual(p2.scene.location, '落日森林外围');
+
+        // 场景 3: 包含 [Thinking Process: ...] 与 \`\`\`thought ... \`\`\` 的变种
+        const variantOutput = `
+[Thinking Process: Step 1 extract entities. Step 2 format JSON.]
+\`\`\`thought
+Intermediate analysis details...
+\`\`\`
+{
+  "scene": {
+    "action": "双方在城门前依依惜别"
+  }
+}
+`;
+        const p3 = cleanAndParseJson(variantOutput);
+        assert.ok(p3, '多变种思考标记应被完全过滤');
+        assert.strictEqual(p3.scene.action, '双方在城门前依依惜别');
+    });
+
+    // ─────────────────────────────────────────────────────────────
+    // T57: 自定义提示词注入模板 (XML, English, Compact, Standard) (P1 核心)
+    // ─────────────────────────────────────────────────────────────
+    test('T57: 自定义注入格式模板 (XML, English, Compact, Standard) 正确渲染与 Token 预算自洽', () => {
+        mockContext.chatMetadata = {
+            [MODULE_NAME]: JSON.parse(JSON.stringify(DEFAULT_STATE))
+        };
+        mockContext.chat = [
+            { is_user: true, mes: '我们去山顶看日出吧！' },
+            { is_user: false, name: '角色A', mes: '好的，我们一起去山顶看日出。' }
+        ];
+        loadCurrentState();
+
+        batchUpdate(() => {
+            const s = getState();
+            s.scene = {
+                location: '青云峰顶',
+                time: '拂晓微光',
+                action: '角色A与玩家并肩坐在岩石上远眺云海',
+                tension: '宁静祥和',
+                in_scene_characters: ['角色A', '玩家']
+            };
+            s.memories = [
+                {
+                    id: 'mem_t57_01',
+                    type: 'statement',
+                    content: '角色A曾向玩家许诺会永远守护云海的安宁',
+                    scope: 'world',
+                    status: MEMORY_STATUS.TRIGGERED,
+                    lifecycle: MEMORY_LIFECYCLE.ACTIVE,
+                    trigger_keys: ['山顶', '日出']
+                }
+            ];
+        });
+
+        // 1. 结构化 XML 模板
+        updateSettings({ enabled: true, injectionTemplate: 'xml', maxTotalMemoryTokens: 600 });
+        const xmlPrompt = buildAndInjectMemoryPrompt();
+        assert.ok(xmlPrompt.includes('<persistent_memory>'), 'XML 模板必须包含 <persistent_memory> 根标签');
+        assert.ok(xmlPrompt.includes('<scene_state>'), 'XML 模板必须包含 <scene_state> 标签');
+        assert.ok(xmlPrompt.includes('<location>青云峰顶</location>'), 'XML 模板必须包含 <location> 标签');
+        assert.ok(xmlPrompt.includes('<active_memories>'), 'XML 模板必须包含 <active_memories> 标签');
+        assert.ok(xmlPrompt.includes('type="statement"'), 'XML 模板记忆标签应携带 type 属性');
+        assert.ok(xmlPrompt.includes('</persistent_memory>'), 'XML 模板必须正确闭合根标签');
+
+        // 2. 英文原生模板 (English RP)
+        updateSettings({ injectionTemplate: 'english' });
+        const engPrompt = buildAndInjectMemoryPrompt();
+        assert.ok(engPrompt.includes('### Persistent Memory (Context & State)'), '英文模板必须采用原生英文标题');
+        assert.ok(engPrompt.includes('[Current Scene State]'), '英文模板快照头应为 [Current Scene State]');
+        assert.ok(engPrompt.includes('- Location: 青云峰顶'), '英文模板字段前缀应为英文');
+        assert.ok(engPrompt.includes('- [Statement/Promise]'), '英文模板前缀应为 Statement/Promise');
+
+        // 3. 极简紧凑模板 (Compact)
+        updateSettings({ injectionTemplate: 'compact' });
+        const compactPrompt = buildAndInjectMemoryPrompt();
+        assert.ok(compactPrompt.includes('### 持续记忆'), '紧凑模板采用精炼标题');
+        assert.ok(compactPrompt.includes('[现场] 地点: 青云峰顶'), '紧凑模板采用单行紧凑格式');
+        assert.ok(compactPrompt.includes('• [明确约定/言行]'), '紧凑模板采用项目符号点');
+        assert(estimateTokens(compactPrompt) < estimateTokens(xmlPrompt), '紧凑模板消耗 Token 必须显著低于 XML 模板');
+
+        // 4. 还原默认标准模板
+        updateSettings({ injectionTemplate: 'standard' });
+        const stdPrompt = buildAndInjectMemoryPrompt();
+        assert.ok(stdPrompt.includes('### 持续情境与记忆核心 (Persistent Memory)'));
+        assert.ok(stdPrompt.includes('[当前情境快照 (Scene State)]'));
     });
 
     console.log(`\n======================================================`);

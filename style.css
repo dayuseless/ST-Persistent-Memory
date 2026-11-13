@@ -1073,3 +1073,67 @@
     color: #1d4ed8;
 }
 
+/* 现场快照时光机与历史面板 */
+.pm-scene-history-bar {
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+    margin-bottom: 10px;
+    padding: 6px 10px;
+    background: #f8fafc;
+    border: 1px solid #e2e8f0;
+    border-radius: 6px;
+}
+.pm-scene-history-panel {
+    background: #ffffff;
+    border: 1px solid #cbd5e1;
+    border-radius: 6px;
+    padding: 8px;
+    margin-bottom: 12px;
+    max-height: 240px;
+    overflow-y: auto;
+    animation: pmFadeIn 0.15s ease-out;
+}
+.pm-history-item {
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+    padding: 6px 8px;
+    border-bottom: 1px dashed #e2e8f0;
+    font-size: 11px;
+    line-height: 1.4;
+}
+.pm-history-item:last-child {
+    border-bottom: none;
+}
+.pm-history-meta {
+    color: #64748b;
+    font-size: 10px;
+    display: flex;
+    gap: 6px;
+    align-items: center;
+    margin-bottom: 2px;
+}
+.pm-history-desc {
+    color: #1e293b;
+    word-break: break-all;
+}
+.pm-history-revert-btn {
+    font-size: 10px;
+    padding: 3px 8px;
+    border-radius: 4px;
+    border: 1px solid #93c5fd;
+    background: #eff6ff;
+    color: #1d4ed8;
+    cursor: pointer;
+    white-space: nowrap;
+    margin-left: 8px;
+    font-weight: 500;
+    transition: all 0.15s ease;
+}
+.pm-history-revert-btn:hover {
+    background: #dbeafe;
+    border-color: #3b82f6;
+}
+
+

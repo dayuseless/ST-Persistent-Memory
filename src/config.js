@@ -1,10 +1,17 @@
 /**
- * 持续记忆插件配置与常量定义 (v0.1.23)
+ * 持续记忆插件配置与常量定义 (v0.1.24)
  */
 
-export const EXTENSION_VERSION = '0.1.23';
+export const EXTENSION_VERSION = '0.1.24';
 export const MODULE_NAME = 'st_persistent_memory';
 export const INJECT_KEY = 'PERSISTENT_MEMORY_INJECT';
+
+export const INJECTION_TEMPLATES = {
+    STANDARD: 'standard', // 标准中文 (默认，通用RP)
+    XML: 'xml',           // 结构化 XML (推荐 Claude 3.5 / GPT-4o)
+    ENGLISH: 'english',   // 英文原生 English (推荐英文角色卡)
+    COMPACT: 'compact'    // 极简紧凑 Compact (极致节省 Token)
+};
 
 export const MEMORY_TYPES = {
     FACT: 'fact',             // 客观物理事实与事件
@@ -43,6 +50,7 @@ export const DEFAULT_SETTINGS = {
     digestSliceCount: 6,       // 提炼时回溯的历史消息数量 (2~15)
     injectionDepth: 2,         // 注入深度 (默认 2: 紧贴最新对话上方)
     injectionPosition: 1,      // 1: IN_CHAT, 0: IN_PROMPT
+    injectionTemplate: 'standard', // 提示词注入模板: 'standard' | 'xml' | 'english' | 'compact'
     maxSceneTokens: 150,       // L0 现场快照 Token/字符预算上限
     maxTotalMemoryTokens: 450, // 注入总 Token 预算上限 (防止挤占对话窗口)
     maxPinnedCount: 5,         // 常驻记忆最大条数保护
@@ -91,6 +99,7 @@ export const DEFAULT_STATE = {
         in_scene_characters: undefined, // 当前活跃在场的角色名列表 (undefined: 初始未知/默认单聊上下文; []: 明确全员离场无人)
         updated_at: ''            // 快照最后更新时间
     },
+    scene_history: [],        // 现场快照时光机历史栈 (保留最近 10 次变更快照)
     memories: [],
     turn_count: 0,
     last_digest_floor: 0,

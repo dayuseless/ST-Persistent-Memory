@@ -347,6 +347,9 @@ export function loadCurrentState() {
                 : undefined,
             updated_at: rawScene.updated_at || new Date().toISOString()
         },
+        scene_history: Array.isArray(stored.scene_history)
+            ? stored.scene_history.filter(item => item && item.scene && typeof item.scene === 'object').slice(-10)
+            : [],
         memories: migratedMemories,
         turn_count: Number(stored.turn_count) || 0,
         last_digest_floor: Number(stored.last_digest_floor) || 0,
@@ -383,6 +386,103 @@ export function getState() {
 }
 
 /**
+ * 现场快照时光机：将当前快照入栈历史栈 (保留最近 10 次变更)
+ */
+export function pushSceneSnapshot(s, reason = '变更前保存') {
+    if (!s || !s.scene) return;
+    if (!Array.isArray(s.scene_history)) {
+        s.scene_history = [];
+    }
+    const cur = s.scene;
+    // 只有具有实际内容的快照才入栈，避免将空对象频繁入栈
+    const hasContent = Boolean(
+        cur.location || cur.time || cur.action || cur.tension || cur.unresolved ||
+        (Array.isArray(cur.in_scene_characters) && cur.in_scene_characters.length > 0)
+    );
+    if (!hasContent) return;
+
+    // 检查是否与栈顶内容完全一致，避免连续重复记录
+    const top = s.scene_history[s.scene_history.length - 1];
+    if (top && top.scene &&
+        top.scene.location === cur.location &&
+        top.scene.time === cur.time &&
+        top.scene.action === cur.action &&
+        top.scene.tension === cur.tension &&
+        top.scene.unresolved === cur.unresolved &&
+        JSON.stringify(top.scene.in_scene_characters) === JSON.stringify(cur.in_scene_characters)) {
+        return;
+    }
+
+    s.scene_history.push({
+        timestamp: cur.updated_at || new Date().toISOString(),
+        floor: Number(s.last_digest_floor || s.turn_count || 0),
+        reason: String(reason || '更新'),
+        scene: JSON.parse(JSON.stringify(cur))
+    });
+
+    if (s.scene_history.length > 10) {
+        s.scene_history.shift();
+    }
+}
+
+/**
+ * 现场快照时光机：一键撤销并回滚到上一次快照
+ */
+export function rollbackScene() {
+    const s = getState();
+    if (!Array.isArray(s.scene_history) || s.scene_history.length === 0) {
+        return { success: false, message: '暂无可回滚的历史快照' };
+    }
+
+    const previous = s.scene_history.pop();
+    if (!previous || !previous.scene) {
+        return { success: false, message: '历史快照数据异常' };
+    }
+
+    s.scene = {
+        ...previous.scene,
+        updated_at: new Date().toISOString()
+    };
+
+    saveCurrentState();
+    return { success: true, scene: s.scene, restoredFrom: previous };
+}
+
+/**
+ * 现场快照时光机：恢复指定索引的历史快照
+ */
+export function restoreSceneSnapshot(index) {
+    const s = getState();
+    if (!Array.isArray(s.scene_history) || index < 0 || index >= s.scene_history.length) {
+        return { success: false, message: '指定的历史快照索引无效' };
+    }
+
+    const target = s.scene_history[index];
+    if (!target || !target.scene) {
+        return { success: false, message: '历史快照数据损坏' };
+    }
+
+    // 先把当前现场快照入栈（作为撤销保护点）
+    pushSceneSnapshot(s, '回滚前自动保存');
+
+    s.scene = {
+        ...target.scene,
+        updated_at: new Date().toISOString()
+    };
+
+    saveCurrentState();
+    return { success: true, scene: s.scene, restoredFrom: target };
+}
+
+/**
+ * 获取现场快照历史列表
+ */
+export function getSceneHistory() {
+    const s = getState();
+    return Array.isArray(s.scene_history) ? [...s.scene_history] : [];
+}
+
+/**
  * P0-2 修复：严格落实 L0 现场快照的三态 PATCH 语义
  * 
  * 1. 字段为 undefined: 未提供更新 -> 严格继承旧值 (保留)
@@ -390,7 +490,7 @@ export function getState() {
  * 3. 字段为非空字符串: 提供了有效新值 -> 覆盖旧值 (非字符串直接拒绝，防 [object Object] 污染)
  * 4. 角色数组: 若显式提供数组 (包括 []) -> 按新数组覆盖；若为 null -> 重置为 undefined 未知；若为 undefined -> 保留旧值
  */
-export function updateScene(scenePatch) {
+export function updateScene(scenePatch, reason = '手动修改') {
     if (!scenePatch || typeof scenePatch !== 'object') return;
     const s = getState();
     const cur = s.scene;
@@ -414,6 +514,19 @@ export function updateScene(scenePatch) {
         newChars = Array.from(new Set(scenePatch.in_scene_characters.filter(x => typeof x === 'string').map(x => x.trim()).filter(Boolean)));
     } else if (scenePatch.in_scene_characters === null) {
         newChars = undefined; // 显式重置为未知
+    }
+
+    // 判定是否有实质变更，有则在覆盖前将旧快照入栈时光机
+    const isDifferent =
+        newLocation !== cur.location ||
+        newTime !== cur.time ||
+        newAction !== cur.action ||
+        newTension !== cur.tension ||
+        newUnresolved !== cur.unresolved ||
+        JSON.stringify(newChars) !== JSON.stringify(cur.in_scene_characters);
+
+    if (isDifferent) {
+        pushSceneSnapshot(s, reason);
     }
 
     // scene_id 独立机制：支持显式切换，或地点迁移时自动更迭
@@ -769,6 +882,7 @@ export function exportMemoryData() {
         character_name: c?.name2 || 'Character',
         chat_id: c?.chatId || '',
         scene: JSON.parse(JSON.stringify(s.scene || {})),
+        scene_history: JSON.parse(JSON.stringify(s.scene_history || [])),
         memories: JSON.parse(JSON.stringify(s.memories || []))
     };
 }
@@ -853,6 +967,9 @@ export function importMemoryData(data, strategy = 'merge') {
             if (data.scene && typeof data.scene === 'object' && !Array.isArray(data.scene)) {
                 s.scene = { ...s.scene, ...data.scene };
             }
+            if (Array.isArray(data.scene_history)) {
+                s.scene_history = data.scene_history.filter(h => h && h.scene).slice(-10);
+            }
         } else {
             // merge: 按内容与 ID 进行保守去重
             const existingIds = new Set(s.memories.map(m => m.id));
@@ -873,6 +990,9 @@ export function importMemoryData(data, strategy = 'merge') {
             }
             if (data.scene && typeof data.scene === 'object' && (!s.scene.location || s.scene.location === '现场未知')) {
                 s.scene = { ...s.scene, ...data.scene };
+            }
+            if (Array.isArray(data.scene_history) && (!s.scene_history || s.scene_history.length === 0)) {
+                s.scene_history = data.scene_history.filter(h => h && h.scene).slice(-10);
             }
         }
 

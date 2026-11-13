@@ -7,7 +7,7 @@
  * 4. Fail-Closed 拒绝优先与知情者隔离防线
  */
 
-import { MODULE_NAME, INJECT_KEY, MEMORY_STATUS, MEMORY_LIFECYCLE, MEMORY_SCOPE, MEMORY_TYPES } from './config.js';
+import { MODULE_NAME, INJECT_KEY, MEMORY_STATUS, MEMORY_LIFECYCLE, MEMORY_SCOPE, MEMORY_TYPES, INJECTION_TEMPLATES } from './config.js';
 import { getState, getSettings, saveCurrentState } from './state.js';
 import { buildQueryContext, calculateHybridMemoryScore } from './semantic.js';
 
@@ -58,11 +58,59 @@ export const SYNC_PROTOCOL_TEXT = [
     '（若无新事实发生，则无需附带任何标签，直接正常回复即可。前端会自动截获隐藏此标签，用户界面完全不可见。）'
 ].join('\n');
 
-const PROMPT_HEADER = '### 持续情境与记忆核心 (Persistent Memory)';
-const PROMPT_DIVIDER = '──────────────────────────────────────────';
-const MEMORY_SECTION_HEADER = '[相关认知与关键记忆 (Active Memories)]';
+export const PROMPT_HEADER = '### 持续情境与记忆核心 (Persistent Memory)';
+export const PROMPT_DIVIDER = '──────────────────────────────────────────';
+export const MEMORY_SECTION_HEADER = '[相关认知与关键记忆 (Active Memories)]';
 // 当用户把总预算设得低于完整协议所需开销时，保留可解析的最小协议而不挤占总预算。
-const COMPACT_SYNC_PROTOCOL_TEXT = '[状态更新协议] 有更新时在回复末尾附 `<!--PERSISTENT_MEMORY {合法JSON}-->`；无更新不输出标签。';
+export const COMPACT_SYNC_PROTOCOL_TEXT = '[状态更新协议] 有更新时在回复末尾附 `<!--PERSISTENT_MEMORY {合法JSON}-->`；无更新不输出标签。';
+
+/**
+ * 获取提示词注入模板外壳与结构标签
+ */
+export function getTemplateEnvelope(template = 'standard') {
+    if (template === INJECTION_TEMPLATES.XML) {
+        return {
+            header: '<persistent_memory>',
+            sceneHeader: '<scene_state>',
+            sceneFooter: '</scene_state>',
+            memSectionHeader: '<active_memories>',
+            memSectionFooter: '</active_memories>',
+            footer: '</persistent_memory>',
+            divider: ''
+        };
+    }
+    if (template === INJECTION_TEMPLATES.ENGLISH) {
+        return {
+            header: '### Persistent Memory (Context & State)',
+            sceneHeader: '[Current Scene State]',
+            sceneFooter: '',
+            memSectionHeader: '[Active Memories & Key Lore]',
+            memSectionFooter: '',
+            footer: '',
+            divider: '──────────────────────────────────────────'
+        };
+    }
+    if (template === INJECTION_TEMPLATES.COMPACT) {
+        return {
+            header: '### 持续记忆',
+            sceneHeader: '',
+            sceneFooter: '',
+            memSectionHeader: '[关键记忆]',
+            memSectionFooter: '',
+            footer: '',
+            divider: '---'
+        };
+    }
+    return {
+        header: PROMPT_HEADER,
+        sceneHeader: '[当前情境快照 (Scene State)]',
+        sceneFooter: '',
+        memSectionHeader: MEMORY_SECTION_HEADER,
+        memSectionFooter: '',
+        footer: '',
+        divider: PROMPT_DIVIDER
+    };
+}
 
 /**
  * 真实 Token 消耗保守估算函数 (Heuristic Token Estimation)
@@ -85,7 +133,13 @@ export function estimateTokens(text) {
 /**
  * 格式化记忆前缀
  */
-function getMemoryPrefix(m) {
+export function getMemoryPrefix(m, template = 'standard') {
+    if (template === INJECTION_TEMPLATES.ENGLISH) {
+        if (m.type === MEMORY_TYPES.STATEMENT) return 'Statement/Promise';
+        if (m.type === MEMORY_TYPES.INFERENCE) return 'Mindset/Inference';
+        if (m.type === MEMORY_TYPES.TODO) return 'Intent/Goal';
+        return 'Fact';
+    }
     if (m.type === MEMORY_TYPES.STATEMENT) return '明确约定/言行';
     if (m.type === MEMORY_TYPES.INFERENCE) return '心境/主观认知';
     if (m.type === MEMORY_TYPES.TODO) return '意图/伏笔';
@@ -93,9 +147,62 @@ function getMemoryPrefix(m) {
 }
 
 /**
+ * 格式化单条记忆文本
+ */
+export function formatMemoryLine(mem, prefix, loreTag, extraWarning, template = 'standard') {
+    if (template === INJECTION_TEMPLATES.XML) {
+        const loreAttr = (mem.lorebook_ref?.entry_name) ? ` lorebook="${mem.lorebook_ref.entry_name}"` : '';
+        const scopeAttr = mem.scope ? ` scope="${mem.scope}"` : '';
+        const warnText = extraWarning ? ` [CONFIDENTIAL]` : '';
+        return `  <memory type="${mem.type || 'fact'}"${scopeAttr}${loreAttr}>${mem.content}${warnText}</memory>`;
+    }
+    if (template === INJECTION_TEMPLATES.COMPACT) {
+        return `• [${prefix}] ${mem.content}${extraWarning}`;
+    }
+    return `- [${prefix}]${loreTag} ${mem.content}${extraWarning}`;
+}
+
+/**
  * 组装情境快照行列表
  */
-function assembleSceneLines(location, time, action, tension, unresolved, inScene) {
+export function assembleSceneLines(location, time, action, tension, unresolved, inScene, template = 'standard') {
+    if (template === INJECTION_TEMPLATES.XML) {
+        const lines = ['<scene_state>'];
+        if (location) lines.push(`  <location>${location}</location>`);
+        if (time) lines.push(`  <time>${time}</time>`);
+        if (action) lines.push(`  <action>${action}</action>`);
+        if (tension) lines.push(`  <tension>${tension}</tension>`);
+        if (unresolved) lines.push(`  <unresolved>${unresolved}</unresolved>`);
+        if (inScene !== undefined) {
+            lines.push(`  <characters>${inScene.length > 0 ? inScene.join(', ') : 'none'}</characters>`);
+        }
+        lines.push('</scene_state>');
+        return lines;
+    }
+    if (template === INJECTION_TEMPLATES.ENGLISH) {
+        const lines = ['[Current Scene State]'];
+        if (location) lines.push(`- Location: ${location}`);
+        if (time) lines.push(`- Time/Weather: ${time}`);
+        if (action) lines.push(`- Current Action: ${action}`);
+        if (tension) lines.push(`- Tension/Mood: ${tension}`);
+        if (unresolved) lines.push(`- Unresolved/Focus: ${unresolved}`);
+        if (inScene !== undefined) {
+            lines.push(`- Characters Present: ${inScene.length > 0 ? inScene.join(', ') : '(None)'}`);
+        }
+        return lines;
+    }
+    if (template === INJECTION_TEMPLATES.COMPACT) {
+        const parts = [];
+        if (location) parts.push(`地点: ${location}`);
+        if (time) parts.push(`时间: ${time}`);
+        if (action) parts.push(`动作: ${action}`);
+        if (tension) parts.push(`氛围: ${tension}`);
+        if (unresolved) parts.push(`悬念: ${unresolved}`);
+        if (inScene !== undefined) {
+            parts.push(`在场: ${inScene.length > 0 ? inScene.join('、') : '无'}`);
+        }
+        return parts.length > 0 ? [`[现场] ${parts.join(' | ')}`] : [];
+    }
     const lines = ['[当前情境快照 (Scene State)]'];
     if (location) lines.push(`- 地点环境: ${location}`);
     if (time) lines.push(`- 时间/天气: ${time}`);
@@ -142,11 +249,14 @@ export function buildAndInjectMemoryPrompt() {
     }
 
     // 2. 组装 L0 现场快照并落实硬预算 (扣减全部固定模板与协议开销)
+    const template = settings.injectionTemplate || INJECTION_TEMPLATES.STANDARD;
+    const envelope = getTemplateEnvelope(template);
+
     const maxSceneTokens = Math.max(50, Number(settings.maxSceneTokens) || 150);
     const maxTotalTokens = Math.max(100, Number(settings.maxTotalMemoryTokens) || 450);
 
     // 所有固定文本都按实际内容计入预算。完整协议放不下时改用紧凑协议；仍放不下则停止本次 sync 注入。
-    const fixedTokenCost = (protocol = '') => estimateTokens([PROMPT_HEADER, protocol, PROMPT_DIVIDER].filter(Boolean).join('\n')) + 4;
+    const fixedTokenCost = (protocol = '') => estimateTokens([envelope.header, protocol, envelope.divider, envelope.footer].filter(Boolean).join('\n')) + 4;
     let syncProtocol = '';
     if (settings.mode === 'sync') {
         if (fixedTokenCost(SYNC_PROTOCOL_TEXT) <= maxTotalTokens) {
@@ -169,7 +279,8 @@ export function buildAndInjectMemoryPrompt() {
     const hasScene = Boolean(scene.time || scene.location || scene.action || scene.tension || scene.unresolved || Array.isArray(scene.in_scene_characters));
     let sceneLines = [];
 
-    if (hasScene && maxAvailableForContent >= estimateTokens('[当前情境快照 (Scene State)]')) {
+    const sceneCheckHeader = envelope.sceneHeader || envelope.header;
+    if (hasScene && maxAvailableForContent >= estimateTokens(sceneCheckHeader)) {
         let curLoc = typeof scene.location === 'string' ? scene.location : '';
         let curTime = typeof scene.time === 'string' ? scene.time : '';
         let curAct = typeof scene.action === 'string' ? scene.action : '';
@@ -177,36 +288,36 @@ export function buildAndInjectMemoryPrompt() {
         let curUnres = typeof scene.unresolved === 'string' ? scene.unresolved : '';
         let curChars = inScene;
 
-        sceneLines = assembleSceneLines(curLoc, curTime, curAct, curTen, curUnres, curChars);
+        sceneLines = assembleSceneLines(curLoc, curTime, curAct, curTen, curUnres, curChars, template);
 
         // P1 落实 L0 硬预算约束 (逐级降级与压缩)
         // 阶段 1：超出预算时，裁减未决悬念
         if (estimateTokens(sceneLines.join('\n')) > effectiveMaxSceneTokens && curUnres) {
             curUnres = '';
-            sceneLines = assembleSceneLines(curLoc, curTime, curAct, curTen, curUnres, curChars);
+            sceneLines = assembleSceneLines(curLoc, curTime, curAct, curTen, curUnres, curChars, template);
         }
 
         // 阶段 2：仍超出时，裁减即时气氛
         if (estimateTokens(sceneLines.join('\n')) > effectiveMaxSceneTokens && curTen) {
             curTen = '';
-            sceneLines = assembleSceneLines(curLoc, curTime, curAct, curTen, curUnres, curChars);
+            sceneLines = assembleSceneLines(curLoc, curTime, curAct, curTen, curUnres, curChars, template);
         }
 
         // 阶段 3：仍超出时，压缩动作描述
         while (estimateTokens(sceneLines.join('\n')) > effectiveMaxSceneTokens && curAct.length > 15) {
             curAct = curAct.slice(0, Math.floor(curAct.length * 0.75)).trim() + '...';
-            sceneLines = assembleSceneLines(curLoc, curTime, curAct, curTen, curUnres, curChars);
+            sceneLines = assembleSceneLines(curLoc, curTime, curAct, curTen, curUnres, curChars, template);
         }
 
         // 阶段 4：仍超出时，压缩地点并收缩角色列表
         while (estimateTokens(sceneLines.join('\n')) > effectiveMaxSceneTokens && curLoc.length > 15) {
             curLoc = curLoc.slice(0, Math.floor(curLoc.length * 0.75)).trim() + '...';
-            sceneLines = assembleSceneLines(curLoc, curTime, curAct, curTen, curUnres, curChars);
+            sceneLines = assembleSceneLines(curLoc, curTime, curAct, curTen, curUnres, curChars, template);
         }
 
         if (estimateTokens(sceneLines.join('\n')) > effectiveMaxSceneTokens && curChars && curChars.length > 3) {
             curChars = curChars.slice(0, 3);
-            sceneLines = assembleSceneLines(curLoc, curTime, curAct, curTen, curUnres, curChars);
+            sceneLines = assembleSceneLines(curLoc, curTime, curAct, curTen, curUnres, curChars, template);
         }
 
         // 阶段 5：硬性截断兜底 (保证估算绝对不超过 effectiveMaxSceneTokens)
@@ -218,7 +329,7 @@ export function buildAndInjectMemoryPrompt() {
     // 3. 计算剩余记忆预算 (扣减 L0 实际消耗与模板全开销)
     const sceneTokenCost = sceneLines.length > 0 ? estimateTokens(sceneLines.join('\n')) : 0;
     let remainingTokens = Math.max(0, maxAvailableForContent - sceneTokenCost);
-    const memorySectionHeaderTokens = estimateTokens(MEMORY_SECTION_HEADER);
+    const memorySectionHeaderTokens = estimateTokens(envelope.memSectionHeader);
     let memorySectionReserved = false;
 
     // 4. 构建现场语义查询与扫描上下文 (结合近期对话与现场焦点)
@@ -293,11 +404,11 @@ export function buildAndInjectMemoryPrompt() {
         }
         // scope === MEMORY_SCOPE.WORLD: 世界公共常识，允许任何角色接收
 
-        const prefix = getMemoryPrefix(mem);
+        const prefix = getMemoryPrefix(mem, template);
         const loreTag = (mem.lorebook_ref && typeof mem.lorebook_ref === 'object' && mem.lorebook_ref.entry_name)
-            ? ` [世界书关联: ${mem.lorebook_ref.entry_name}]`
+            ? (template === INJECTION_TEMPLATES.ENGLISH ? ` [Lore: ${mem.lorebook_ref.entry_name}]` : ` [世界书关联: ${mem.lorebook_ref.entry_name}]`)
             : '';
-        const formattedLine = `- [${prefix}]${loreTag} ${mem.content}${extraWarning}`;
+        const formattedLine = formatMemoryLine(mem, prefix, loreTag, extraWarning, template);
         const itemTokens = estimateTokens(formattedLine);
 
         // 常驻项 (Pinned)
@@ -385,8 +496,9 @@ export function buildAndInjectMemoryPrompt() {
     const memLines = [];
     const allSelectedMemLines = [...selectedPinnedLines, ...selectedTriggeredLines];
     if (allSelectedMemLines.length > 0) {
-        memLines.push(MEMORY_SECTION_HEADER);
+        if (envelope.memSectionHeader) memLines.push(envelope.memSectionHeader);
         memLines.push(...allSelectedMemLines);
+        if (envelope.memSectionFooter) memLines.push(envelope.memSectionFooter);
     }
 
     // 8. 组合成最终注入块 (若处于伴随标签模式，需附带输出协议)
@@ -395,14 +507,19 @@ export function buildAndInjectMemoryPrompt() {
         return '';
     }
 
-    const promptParts = [PROMPT_HEADER];
+    const promptParts = [envelope.header];
     if (sceneLines.length > 0) promptParts.push(...sceneLines);
     if (memLines.length > 0) promptParts.push(...memLines);
 
     if (syncProtocol) {
         promptParts.push(syncProtocol);
     }
-    promptParts.push(PROMPT_DIVIDER);
+    if (envelope.footer) {
+        promptParts.push(envelope.footer);
+    }
+    if (envelope.divider) {
+        promptParts.push(envelope.divider);
+    }
 
     const fullPromptBlock = promptParts.join('\n');
 

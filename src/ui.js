@@ -4,7 +4,7 @@
  */
 
 import { MODULE_NAME, MEMORY_STATUS, MEMORY_LIFECYCLE, MEMORY_SCOPE } from './config.js';
-import { getState, getSettings, updateSettings, saveSettingsImmediately, updateScene, addMemory, updateMemory, deleteMemory, purgeArchivedMemories, cycleMemoryStatus, cycleMemoryType, exportMemoryData, importMemoryData, reindexAllMemories, onStateChange, getActiveWorldBookInfo, syncMemoryDeltaToWorldInfo, batchUpdate } from './state.js';
+import { getState, getSettings, updateSettings, saveSettingsImmediately, updateScene, addMemory, updateMemory, deleteMemory, purgeArchivedMemories, cycleMemoryStatus, cycleMemoryType, exportMemoryData, importMemoryData, reindexAllMemories, onStateChange, getActiveWorldBookInfo, syncMemoryDeltaToWorldInfo, batchUpdate, rollbackScene, restoreSceneSnapshot, getSceneHistory } from './state.js';
 import { triggerAsyncDigest, triggerMemoryConsolidation, testCustomApiConnection, triggerBacklogDigest, abortBacklogDigest, isBacklogDigestRunning } from './extractor.js';
 import { testEmbeddingApiConnection } from './semantic.js';
 
@@ -14,6 +14,7 @@ let memoryFilter = 'active'; // 'active' | 'archived' | 'all'
 let lorebookFilter = '';    // '' (全部) | '__unlinked__' (未关联) | '<entry_name>'
 let memorySearchQuery = ''; // 实时搜索过滤关键字
 let selectedMemoryIds = new Set(); // 批量操作选中的记忆 ID 集合
+let isSceneHistoryOpen = false; // 现场快照时光机历史面板展开状态
 
 export const API_PRESETS = {
     deepseek: {
@@ -446,6 +447,16 @@ function renderNativeDrawerContent() {
             </div>
 
             <div class="pm-input-row pm-mb-8">
+                <label class="pm-input-label">提示词注入格式模板：</label>
+                <select id="pm-native-inject-template" class="pm-input" style="cursor: pointer;">
+                    <option value="standard" ${settings.injectionTemplate === 'standard' || !settings.injectionTemplate ? 'selected' : ''}>🇨🇳 标准中文 (默认，通用RP)</option>
+                    <option value="xml" ${settings.injectionTemplate === 'xml' ? 'selected' : ''}>🏷️ 结构化 XML (推荐 Claude 3.5 / GPT-4o)</option>
+                    <option value="english" ${settings.injectionTemplate === 'english' ? 'selected' : ''}>🇬🇧 英文原生 English (推荐英文角色卡)</option>
+                    <option value="compact" ${settings.injectionTemplate === 'compact' ? 'selected' : ''}>⚡ 极简紧凑 Compact (极致节省 Token)</option>
+                </select>
+            </div>
+
+            <div class="pm-input-row pm-mb-8">
                 <label class="pm-input-label">最新提炼动态：</label>
                 <div class="pm-status-box">
                     ${escapeHtml(state.last_digest_summary || '尚未执行提炼')} ${state.last_digest_time ? `<span style="color: #64748b; font-weight: 400;">(${state.last_digest_time})</span>` : ''}
@@ -535,6 +546,14 @@ function renderNativeDrawerContent() {
         });
     });
 
+    content.querySelector('#pm-native-inject-template')?.addEventListener('change', (e) => {
+        updateSettings({ injectionTemplate: e.target.value });
+        const hudSelect = document.getElementById('pm-setting-inject-template');
+        if (hudSelect) hudSelect.value = e.target.value;
+        saveSettingsImmediately();
+        window.toastr?.info?.(`提示词注入模板已切换为: ${e.target.options[e.target.selectedIndex].text}`, '持续记忆');
+    });
+
     content.querySelector('#pm-native-custom-api-enabled')?.addEventListener('change', (e) => {
         const isChecked = e.target.checked;
         const body = content.querySelector('#pm-native-custom-api-body');
@@ -557,6 +576,7 @@ function renderNativeDrawerContent() {
         const isEnabled = content.querySelector('#pm-setting-enabled')?.checked ?? true;
         const bubble = content.querySelector('#pm-native-bubble-enabled')?.checked ?? true;
         const useCustom = content.querySelector('#pm-native-custom-api-enabled')?.checked ?? false;
+        const template = content.querySelector('#pm-native-inject-template')?.value || 'standard';
         updateSettings({
             customApiUrl: url,
             customApiKey: key,
@@ -564,7 +584,8 @@ function renderNativeDrawerContent() {
             mode: mode,
             enabled: isEnabled,
             showFloatingBubble: bubble,
-            useCustomApi: useCustom
+            useCustomApi: useCustom,
+            injectionTemplate: template
         });
     };
 
@@ -1001,6 +1022,52 @@ function renderPanelContent() {
             ? (scene.in_scene_characters.length === 0 ? '无' : scene.in_scene_characters.join(', '))
             : (scene.in_scene_characters === null ? '自动' : '');
 
+        const sceneHistory = getSceneHistory();
+        const hasHistory = sceneHistory.length > 0;
+
+        let historyHtml = '';
+        if (isSceneHistoryOpen) {
+            if (sceneHistory.length === 0) {
+                historyHtml = `
+                    <div class="pm-scene-history-panel" style="text-align: center; color: #94a3b8; font-size: 11px; padding: 12px;">
+                        <i class="fa-solid fa-clock-rotate-left"></i> 暂无快照变更记录
+                    </div>
+                `;
+            } else {
+                historyHtml = `
+                    <div class="pm-scene-history-panel">
+                        <div style="font-size: 11px; font-weight: 600; color: #475569; margin-bottom: 6px; display: flex; justify-content: space-between;">
+                            <span><i class="fa-solid fa-timeline"></i> 快照历史版本 (最近 ${sceneHistory.length} 次)</span>
+                            <span style="font-size: 10px; color: #94a3b8;">点击即可秒级回滚</span>
+                        </div>
+                        ${sceneHistory.map((item, idx) => {
+                            const sc = item.scene || {};
+                            const timeStr = item.timestamp ? new Date(item.timestamp).toLocaleTimeString() : '';
+                            const desc = [
+                                sc.location ? `📍${sc.location}` : '',
+                                sc.action ? `🏃${sc.action.slice(0, 30)}${sc.action.length > 30 ? '...' : ''}` : ''
+                            ].filter(Boolean).join(' | ') || '无细节描述';
+                            return `
+                                <div class="pm-history-item">
+                                    <div style="flex: 1; min-width: 0;">
+                                        <div class="pm-history-meta">
+                                            <span style="font-weight: 600; color: #2563eb;">#${idx + 1} [第${item.floor || 0}轮]</span>
+                                            <span>${timeStr}</span>
+                                            <span style="background: #e2e8f0; padding: 1px 4px; border-radius: 3px;">${escapeHtml(item.reason || '更新')}</span>
+                                        </div>
+                                        <div class="pm-history-desc">${escapeHtml(desc)}</div>
+                                    </div>
+                                    <button class="pm-history-revert-btn" data-history-idx="${idx}" title="将当前现场快照恢复为本版本">
+                                        <i class="fa-solid fa-rotate-left"></i> 恢复
+                                    </button>
+                                </div>
+                            `;
+                        }).reverse().join('')}
+                    </div>
+                `;
+            }
+        }
+
         tabHtml = `
             <div class="pm-section-card">
                 <div class="pm-section-header">
@@ -1010,6 +1077,20 @@ function renderPanelContent() {
                 <div style="font-size: 12px; color: #475569; margin-bottom: 12px; line-height: 1.4;">
                     记录当前正在发生的客观局势。拥有独立硬 Token 预算（上限 ~${settings.maxSceneTokens || 150}），绝不遗忘此时此刻。
                 </div>
+
+                <!-- 现场快照时光机操作条 -->
+                <div class="pm-scene-history-bar">
+                    <div style="display: flex; gap: 6px; align-items: center;">
+                        <button id="pm-rollback-scene-btn" class="pm-bulk-btn" ${!hasHistory ? 'disabled style="opacity: 0.5; cursor: not-allowed;"' : ''} title="一键撤销并回滚到上一次快照">
+                            <i class="fa-solid fa-rotate-left"></i> 撤销回滚 (${sceneHistory.length})
+                        </button>
+                        <button id="pm-toggle-scene-history-btn" class="pm-bulk-btn" title="查看或折叠最近快照历史记录">
+                            <i class="fa-solid fa-clock-rotate-left"></i> ${isSceneHistoryOpen ? '收起历史' : '历史时光机'}
+                        </button>
+                    </div>
+                    <span style="font-size: 10px; color: #64748b;">秒级纠偏模型幻觉</span>
+                </div>
+                ${historyHtml}
 
                 <div class="pm-input-row">
                     <label class="pm-input-label"><i class="fa-solid fa-location-dot"></i> 当前地点环境:</label>
@@ -1212,6 +1293,16 @@ function renderPanelContent() {
                         <label class="pm-input-label">对话注入深度 (Depth):</label>
                         <input type="number" id="pm-setting-inject-depth" class="pm-input" min="0" max="20" value="${settings.injectionDepth ?? 2}">
                     </div>
+                </div>
+
+                <div class="pm-input-row pm-mb-8">
+                    <label class="pm-input-label">提示词注入格式模板 (Template):</label>
+                    <select id="pm-setting-inject-template" class="pm-input" style="cursor: pointer;">
+                        <option value="standard" ${settings.injectionTemplate === 'standard' || !settings.injectionTemplate ? 'selected' : ''}>🇨🇳 标准中文 (默认，通用RP)</option>
+                        <option value="xml" ${settings.injectionTemplate === 'xml' ? 'selected' : ''}>🏷️ 结构化 XML (推荐 Claude 3.5 / GPT-4o)</option>
+                        <option value="english" ${settings.injectionTemplate === 'english' ? 'selected' : ''}>🇬🇧 英文原生 English (推荐英文角色卡)</option>
+                        <option value="compact" ${settings.injectionTemplate === 'compact' ? 'selected' : ''}>⚡ 极简紧凑 Compact (极致节省 Token)</option>
+                    </select>
                 </div>
 
                 <div class="pm-grid-2col pm-mb-8">
@@ -1541,6 +1632,14 @@ function bindPanelEvents(container) {
         updateSettings({ injectionDepth: val });
     });
 
+    container.querySelector('#pm-setting-inject-template')?.addEventListener('change', (e) => {
+        updateSettings({ injectionTemplate: e.target.value });
+        const drawerSelect = document.getElementById('pm-native-inject-template');
+        if (drawerSelect) drawerSelect.value = e.target.value;
+        saveSettingsImmediately();
+        window.toastr?.info?.(`提示词注入模板已切换为: ${e.target.options[e.target.selectedIndex].text}`, '持续记忆');
+    });
+
     container.querySelector('#pm-setting-auto-consolidate')?.addEventListener('change', (e) => {
         updateSettings({ autoConsolidate: e.target.value === '1' });
     });
@@ -1819,6 +1918,7 @@ function bindPanelEvents(container) {
         const isWbCtx = container.querySelector('#pm-setting-worldbook-context')?.checked ?? true;
         const rawWbBoost = parseFloat(container.querySelector('#pm-setting-worldbook-boost')?.value);
         const wbBoost = !isNaN(rawWbBoost) ? rawWbBoost : 0.35;
+        const injectTemplate = container.querySelector('#pm-setting-inject-template')?.value || 'standard';
 
         updateSettings({
             enabled: isEnabled,
@@ -1833,6 +1933,7 @@ function bindPanelEvents(container) {
             mode: selectedMode,
             injectionPosition: injectPos,
             injectionDepth: injectDep,
+            injectionTemplate: injectTemplate,
             autoConsolidate,
             consolidateThreshold,
             autoSleepEnabled,
@@ -1889,13 +1990,46 @@ function bindPanelEvents(container) {
             tension: rawTension,
             unresolved: rawUnresolved,
             in_scene_characters: charsToSave
-        });
+        }, '手动保存');
         const btn = container.querySelector('#pm-save-scene-btn');
         if (btn) {
             btn.innerHTML = '<i class="fa-solid fa-check-double"></i> 快照已保存';
             setTimeout(() => { btn.innerHTML = '<i class="fa-solid fa-check"></i> 保存快照变更'; }, 1500);
         }
         window.toastr?.success?.('现场快照已更新保存', '持续记忆');
+    });
+
+    // 现场快照时光机：一键撤销回滚
+    container.querySelector('#pm-rollback-scene-btn')?.addEventListener('click', () => {
+        const res = rollbackScene();
+        if (res.success) {
+            window.toastr?.success?.('已成功回滚到上一次现场快照', '快照时光机');
+            renderHudContent();
+        } else {
+            window.toastr?.warning?.(res.message || '回滚失败', '快照时光机');
+        }
+    });
+
+    // 现场快照时光机：展开/收起历史面板
+    container.querySelector('#pm-toggle-scene-history-btn')?.addEventListener('click', () => {
+        isSceneHistoryOpen = !isSceneHistoryOpen;
+        renderHudContent();
+    });
+
+    // 现场快照时光机：恢复指定历史版本
+    container.querySelectorAll('.pm-history-revert-btn').forEach(btn => {
+        btn.addEventListener('click', (e) => {
+            const idx = parseInt(e.currentTarget.getAttribute('data-history-idx'), 10);
+            if (!isNaN(idx)) {
+                const res = restoreSceneSnapshot(idx);
+                if (res.success) {
+                    window.toastr?.success?.('已恢复目标快照版本', '快照时光机');
+                    renderHudContent();
+                } else {
+                    window.toastr?.warning?.(res.message || '恢复快照失败', '快照时光机');
+                }
+            }
+        });
     });
 
     // 添加记忆
