@@ -163,6 +163,13 @@ import {
     getSceneHistory as scnGetHistory,
     updateScene as scnUpdateScene
 } from '../src/scene.js';
+import {
+    sanitizeMemoryId as migSanitizeId,
+    migrateMemoryItems as migMigrateItems,
+    migrateLegacyState as migMigrateState,
+    exportMemoryDataPackage as migExportPackage,
+    importMemoryDataPackage as migImportPackage
+} from '../src/migration.js';
 import { renderMemoryCard, showPromoteLoreModal } from '../src/ui.js';
 import {
     LOCAL_VECTOR_DIM,
@@ -3029,25 +3036,25 @@ Intermediate analysis details...
     });
 
     // ─────────────────────────────────────────────────────────────
-    // T71: 全工程版本标识严格一致性核验 (0.1.33)
+    // T71: 全工程版本标识严格一致性核验 (0.1.34)
     // ─────────────────────────────────────────────────────────────
-    test('T71: 全工程版本标识严格一致性核验 (manifest, config, index 与各模块头部统一为 0.1.33)', () => {
+    test('T71: 全工程版本标识严格一致性核验 (manifest, config, index 与各模块头部统一为 0.1.34)', () => {
         const currentFile = fileURLToPath(import.meta.url);
         const rootDir = path.resolve(path.dirname(currentFile), '../');
 
         // 1. manifest.json
         const manifestPath = path.join(rootDir, 'manifest.json');
         const manifest = JSON.parse(fs.readFileSync(manifestPath, 'utf8'));
-        assert.strictEqual(manifest.version, '0.1.33', 'manifest.json 版本号应为 0.1.33');
+        assert.strictEqual(manifest.version, '0.1.34', 'manifest.json 版本号应为 0.1.34');
 
         // 2. src/config.js
-        assert.strictEqual(EXTENSION_VERSION, '0.1.33', 'config.js EXTENSION_VERSION 应为 0.1.33');
+        assert.strictEqual(EXTENSION_VERSION, '0.1.34', 'config.js EXTENSION_VERSION 应为 0.1.34');
 
         // 3. index.js
         const indexPath = path.join(rootDir, 'index.js');
         const indexContent = fs.readFileSync(indexPath, 'utf8');
-        assert.ok(indexContent.includes('v0.1.33'), 'index.js 头部必须标注 v0.1.33');
-        assert.ok(!indexContent.includes('v0.1.32'), 'index.js 严禁残留旧版本 v0.1.32 版本头');
+        assert.ok(indexContent.includes('v0.1.34'), 'index.js 头部必须标注 v0.1.34');
+        assert.ok(!indexContent.includes('v0.1.33'), 'index.js 严禁残留旧版本 v0.1.33 版本头');
 
         // 4. 各核心模块头部注释版本检查
         const checkModules = [
@@ -3057,6 +3064,7 @@ Intermediate analysis details...
             'src/backlog.js',
             'src/lorebook.js',
             'src/scene.js',
+            'src/migration.js',
             'src/state.js',
             'src/extractor.js',
             'src/injector.js',
@@ -3069,12 +3077,12 @@ Intermediate analysis details...
             const content = fs.readFileSync(filePath, 'utf8');
             const first10Lines = content.split('\n').slice(0, 10).join('\n');
             assert.ok(
-                first10Lines.includes('v0.1.33') || first10Lines.includes('0.1.33'),
-                `${relPath} 头部注释必须包含 0.1.33 版本标识`
+                first10Lines.includes('v0.1.34') || first10Lines.includes('0.1.34'),
+                `${relPath} 头部注释必须包含 0.1.34 版本标识`
             );
             assert.ok(
-                !first10Lines.includes('0.1.32') && !first10Lines.includes('v0.1.32'),
-                `${relPath} 头部注释严禁残留旧版本 0.1.32`
+                !first10Lines.includes('0.1.33') && !first10Lines.includes('v0.1.33'),
+                `${relPath} 头部注释严禁残留旧版本 0.1.33`
             );
         }
     });
@@ -3848,6 +3856,90 @@ Intermediate analysis details...
         const restOk = scnRestoreSnapshot(0);
         assert.strictEqual(restOk.success, true);
         assert.strictEqual(getState().scene.location, history[0].scene.location, '指定索引恢复成功');
+    });
+
+    // ─────────────────────────────────────────────────────────────
+    // T93: 数据迁移与导入导出模块解耦同源契约 (src/migration.js ↔ src/state.js)
+    // ─────────────────────────────────────────────────────────────
+    test('T93: 数据迁移与导入导出模块解耦与同源重导出契约测试 (src/migration.js ↔ src/state.js)', () => {
+        // 1. 同源导出函数存在性核验
+        assert.strictEqual(typeof migSanitizeId, 'function');
+        assert.strictEqual(typeof migMigrateItems, 'function');
+        assert.strictEqual(typeof migMigrateState, 'function');
+        assert.strictEqual(typeof migExportPackage, 'function');
+        assert.strictEqual(typeof migImportPackage, 'function');
+
+        // 2. sanitizeMemoryId 规则核验
+        assert.strictEqual(migSanitizeId('valid-id_123.test'), 'valid-id_123.test');
+        assert.strictEqual(migSanitizeId('  trim-me  '), 'trim-me');
+        assert.ok(migSanitizeId('invalid space id').startsWith('mem-'), '非法字符 ID 自动重生成');
+        assert.ok(migSanitizeId(null).startsWith('mem-'), 'null ID 自动重生成');
+
+        // 3. migMigrateItems 纯函数过滤与归一化测试
+        const dummyRaw = [
+            null,
+            { invalid: true },
+            { id: 'custom-1', content: '测试记忆内容', type: 'unknown_type', scope: 'invalid_scope' }
+        ];
+        const res = migMigrateItems(dummyRaw, mockContext);
+        assert.strictEqual(res.stats.total, 1, '损坏与无效项被安全剔除');
+        assert.strictEqual(res.stats.upgraded, 1, '旧版无效 scope 保守升格为 character');
+        assert.strictEqual(res.migratedMemories[0].id, 'custom-1');
+        assert.strictEqual(res.migratedMemories[0].type, MEMORY_TYPES.FACT, '无效 type 默认回退为 FACT');
+        assert.strictEqual(res.migratedMemories[0].scope, MEMORY_SCOPE.CHARACTER);
+        assert.deepStrictEqual(res.migratedMemories[0].known_by, ['角色A'], '保守升级归属于当前对话角色');
+    });
+
+    // ─────────────────────────────────────────────────────────────
+    // T94: 跨版本状态平滑升级与备份导入导出同源性端到端测试
+    // ─────────────────────────────────────────────────────────────
+    test('T94: 跨版本状态平滑升级与备份导入导出同源性端到端测试', () => {
+        // 1. 模拟旧版 v2 缺失三态场景与旧记忆格式
+        const legacyStored = {
+            version: 2,
+            scene: {
+                location: '旧版客栈',
+                time: '子夜'
+            },
+            memories: [
+                { id: 'leg-1', content: '客栈地窖藏有火药', scope: 'character', character: '角色A' },
+                { id: 'leg-2', content: '天下大势分久必合', scope: 'world' }
+            ]
+        };
+
+        const migratedState = migMigrateState(legacyStored, DEFAULT_STATE, mockContext);
+        assert.strictEqual(migratedState.version, 3, '版本成功平滑升级至 3');
+        assert.strictEqual(migratedState.scene.location, '旧版客栈');
+        assert.strictEqual(migratedState.scene.scene_id, 'scene_init');
+        assert.strictEqual(migratedState.memories.length, 2);
+        assert.strictEqual(migratedState.memories[0].lifecycle, MEMORY_LIFECYCLE.ACTIVE);
+
+        // 2. 导出数据包结构规范性
+        const exportedPkg = migExportPackage(migratedState, mockContext);
+        assert.strictEqual(exportedPkg.plugin, MODULE_NAME);
+        assert.strictEqual(exportedPkg.version, EXTENSION_VERSION);
+        assert.strictEqual(exportedPkg.character_name, '角色A');
+        assert.strictEqual(exportedPkg.memories.length, 2);
+
+        // 3. state.js 代理导出与 migration.js 导出的一致性
+        mockContext.chatMetadata = { [MODULE_NAME]: legacyStored };
+        loadCurrentState();
+        const stateExported = exportMemoryData();
+        assert.strictEqual(stateExported.memories.length, exportedPkg.memories.length);
+        assert.strictEqual(stateExported.character_name, exportedPkg.character_name);
+
+        // 4. importMemoryData 代理调用验证
+        const newBackup = {
+            plugin: MODULE_NAME,
+            version: '0.1.34',
+            memories: [
+                { id: 'new-mem-99', content: '全新引入的公共历史', scope: 'world', type: 'fact' }
+            ]
+        };
+        const importRes = importMemoryData(newBackup, 'merge');
+        assert.strictEqual(importRes.success, true);
+        assert.strictEqual(importRes.imported, 1);
+        assert.ok(getState().memories.some(m => m.content === '全新引入的公共历史'));
     });
 
     console.log(`\n======================================================`);

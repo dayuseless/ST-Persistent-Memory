@@ -1,6 +1,6 @@
 /**
- * 记忆状态管理器 (v0.1.33)
- * 严格落实 state_revision 状态修订号、L0 三态 PATCH 语义、真正原子回滚事务、统一ACL判定层介入、数据准入流水线、世界书升格溯源、知情集合隔离、世界书解耦与现场状态时光机解耦 (src/scene.js)
+ * 记忆状态管理器 (v0.1.34)
+ * 严格落实 state_revision 状态修订号、L0 三态 PATCH 语义、真正原子回滚事务、统一ACL判定层介入、数据准入流水线、世界书升格溯源、知情集合隔离、世界书解耦、现场状态时光机解耦 (src/scene.js) 与数据迁移/导入导出解耦 (src/migration.js)
  */
 
 import { MODULE_NAME, EXTENSION_VERSION, DEFAULT_SETTINGS, DEFAULT_STATE, MEMORY_STATUS, MEMORY_LIFECYCLE, MEMORY_TYPES, MEMORY_SCOPE } from './config.js';
@@ -19,6 +19,13 @@ import {
     getSceneHistory,
     updateScene
 } from './scene.js';
+import {
+    sanitizeMemoryId,
+    migrateMemoryItems,
+    migrateLegacyState,
+    exportMemoryDataPackage,
+    importMemoryDataPackage
+} from './migration.js';
 
 export {
     getContextParticipants,
@@ -35,7 +42,12 @@ export {
     rollbackScene,
     restoreSceneSnapshot,
     getSceneHistory,
-    updateScene
+    updateScene,
+    sanitizeMemoryId,
+    migrateMemoryItems,
+    migrateLegacyState,
+    exportMemoryDataPackage,
+    importMemoryDataPackage
 };
 
 let stateCache = null;
@@ -253,130 +265,7 @@ export function loadCurrentState() {
         metadata[MODULE_NAME] = JSON.parse(JSON.stringify(DEFAULT_STATE));
     }
 
-    const stored = metadata[MODULE_NAME];
-    const rawScene = stored.scene || {};
-
-    const sanitizeId = (id) => {
-        if (typeof id === 'string' && /^[a-zA-Z0-9_\-\.]+$/.test(id.trim())) {
-            return id.trim();
-        }
-        return 'mem-' + Date.now().toString(36) + '-' + Math.random().toString(36).substring(2, 6);
-    };
-
-    const isLegacyVersion = !stored.version || stored.version < 3;
-    const defaultParticipants = [c?.name1, c?.name2].filter(Boolean);
-    if (defaultParticipants.length === 0) {
-        defaultParticipants.push('User', 'Character');
-    }
-
-    let migratedCount = 0;
-    let upgradedCount = 0;
-    let dormantCount = 0;
-
-    const VALID_TYPES = new Set(Object.values(MEMORY_TYPES));
-    const VALID_SCOPES = new Set(Object.values(MEMORY_SCOPE));
-
-    // 防御性过滤：滤除 null、非对象、无有效 content 的损坏记忆条目，防止迁移中断崩溃
-    const rawMemories = (Array.isArray(stored.memories) ? stored.memories : []).filter(
-        m => m && typeof m === 'object' && typeof m.content === 'string' && m.content.trim().length > 0
-    );
-
-    const migratedMemories = rawMemories.map(m => {
-        migratedCount++;
-
-        // 严格类型校验与白名单归一化，杜绝存储型属性注入
-        const type = VALID_TYPES.has(m.type) ? m.type : MEMORY_TYPES.FACT;
-
-        let scope = m.scope;
-        if (scope && !VALID_SCOPES.has(scope)) {
-            scope = null;
-        }
-
-        let char = (typeof m.character === 'string' && m.character.trim()) ? m.character.trim() : '';
-        let knownBy = Array.isArray(m.known_by)
-            ? m.known_by.filter(k => typeof k === 'string' && k.trim()).map(k => k.trim())
-            : null;
-
-        if (!scope) {
-            upgradedCount++;
-            // 审计修复：对于旧版未显式指定 scope 的记忆，遵循保守封闭原则，归属于当前角色 private (CHARACTER)，
-            // 严禁擅自升级为 [name1, name2] 双向共享秘密，防止知情范围无故膨胀
-            scope = MEMORY_SCOPE.CHARACTER;
-            char = char || (c?.name2 || 'Character');
-            knownBy = [char];
-        } else if (scope === MEMORY_SCOPE.CHARACTER) {
-            char = char || (c?.name2 || 'Character');
-            knownBy = [char];
-        } else if (scope === MEMORY_SCOPE.SHARED) {
-            if (!knownBy || knownBy.length === 0) {
-                knownBy = char ? [char] : [];
-            }
-            if (knownBy.length === 0) {
-                dormantCount++;
-            }
-        } else {
-            // WORLD
-            knownBy = [];
-        }
-
-        const lorebookRef = sanitizeLorebookRef(m.lorebook_ref);
-
-        return {
-            ...m,
-            id: sanitizeId(m.id),
-            type: type,
-            scope: scope,
-            character: char,
-            known_by: knownBy,
-            lorebook_ref: lorebookRef,
-            synced_to_world_info: Boolean(m.synced_to_world_info),
-            synced_at: typeof m.synced_at === 'string' ? m.synced_at : null,
-            // P1 修复旧记忆迁移语义：旧版无 lifecycle 的 archived 项仅代表检索休眠，绝不擅自篡改为 completed
-            lifecycle: m.lifecycle || MEMORY_LIFECYCLE.ACTIVE,
-            last_activated_floor: Number.isInteger(m.last_activated_floor) ? m.last_activated_floor : (Number.isInteger(m.floor) ? m.floor : 0)
-        };
-    });
-
-    if (isLegacyVersion && migratedCount > 0) {
-        console.log(`[${MODULE_NAME}] [Migration Report] 旧版本记忆数据平滑升级完成：共载入 ${migratedCount} 条 (自动补齐知情范围 ${upgradedCount} 条, 知情者待补休眠 ${dormantCount} 条)`);
-    }
-
-    stateCache = {
-        version: 3,
-        state_revision: Number(stored.state_revision) || 0,
-        scene: {
-            scene_id: typeof rawScene.scene_id === 'string' && rawScene.scene_id.trim() ? rawScene.scene_id.trim() : 'scene_init',
-            location: typeof rawScene.location === 'string' ? rawScene.location : '',
-            time: typeof rawScene.time === 'string' ? rawScene.time : '',
-            action: typeof rawScene.action === 'string' ? rawScene.action : '',
-            tension: typeof rawScene.tension === 'string' ? rawScene.tension : '',
-            unresolved: typeof rawScene.unresolved === 'string' ? rawScene.unresolved : '',
-            // P0: 严格区分三态：若提供数组 (包括 []) 精确保留，若为 undefined 或 null 严格保持 undefined 未知
-            in_scene_characters: Array.isArray(rawScene.in_scene_characters)
-                ? rawScene.in_scene_characters.filter(x => typeof x === 'string').map(x => x.trim()).filter(Boolean)
-                : undefined,
-            updated_at: rawScene.updated_at || new Date().toISOString()
-        },
-        scene_history: Array.isArray(stored.scene_history)
-            ? stored.scene_history.filter(item => item && item.scene && typeof item.scene === 'object').slice(-10)
-            : [],
-        memories: migratedMemories,
-        turn_count: Number(stored.turn_count) || 0,
-        last_digest_floor: Number(stored.last_digest_floor) || 0,
-        last_digest_time: stored.last_digest_time || '',
-        last_digest_summary: stored.last_digest_summary || '尚未执行提炼',
-        // 错误状态属于可观测性数据，重载聊天后仍应保留。
-        last_sync_error: stored.last_sync_error && typeof stored.last_sync_error === 'object'
-            ? {
-                time: typeof stored.last_sync_error.time === 'string' ? stored.last_sync_error.time : '',
-                error: typeof stored.last_sync_error.error === 'string' ? stored.last_sync_error.error : '',
-                rawSnippet: typeof stored.last_sync_error.rawSnippet === 'string' ? stored.last_sync_error.rawSnippet : '',
-                truncated: Boolean(stored.last_sync_error.truncated)
-            }
-            : null,
-        last_digest_error: typeof stored.last_digest_error === 'string' ? stored.last_digest_error : null
-    };
-
+    stateCache = migrateLegacyState(metadata[MODULE_NAME], DEFAULT_STATE, c);
     notifyChange();
     return stateCache;
 }
@@ -666,18 +555,7 @@ export function updateMemory(id, patch) {
  * 导出记忆与现场数据对象 (供备份与跨会话迁移)
  */
 export function exportMemoryData() {
-    const s = getState();
-    const c = getContext();
-    return {
-        plugin: MODULE_NAME,
-        version: EXTENSION_VERSION,
-        exported_at: new Date().toISOString(),
-        character_name: c?.name2 || 'Character',
-        chat_id: c?.chatId || '',
-        scene: JSON.parse(JSON.stringify(s.scene || {})),
-        scene_history: JSON.parse(JSON.stringify(s.scene_history || [])),
-        memories: JSON.parse(JSON.stringify(s.memories || []))
-    };
+    return exportMemoryDataPackage(getState(), getContext());
 }
 
 /**
@@ -685,108 +563,7 @@ export function exportMemoryData() {
  * 支持策略：'merge' (合并去重) | 'replace' (全量覆盖)
  */
 export function importMemoryData(data, strategy = 'merge') {
-    if (!data || typeof data !== 'object') {
-        throw new Error('无效的导入数据：根对象不存在');
-    }
-    if (!Array.isArray(data.memories)) {
-        throw new Error('无效的导入数据：缺失 memories 列表');
-    }
-
-    const c = getContext();
-    const VALID_TYPES = new Set(Object.values(MEMORY_TYPES));
-    const VALID_SCOPES = new Set(Object.values(MEMORY_SCOPE));
-    const VALID_LIFECYCLES = new Set(Object.values(MEMORY_LIFECYCLE));
-    const VALID_STATUSES = new Set(Object.values(MEMORY_STATUS));
-
-    const sanitizeId = (id) => {
-        if (typeof id === 'string' && /^[a-zA-Z0-9_\-\.]+$/.test(id.trim())) {
-            return id.trim();
-        }
-        return 'mem-' + Date.now().toString(36) + '-' + Math.random().toString(36).substring(2, 6);
-    };
-
-    // 统一数据准入判定层执行格式规范化与权威参与者 ACL 核验 (v0.1.28)
-    const participants = getContextParticipants(c, getState?.());
-    let aclRejectedCount = 0;
-    let skippedCount = 0;
-    const validMemories = [];
-
-    for (const m of data.memories) {
-        const norm = normalizeAndValidateMemory(m, {
-            participants,
-            source: 'backup_import',
-            context: c
-        });
-
-        if (!norm.valid) {
-            if (norm.aclRejected) {
-                console.warn(`[${MODULE_NAME}] [Import ACL 拦截] ${norm.reason} (内容: "${(m?.content || '').slice(0, 30)}")`);
-                aclRejectedCount++;
-                try {
-                    const s = getState?.();
-                    if (s) recordAclAudit(s, 'import_acl_rejected', { content: m?.content?.slice(0, 30), reason: norm.reason });
-                } catch {}
-            } else {
-                skippedCount++;
-            }
-            continue;
-        }
-
-        validMemories.push(norm.memory);
-    }
-
-    return batchUpdate(() => {
-        const s = getState();
-        let importedCount = 0;
-
-        if (strategy === 'replace') {
-            for (const item of validMemories) {
-                try { syncEnsureLocalEmbedding(item); } catch {}
-            }
-            s.memories = validMemories;
-            importedCount = validMemories.length;
-            if (data.scene && typeof data.scene === 'object' && !Array.isArray(data.scene)) {
-                s.scene = { ...s.scene, ...data.scene };
-            }
-            if (Array.isArray(data.scene_history)) {
-                s.scene_history = data.scene_history.filter(h => h && h.scene).slice(-10);
-            }
-        } else {
-            // merge: 按内容与 ID 进行保守去重
-            const existingIds = new Set(s.memories.map(m => m.id));
-            const existingContents = new Set(s.memories.map(m => m.content.trim().toLowerCase()));
-
-            for (const item of validMemories) {
-                if (existingContents.has(item.content.trim().toLowerCase())) {
-                    skippedCount++;
-                    continue; // 相同文本条目自动跳过
-                }
-                if (existingIds.has(item.id)) {
-                    item.id = 'mem-' + Date.now().toString(36) + '-' + Math.random().toString(36).substring(2, 6);
-                }
-                try { syncEnsureLocalEmbedding(item); } catch {}
-                s.memories.push(item);
-                existingIds.add(item.id);
-                existingContents.add(item.content.trim().toLowerCase());
-                importedCount++;
-            }
-            if (data.scene && typeof data.scene === 'object' && (!s.scene.location || s.scene.location === '现场未知')) {
-                s.scene = { ...s.scene, ...data.scene };
-            }
-            if (Array.isArray(data.scene_history) && (!s.scene_history || s.scene_history.length === 0)) {
-                s.scene_history = data.scene_history.filter(h => h && h.scene).slice(-10);
-            }
-        }
-
-        return {
-            success: true,
-            count: importedCount,
-            imported: importedCount,
-            total: s.memories.length,
-            skipped: skippedCount,
-            aclRejected: aclRejectedCount
-        };
-    });
+    return importMemoryDataPackage(data, strategy, getState(), batchUpdate, getContext());
 }
 
 export function deleteMemory(id) {

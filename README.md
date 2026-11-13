@@ -1,6 +1,6 @@
 # SillyTavern 持续记忆插件 (ST-Persistent-Memory)
 
-[![Version](https://img.shields.io/badge/version-v0.1.33-blue.svg)](https://github.com/dayuseless/ST-Persistent-Memory)
+[![Version](https://img.shields.io/badge/version-v0.1.34-blue.svg)](https://github.com/dayuseless/ST-Persistent-Memory)
 [![SillyTavern](https://img.shields.io/badge/SillyTavern-1.12.0+-purple.svg)](https://github.com/SillyTavern/SillyTavern)
 [![License](https://img.shields.io/badge/license-MIT-green.svg)](LICENSE)
 
@@ -77,7 +77,7 @@
 
 ### 方式二：手动离线包安装
 
-1. 从 [Releases 页面](https://github.com/dayuseless/ST-Persistent-Memory/releases) 下载 `ST-Persistent-Memory-v0.1.33.zip`。
+1. 从 [Releases 页面](https://github.com/dayuseless/ST-Persistent-Memory/releases) 下载 `ST-Persistent-Memory-v0.1.34.zip`。
 2. 解压到 SillyTavern 的扩展目录中：
    ```text
    SillyTavern/public/scripts/extensions/third-party/ST-Persistent-Memory/
@@ -158,6 +158,18 @@ window.__persistentMemory.digestNow();
 ---
 
 ## 📝 版本历史
+
+### v0.1.34 (数据迁移与导入导出解耦：跨版本平滑升级与备份服务模块化)
+
+- **数据迁移与导入导出服务独立解耦 (`src/migration.js`)**：
+  - 新增专用数据迁移与便携服务模块 `src/migration.js`，将原本内嵌于状态核心 (`src/state.js`) 中的历史 Schema 平滑迁移（`migrateLegacyState`、`migrateMemoryItems`）以及跨会话备份导出（`exportMemoryDataPackage`）与导入合并（`importMemoryDataPackage`）彻底解耦（精简状态引擎近 200 行代码）。
+  - **跨版本 Schema 升级机制**：严格规范旧版本记忆类型过滤、知情范围保守封闭升级、L0 属性防御与生命周期对齐，免疫损坏数据引发的系统中断。
+  - **数据包安全导入准入流水线**：整合统一数据准入判定层 (`normalizeAndValidateMemory`)，在导入阶段即执行会话参与者白名单核验、越权提权拦截与安全审计日志留痕，并提供 `merge` (智能去重) 与 `replace` (全量安全覆盖) 策略。
+- **全工程同源性与透明向后兼容**：
+  - `src/state.js` 专注于内存状态机与修订号版本递增，对外透明重导出 `exportMemoryData`、`importMemoryData`、`migrateLegacyState` 等全部方法，UI 与外部消费方 100% 零感知协同。
+- **自动化测试矩阵扩展至 94 项 (T1-T94 全绿)**：
+  - **T93**：数据迁移与导入导出模块解耦同源重导出契约测试（验证 `src/migration.js ↔ src/state.js` 导出一致性与 `sanitizeMemoryId` 安全性）。
+  - **T94**：跨版本状态平滑升级与备份导入导出同源性端到端测试。
 
 ### v0.1.33 (场景状态管理解耦：独立现场状态与快照时光机模块化)
 

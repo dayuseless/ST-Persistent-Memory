@@ -6,7 +6,7 @@
  * 3. 严格校验归并结果 Schema 与 ACL 权限边界，防跨组拼凑、越权提权与幽灵替代
  * 4. 原子批量落盘：将旧细节置为 superseded，入库全新宏观事实
  *
- * @version 0.1.33
+ * @version 0.1.34
  */
 
 import { MODULE_NAME, MEMORY_TYPES, MEMORY_STATUS, MEMORY_LIFECYCLE, MEMORY_SCOPE } from './config.js';
