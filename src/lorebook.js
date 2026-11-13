@@ -1,5 +1,5 @@
 /**
- * ST-Persistent-Memory - 世界书关联、协同与外部设定呈现服务 (Lorebook / World Info Integration, v0.1.32)
+ * ST-Persistent-Memory - 世界书关联、协同与外部设定呈现服务 (Lorebook / World Info Integration, v0.1.33)
  *
  * 核心权责：
  * 1. 架构解耦：将世界书设定解析、事实差量写回 (Write-Back) 与词条升格 (Promote) 从状态持久化引擎中彻底剥离。

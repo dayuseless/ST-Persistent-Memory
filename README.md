@@ -1,6 +1,6 @@
 # SillyTavern 持续记忆插件 (ST-Persistent-Memory)
 
-[![Version](https://img.shields.io/badge/version-v0.1.32-blue.svg)](https://github.com/dayuseless/ST-Persistent-Memory)
+[![Version](https://img.shields.io/badge/version-v0.1.33-blue.svg)](https://github.com/dayuseless/ST-Persistent-Memory)
 [![SillyTavern](https://img.shields.io/badge/SillyTavern-1.12.0+-purple.svg)](https://github.com/SillyTavern/SillyTavern)
 [![License](https://img.shields.io/badge/license-MIT-green.svg)](LICENSE)
 
@@ -77,7 +77,7 @@
 
 ### 方式二：手动离线包安装
 
-1. 从 [Releases 页面](https://github.com/dayuseless/ST-Persistent-Memory/releases) 下载 `ST-Persistent-Memory-v0.1.32.zip`。
+1. 从 [Releases 页面](https://github.com/dayuseless/ST-Persistent-Memory/releases) 下载 `ST-Persistent-Memory-v0.1.33.zip`。
 2. 解压到 SillyTavern 的扩展目录中：
    ```text
    SillyTavern/public/scripts/extensions/third-party/ST-Persistent-Memory/
@@ -158,6 +158,20 @@ window.__persistentMemory.digestNow();
 ---
 
 ## 📝 版本历史
+
+### v0.1.33 (场景状态管理解耦：独立现场状态与快照时光机模块化)
+
+- **场景状态管理与快照时光机独立解耦 (`src/scene.js`)**：
+  - 新增专用场景服务模块 `src/scene.js`，将原本内嵌于状态持久化核心 (`src/state.js`) 中的 L0 实时物理现场快照（`location`, `time`, `action`, `tension`, `unresolved`, `in_scene_characters`）及时光机栈管理彻底解耦。
+  - **三态 PATCH 语义保障**：统一规范现场更新逻辑，未提供字段严格继承旧值、`null` 或 `""` 显式清空、非空字符串覆盖并防御非法对象注入、角色数组去重规范。
+  - **时光机栈深保护与自愈**：严格限制最多 10 次快照变更历史（FIFO 先进先出自动淘汰），防空内容与连续相同内容无效入栈。
+  - **一键回滚与索引恢复**：提供一键撤销并回滚至上一快照 (`rollbackScene`)，以及指定历史索引恢复 (`restoreSceneSnapshot`)，恢复前自动落盘当前现场作为撤销保护点。
+- **全工程同源性与透明向后兼容**：
+  - `src/state.js` 对外透明重导出全部场景与时光机方法，所有外部消费方（`src/extractor.js`, `src/ui.js`, `src/backlog.js`）零破坏性无感迁移。
+- **自动化测试矩阵扩展至 92 项 (T1-T92 全绿)**：
+  - **T90**：场景状态管理解耦与同源重导出一致性测试（验证 `src/scene.js ↔ src/state.js` 同源性契约与三态 PATCH 语义）。
+  - **T91**：现场快照时光机栈保护与容量上限淘汰测试（防空对象、防重复入栈、10次容量上限）。
+  - **T92**：现场回滚 (`rollbackScene`) 与快照恢复 (`restoreSceneSnapshot`) 契约与异常边界测试。
 
 ### v0.1.32 (世界书服务解耦：独立设定协同模块、事实差量写回与词条升格分离)
 

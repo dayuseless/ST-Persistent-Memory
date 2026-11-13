@@ -155,6 +155,14 @@ import {
     syncMemoryDeltaToWorldInfo as lbSyncDelta,
     promoteMemoryToWorldInfo as lbPromote
 } from '../src/lorebook.js';
+
+import {
+    pushSceneSnapshot as scnPushSnapshot,
+    rollbackScene as scnRollback,
+    restoreSceneSnapshot as scnRestoreSnapshot,
+    getSceneHistory as scnGetHistory,
+    updateScene as scnUpdateScene
+} from '../src/scene.js';
 import { renderMemoryCard, showPromoteLoreModal } from '../src/ui.js';
 import {
     LOCAL_VECTOR_DIM,
@@ -3021,25 +3029,25 @@ Intermediate analysis details...
     });
 
     // ─────────────────────────────────────────────────────────────
-    // T71: 全工程版本标识严格一致性核验 (0.1.32)
+    // T71: 全工程版本标识严格一致性核验 (0.1.33)
     // ─────────────────────────────────────────────────────────────
-    test('T71: 全工程版本标识严格一致性核验 (manifest, config, index 与各模块头部统一为 0.1.32)', () => {
+    test('T71: 全工程版本标识严格一致性核验 (manifest, config, index 与各模块头部统一为 0.1.33)', () => {
         const currentFile = fileURLToPath(import.meta.url);
         const rootDir = path.resolve(path.dirname(currentFile), '../');
 
         // 1. manifest.json
         const manifestPath = path.join(rootDir, 'manifest.json');
         const manifest = JSON.parse(fs.readFileSync(manifestPath, 'utf8'));
-        assert.strictEqual(manifest.version, '0.1.32', 'manifest.json 版本号应为 0.1.32');
+        assert.strictEqual(manifest.version, '0.1.33', 'manifest.json 版本号应为 0.1.33');
 
         // 2. src/config.js
-        assert.strictEqual(EXTENSION_VERSION, '0.1.32', 'config.js EXTENSION_VERSION 应为 0.1.32');
+        assert.strictEqual(EXTENSION_VERSION, '0.1.33', 'config.js EXTENSION_VERSION 应为 0.1.33');
 
         // 3. index.js
         const indexPath = path.join(rootDir, 'index.js');
         const indexContent = fs.readFileSync(indexPath, 'utf8');
-        assert.ok(indexContent.includes('v0.1.32'), 'index.js 头部必须标注 v0.1.32');
-        assert.ok(!indexContent.includes('v0.1.31'), 'index.js 严禁残留旧版本 v0.1.31 版本头');
+        assert.ok(indexContent.includes('v0.1.33'), 'index.js 头部必须标注 v0.1.33');
+        assert.ok(!indexContent.includes('v0.1.32'), 'index.js 严禁残留旧版本 v0.1.32 版本头');
 
         // 4. 各核心模块头部注释版本检查
         const checkModules = [
@@ -3048,6 +3056,7 @@ Intermediate analysis details...
             'src/consolidator.js',
             'src/backlog.js',
             'src/lorebook.js',
+            'src/scene.js',
             'src/state.js',
             'src/extractor.js',
             'src/injector.js',
@@ -3060,12 +3069,12 @@ Intermediate analysis details...
             const content = fs.readFileSync(filePath, 'utf8');
             const first10Lines = content.split('\n').slice(0, 10).join('\n');
             assert.ok(
-                first10Lines.includes('v0.1.32') || first10Lines.includes('0.1.32'),
-                `${relPath} 头部注释必须包含 0.1.32 版本标识`
+                first10Lines.includes('v0.1.33') || first10Lines.includes('0.1.33'),
+                `${relPath} 头部注释必须包含 0.1.33 版本标识`
             );
             assert.ok(
-                !first10Lines.includes('0.1.31') && !first10Lines.includes('v0.1.31'),
-                `${relPath} 头部注释严禁残留旧版本 0.1.31`
+                !first10Lines.includes('0.1.32') && !first10Lines.includes('v0.1.32'),
+                `${relPath} 头部注释严禁残留旧版本 0.1.32`
             );
         }
     });
@@ -3736,6 +3745,109 @@ Intermediate analysis details...
         assert.strictEqual(typeof addMemory, 'function');
         assert.strictEqual(typeof updateScene, 'function');
         assert.strictEqual(typeof loadCurrentState, 'function');
+    });
+
+    // ─────────────────────────────────────────────────────────────
+    // T90: 场景状态管理解耦与同源重导出一致性测试
+    // ─────────────────────────────────────────────────────────────
+    test('T90: 场景状态管理解耦与同源重导出一致性测试 (src/scene.js ↔ src/state.js 同源性契约)', () => {
+        // 1. 验证 state.js 重导出的场景时光机方法与 scene.js 物理同源
+        assert.strictEqual(pushSceneSnapshot, scnPushSnapshot, 'pushSceneSnapshot 重导出必须物理同源');
+        assert.strictEqual(rollbackScene, scnRollback, 'rollbackScene 重导出必须物理同源');
+        assert.strictEqual(restoreSceneSnapshot, scnRestoreSnapshot, 'restoreSceneSnapshot 重导出必须物理同源');
+        assert.strictEqual(getSceneHistory, scnGetHistory, 'getSceneHistory 重导出必须物理同源');
+        assert.strictEqual(updateScene, scnUpdateScene, 'updateScene 重导出必须物理同源');
+
+        // 2. 验证三态 PATCH 语义
+        mockContext.chatMetadata = { [MODULE_NAME]: { version: 3, scene: { location: '神策军大营', time: '黄昏', action: '点兵' } } };
+        loadCurrentState();
+
+        // 继承 (undefined): 保持原有 location
+        scnUpdateScene({ time: '夜半' });
+        let s = getState();
+        assert.strictEqual(s.scene.location, '神策军大营', '未提供字段严格继承旧值');
+        assert.strictEqual(s.scene.time, '夜半', '有效字符串覆盖旧值');
+
+        // 显式清空 (null 或 ""):
+        scnUpdateScene({ action: null });
+        s = getState();
+        assert.strictEqual(s.scene.action, '', 'null 显式清空 action');
+
+        // 防污染：非字符串对象被拒绝
+        scnUpdateScene({ location: { invalid: 'object' } });
+        s = getState();
+        assert.strictEqual(s.scene.location, '神策军大营', '非字符串对象拒绝覆盖');
+    });
+
+    // ─────────────────────────────────────────────────────────────
+    // T91: 现场快照时光机栈保护与容量上限淘汰测试
+    // ─────────────────────────────────────────────────────────────
+    test('T91: 现场快照时光机栈保护与容量上限淘汰测试 (防空对象、防重复入栈、10次容量上限)', () => {
+        const s = {
+            scene: { location: '', time: '', action: '', tension: '', unresolved: '', in_scene_characters: [] },
+            scene_history: []
+        };
+
+        // 1. 空内容快照拒绝入栈
+        scnPushSnapshot(s, '空内容测试');
+        assert.strictEqual(s.scene_history.length, 0, '空内容快照严禁入栈');
+
+        // 2. 有效快照入栈
+        s.scene.location = '长安朱雀门';
+        scnPushSnapshot(s, '第一次真实变更');
+        assert.strictEqual(s.scene_history.length, 1);
+        assert.strictEqual(s.scene_history[0].scene.location, '长安朱雀门');
+
+        // 3. 连续相同内容拒绝重复入栈
+        scnPushSnapshot(s, '重复变更');
+        assert.strictEqual(s.scene_history.length, 1, '连续完全相同快照拒绝重复入栈');
+
+        // 4. 容量上限测试 (最多保留 10 次，FIFO 淘汰)
+        for (let i = 2; i <= 15; i++) {
+            s.scene.location = `地点_${i}`;
+            scnPushSnapshot(s, `变更_${i}`);
+        }
+        assert.strictEqual(s.scene_history.length, 10, '时光机栈深严格限制为 10');
+        assert.strictEqual(s.scene_history[s.scene_history.length - 1].scene.location, '地点_15', '栈顶为最新快照');
+        assert.strictEqual(s.scene_history[0].scene.location, '地点_6', '最老快照已被淘汰为地点_6');
+    });
+
+    // ─────────────────────────────────────────────────────────────
+    // T92: 现场回滚 (rollbackScene) 与快照恢复 (restoreSceneSnapshot) 契约测试
+    // ─────────────────────────────────────────────────────────────
+    test('T92: 现场回滚 (rollbackScene) 与快照恢复 (restoreSceneSnapshot) 契约与异常边界', () => {
+        mockContext.chatMetadata = { [MODULE_NAME]: { version: 3, scene: { location: '初始密室' }, scene_history: [] } };
+        loadCurrentState();
+
+        // 1. 空历史时回滚优雅防御
+        const rollEmpty = scnRollback();
+        assert.strictEqual(rollEmpty.success, false);
+        assert.strictEqual(rollEmpty.message, '暂无可回滚的历史快照');
+
+        // 2. 越界恢复索引防御
+        const restInvalid = scnRestoreSnapshot(99);
+        assert.strictEqual(restInvalid.success, false);
+        assert.strictEqual(restInvalid.message, '指定的历史快照索引无效');
+
+        // 3. 执行变更并回滚
+        scnUpdateScene({ location: '暴风雨中的灯塔' });
+        assert.strictEqual(getState().scene.location, '暴风雨中的灯塔');
+        assert.strictEqual(scnGetHistory().length, 1);
+
+        const rollOk = scnRollback();
+        assert.strictEqual(rollOk.success, true);
+        assert.strictEqual(getState().scene.location, '初始密室', '回滚后地点成功恢复为初始密室');
+
+        // 4. 多次变更后的指定索引恢复
+        scnUpdateScene({ location: '地点A' });
+        scnUpdateScene({ location: '地点B' });
+        scnUpdateScene({ location: '地点C' });
+
+        const history = scnGetHistory();
+        assert.ok(history.length >= 2);
+        const restOk = scnRestoreSnapshot(0);
+        assert.strictEqual(restOk.success, true);
+        assert.strictEqual(getState().scene.location, history[0].scene.location, '指定索引恢复成功');
     });
 
     console.log(`\n======================================================`);

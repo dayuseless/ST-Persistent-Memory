@@ -1,5 +1,5 @@
 /**
- * 提炼引擎 (v0.1.32)
+ * 提炼引擎 (v0.1.33)
  * 严格落实：状态版本并发保护 (state_revision)、独立API传输层解耦 (src/api.js)、统一ACL准入层介入、长程归并引擎解耦 (src/consolidator.js)、全量历史回溯管道解耦 (src/backlog.js)
  */
 
