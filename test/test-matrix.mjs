@@ -129,8 +129,24 @@ import {
     abortBacklogDigest,
     isBacklogDigestRunning,
     findMessageIndexByTurn,
-    getContextParticipants
+    getContextParticipants,
+    sanitizeTriggerKeys,
+    applyExtractedData
 } from '../src/extractor.js';
+
+import {
+    buildConsolidationCandidateGroups as consolidatorBuildGroups,
+    validateConsolidatedPayload as consolidatorValidatePayload,
+    triggerMemoryConsolidation as consolidatorTrigger,
+    isMemoryConsolidationRunning
+} from '../src/consolidator.js';
+
+import {
+    findMessageIndexByTurn as backlogFindTurn,
+    abortBacklogDigest as backlogAbort,
+    isBacklogDigestRunning as backlogIsRunning,
+    triggerBacklogDigest as backlogTrigger
+} from '../src/backlog.js';
 import { renderMemoryCard, showPromoteLoreModal } from '../src/ui.js';
 import {
     LOCAL_VECTOR_DIM,
@@ -2997,30 +3013,32 @@ Intermediate analysis details...
     });
 
     // ─────────────────────────────────────────────────────────────
-    // T71: 全工程版本标识严格一致性核验 (0.1.30)
+    // T71: 全工程版本标识严格一致性核验 (0.1.31)
     // ─────────────────────────────────────────────────────────────
-    test('T71: 全工程版本标识严格一致性核验 (manifest, config, index 与各模块头部统一为 0.1.30)', () => {
+    test('T71: 全工程版本标识严格一致性核验 (manifest, config, index 与各模块头部统一为 0.1.31)', () => {
         const currentFile = fileURLToPath(import.meta.url);
         const rootDir = path.resolve(path.dirname(currentFile), '../');
 
         // 1. manifest.json
         const manifestPath = path.join(rootDir, 'manifest.json');
         const manifest = JSON.parse(fs.readFileSync(manifestPath, 'utf8'));
-        assert.strictEqual(manifest.version, '0.1.30', 'manifest.json 版本号应为 0.1.30');
+        assert.strictEqual(manifest.version, '0.1.31', 'manifest.json 版本号应为 0.1.31');
 
         // 2. src/config.js
-        assert.strictEqual(EXTENSION_VERSION, '0.1.30', 'config.js EXTENSION_VERSION 应为 0.1.30');
+        assert.strictEqual(EXTENSION_VERSION, '0.1.31', 'config.js EXTENSION_VERSION 应为 0.1.31');
 
         // 3. index.js
         const indexPath = path.join(rootDir, 'index.js');
         const indexContent = fs.readFileSync(indexPath, 'utf8');
-        assert.ok(indexContent.includes('v0.1.30'), 'index.js 头部必须标注 v0.1.30');
-        assert.ok(!indexContent.includes('v0.1.29'), 'index.js 严禁残留旧版本 v0.1.29 版本头');
+        assert.ok(indexContent.includes('v0.1.31'), 'index.js 头部必须标注 v0.1.31');
+        assert.ok(!indexContent.includes('v0.1.30'), 'index.js 严禁残留旧版本 v0.1.30 版本头');
 
         // 4. 各核心模块头部注释版本检查
         const checkModules = [
             'src/acl.js',
             'src/api.js',
+            'src/consolidator.js',
+            'src/backlog.js',
             'src/state.js',
             'src/extractor.js',
             'src/injector.js',
@@ -3033,12 +3051,12 @@ Intermediate analysis details...
             const content = fs.readFileSync(filePath, 'utf8');
             const first10Lines = content.split('\n').slice(0, 10).join('\n');
             assert.ok(
-                first10Lines.includes('v0.1.30') || first10Lines.includes('0.1.30'),
-                `${relPath} 头部注释必须包含 0.1.30 版本标识`
+                first10Lines.includes('v0.1.31') || first10Lines.includes('0.1.31'),
+                `${relPath} 头部注释必须包含 0.1.31 版本标识`
             );
             assert.ok(
-                !first10Lines.includes('0.1.29') && !first10Lines.includes('v0.1.29'),
-                `${relPath} 头部注释严禁残留旧版本 0.1.29`
+                !first10Lines.includes('0.1.30') && !first10Lines.includes('v0.1.30'),
+                `${relPath} 头部注释严禁残留旧版本 0.1.30`
             );
         }
     });
@@ -3507,6 +3525,117 @@ Intermediate analysis details...
         });
         assert.strictEqual(resNetworkErr.success, false);
         assert.ok(resNetworkErr.error);
+    });
+
+    // ─────────────────────────────────────────────────────────────
+    // T84: 记忆归并子系统单元测试 (src/consolidator.js 独立性与边界控制)
+    // ─────────────────────────────────────────────────────────────
+    test('T84: 记忆归并引擎 (src/consolidator.js) 分组隔离与 Schema/ACL 严格校验', () => {
+        // 1. buildConsolidationCandidateGroups 独立性核验
+        const testMems = [
+            { id: 'm1', content: '公共常识A', scope: MEMORY_SCOPE.WORLD, lifecycle: MEMORY_LIFECYCLE.ACTIVE, status: MEMORY_STATUS.TRIGGERED },
+            { id: 'm2', content: '公共常识B', scope: MEMORY_SCOPE.WORLD, lifecycle: MEMORY_LIFECYCLE.ACTIVE, status: MEMORY_STATUS.TRIGGERED },
+            { id: 'm3', content: '角色私密A', scope: MEMORY_SCOPE.CHARACTER, character: '角色A', lifecycle: MEMORY_LIFECYCLE.ACTIVE, status: MEMORY_STATUS.TRIGGERED },
+            { id: 'm4', content: '角色私密B', scope: MEMORY_SCOPE.CHARACTER, character: '角色A', lifecycle: MEMORY_LIFECYCLE.ACTIVE, status: MEMORY_STATUS.TRIGGERED },
+            { id: 'm5_inactive', content: '已结项条目', scope: MEMORY_SCOPE.WORLD, lifecycle: MEMORY_LIFECYCLE.COMPLETED, status: MEMORY_STATUS.TRIGGERED },
+            { id: 'm6_pinned', content: '常驻条目', scope: MEMORY_SCOPE.WORLD, lifecycle: MEMORY_LIFECYCLE.ACTIVE, status: MEMORY_STATUS.PINNED }
+        ];
+
+        const groups = consolidatorBuildGroups(testMems);
+        assert.strictEqual(groups.length, 2, '应精准构建 2 个同权限分组 (world 与 character:角色A)');
+        assert.strictEqual(groups[0].items.length, 2);
+        assert.strictEqual(groups[1].items.length, 2);
+
+        // 验证非 active 或常驻条目被完全剔除
+        const allCandidateIds = groups.flatMap(g => g.items.map(i => i.id));
+        assert.ok(!allCandidateIds.includes('m5_inactive'), '已结项条目严禁进入归并候选');
+        assert.ok(!allCandidateIds.includes('m6_pinned'), '常驻条目严禁进入归并候选');
+
+        // 2. validateConsolidatedPayload 拦截跨组拼凑与越权提权
+        const participants = new Set(['角色A']);
+        const crossGroupPayload = {
+            consolidated: [
+                {
+                    content: '跨越分组拼凑的非法事实',
+                    type: 'fact',
+                    scope: 'world',
+                    supersedes: ['m1', 'm3'] // m1 为 world, m3 为 character:角色A
+                }
+            ]
+        };
+        const valCross = consolidatorValidatePayload(crossGroupPayload, testMems, participants);
+        assert.strictEqual(valCross, null, '跨越不同知情范围/角色的归并必须被拒绝');
+
+        // 3. 正常同组归并产出结构校验
+        const validPayload = {
+            consolidated: [
+                {
+                    content: '角色A的整合长期记忆',
+                    type: 'fact',
+                    scope: 'character',
+                    character: '角色A',
+                    supersedes: ['m3', 'm4']
+                }
+            ]
+        };
+        const valGood = consolidatorValidatePayload(validPayload, testMems, participants);
+        assert.ok(valGood && valGood.consolidated.length === 1);
+        assert.strictEqual(valGood.consolidated[0].character, '角色A');
+        assert.strictEqual(valGood.consolidated[0].scope, 'character');
+
+        // 4. 运行状态查询
+        assert.strictEqual(isMemoryConsolidationRunning(), false);
+    });
+
+    // ─────────────────────────────────────────────────────────────
+    // T85: 全量历史回溯管道单元测试 (src/backlog.js 轮次定位与任务控制器)
+    // ─────────────────────────────────────────────────────────────
+    test('T85: 历史回溯管道 (src/backlog.js) 轮次定位与中止控制器单元测试', () => {
+        // 1. findMessageIndexByTurn 轮次定位
+        const mockChat = [
+            { is_user: true, mes: 'U1' },   // 0
+            { is_user: false, mes: 'A1' },  // 1 (第1轮AI回复)
+            { is_user: true, mes: 'U2' },   // 2
+            { is_user: false, mes: 'A2' },  // 3 (第2轮AI回复)
+            { is_user: true, mes: 'U3' },   // 4
+            { is_user: false, mes: 'A3' }   // 5 (第3轮AI回复)
+        ];
+
+        assert.strictEqual(backlogFindTurn(mockChat, 0), 0);
+        assert.strictEqual(backlogFindTurn(mockChat, -1), 0);
+        assert.strictEqual(backlogFindTurn([], 1), 0);
+        assert.strictEqual(backlogFindTurn(mockChat, 1), 2, '第1轮结束后的下一条消息索引应为 2');
+        assert.strictEqual(backlogFindTurn(mockChat, 2), 4, '第2轮结束后的下一条消息索引应为 4');
+        assert.strictEqual(backlogFindTurn(mockChat, 3), 6, '第3轮结束后的下一条消息索引应为 6');
+        assert.strictEqual(backlogFindTurn(mockChat, 99), 0, '超出轮次范围安全返回 0');
+
+        // 2. abortBacklogDigest 与 isBacklogDigestRunning 控制器状态
+        assert.strictEqual(backlogIsRunning(), false, '初始状态应为 false');
+        backlogAbort(); // 空任务调用不崩溃
+        assert.strictEqual(backlogIsRunning(), false, '调用 abort 后状态仍为 false');
+    });
+
+    // ─────────────────────────────────────────────────────────────
+    // T86: 提炼引擎分层与子系统跨模块协同测试
+    // ─────────────────────────────────────────────────────────────
+    test('T86: 提炼引擎分层与子系统跨模块协同测试 (src/extractor.js 导入导出与数据适配)', () => {
+        // 1. 验证 extractor 统一导出的函数与各独立子系统物理一致 (透明解耦契约)
+        assert.strictEqual(buildConsolidationCandidateGroups, consolidatorBuildGroups, '归并候选分组方法必须同源');
+        assert.strictEqual(validateConsolidatedPayload, consolidatorValidatePayload, '归并校验方法必须同源');
+        assert.strictEqual(triggerMemoryConsolidation, consolidatorTrigger, '归并触发方法必须同源');
+        assert.strictEqual(findMessageIndexByTurn, backlogFindTurn, '轮次定位方法必须同源');
+        assert.strictEqual(abortBacklogDigest, backlogAbort, '回溯中止方法必须同源');
+        assert.strictEqual(isBacklogDigestRunning, backlogIsRunning, '回溯状态查询方法必须同源');
+        assert.strictEqual(triggerBacklogDigest, backlogTrigger, '回溯触发方法必须同源');
+
+        // 2. 验证 extractor 导出的通用工具方法
+        assert.strictEqual(typeof sanitizeTriggerKeys, 'function', 'sanitizeTriggerKeys 必须成功导出');
+        const cleanedKeys = sanitizeTriggerKeys(['你', '这个', '合法触发词', '超长触发词超过十五个字符的话会被安全过滤掉']);
+        assert.deepStrictEqual(cleanedKeys, ['合法触发词'], '停用词与超长词应被正确过滤');
+
+        assert.strictEqual(typeof applyExtractedData, 'function', 'applyExtractedData 必须成功导出');
+        const emptySummary = applyExtractedData(null);
+        assert.strictEqual(emptySummary, '无有效更新');
     });
 
     console.log(`\n======================================================`);
