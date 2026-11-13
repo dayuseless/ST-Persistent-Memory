@@ -136,6 +136,14 @@ import {
 } from '../src/extractor.js';
 
 import {
+    stripThinkingTags as parserStripThinkingTags,
+    repairTruncatedJson as parserRepairTruncatedJson,
+    unwrapJsonPayload as parserUnwrapJsonPayload,
+    isQuietDigestPayload as parserIsQuietDigestPayload,
+    cleanAndParseJson as parserCleanAndParseJson
+} from '../src/parser.js';
+
+import {
     buildConsolidationCandidateGroups as consolidatorBuildGroups,
     validateConsolidatedPayload as consolidatorValidatePayload,
     triggerMemoryConsolidation as consolidatorTrigger,
@@ -3038,25 +3046,25 @@ Intermediate analysis details...
     // ─────────────────────────────────────────────────────────────
     // T71: 全工程版本标识严格一致性核验 (0.1.35)
     // ─────────────────────────────────────────────────────────────
-    test('T71: 全工程版本标识严格一致性核验 (manifest, config, index 与各模块头部统一为 0.1.35)', () => {
+    test('T71: 全工程版本标识严格一致性核验 (manifest, config, index 与各模块头部统一为 0.1.36)', () => {
         const currentFile = fileURLToPath(import.meta.url);
         const rootDir = path.resolve(path.dirname(currentFile), '../');
 
         // 1. manifest.json
         const manifestPath = path.join(rootDir, 'manifest.json');
         const manifest = JSON.parse(fs.readFileSync(manifestPath, 'utf8'));
-        assert.strictEqual(manifest.version, '0.1.35', 'manifest.json 版本号应为 0.1.35');
+        assert.strictEqual(manifest.version, '0.1.36', 'manifest.json 版本号应为 0.1.36');
 
         // 2. src/config.js
-        assert.strictEqual(EXTENSION_VERSION, '0.1.35', 'config.js EXTENSION_VERSION 应为 0.1.35');
+        assert.strictEqual(EXTENSION_VERSION, '0.1.36', 'config.js EXTENSION_VERSION 应为 0.1.36');
 
         // 3. index.js
         const indexPath = path.join(rootDir, 'index.js');
         const indexContent = fs.readFileSync(indexPath, 'utf8');
-        assert.ok(indexContent.includes('v0.1.35'), 'index.js 头部必须标注 v0.1.35');
-        assert.ok(!indexContent.includes('v0.1.33'), 'index.js 严禁残留旧版本 v0.1.33 版本头');
+        assert.ok(indexContent.includes('v0.1.36'), 'index.js 头部必须标注 v0.1.36');
+        assert.ok(!indexContent.includes('v0.1.34'), 'index.js 严禁残留旧版本 v0.1.34 版本头');
 
-        // 4. 各核心模块头部注释版本检查
+        // 4. 各核心模块头部注释版本检查 (13 个核心模块)
         const checkModules = [
             'src/acl.js',
             'src/api.js',
@@ -3067,6 +3075,7 @@ Intermediate analysis details...
             'src/migration.js',
             'src/state.js',
             'src/extractor.js',
+            'src/parser.js',
             'src/injector.js',
             'src/semantic.js',
             'src/ui.js'
@@ -3077,12 +3086,12 @@ Intermediate analysis details...
             const content = fs.readFileSync(filePath, 'utf8');
             const first10Lines = content.split('\n').slice(0, 10).join('\n');
             assert.ok(
-                first10Lines.includes('v0.1.35') || first10Lines.includes('0.1.35'),
-                `${relPath} 头部注释必须包含 0.1.35 版本标识`
+                first10Lines.includes('v0.1.36') || first10Lines.includes('0.1.36'),
+                `${relPath} 头部注释必须包含 0.1.36 版本标识`
             );
             assert.ok(
-                !first10Lines.includes('0.1.33') && !first10Lines.includes('v0.1.33'),
-                `${relPath} 头部注释严禁残留旧版本 0.1.33`
+                !first10Lines.includes('0.1.34') && !first10Lines.includes('v0.1.34'),
+                `${relPath} 头部注释严禁残留旧版本 0.1.34`
             );
         }
     });
@@ -3992,6 +4001,130 @@ Intermediate analysis details...
         // 清理现场以便后续测试
         updateSettings({ maxSceneTokens: 150, maxTotalMemoryTokens: 450 });
         saveSettingsImmediately();
+    });
+
+    // ─────────────────────────────────────────────────────────────
+    // T96: 文本清洗与容错 JSON 解析解耦契约与容错极限测试 (src/parser.js ↔ src/extractor.js)
+    // ─────────────────────────────────────────────────────────────
+    test('T96: 文本清洗与容错 JSON 解析解耦契约与容错极限测试 (src/parser.js ↔ src/extractor.js)', () => {
+        // 1. 同源引用契约验证 (extractor.js 透明重导出必须严格全等于 parser.js 对应导出)
+        assert.strictEqual(cleanAndParseJson, parserCleanAndParseJson, 'cleanAndParseJson 必须同源全等');
+        assert.strictEqual(stripThinkingTags, parserStripThinkingTags, 'stripThinkingTags 必须同源全等');
+        assert.strictEqual(repairTruncatedJson, parserRepairTruncatedJson, 'repairTruncatedJson 必须同源全等');
+        assert.strictEqual(unwrapJsonPayload, parserUnwrapJsonPayload, 'unwrapJsonPayload 必须同源全等');
+        assert.strictEqual(isQuietDigestPayload, parserIsQuietDigestPayload, 'isQuietDigestPayload 必须同源全等');
+
+        // 2. 思维链深度清洗器极限边界测试 (stripThinkingTags)
+        // 2.1 标准闭合标签清洗
+        const thought1 = '<think>\nHere is the complex thought process\nStep 1... Step 2...\n</think>```json\n{"scene": {"location": "密室"}}\n```';
+        assert.ok(!parserStripThinkingTags(thought1).includes('<think>'), 'stripThinkingTags 必须剥离 <think> 标签');
+        assert.ok(!parserStripThinkingTags(thought1).includes('complex thought process'), 'stripThinkingTags 必须剥离思考内容');
+        assert.ok(parserStripThinkingTags(thought1).includes('```json'), 'stripThinkingTags 必须保留代码块');
+
+        // 2.2 多种标签变体 (<thought>, <thinking>, [Thinking Process: ...], ```thought ... ```)
+        const thoughtVariants = [
+            '<thought>internal monologue</thought>{"key":"val"}',
+            '<thinking>analyzing current situation</thinking>{"key":"val"}',
+            '```thought\nplanning next moves\n```\n{"key":"val"}',
+            '[Thinking Process: 评估历史与在场人物] {"key":"val"}'
+        ];
+        for (const variant of thoughtVariants) {
+            const stripped = parserStripThinkingTags(variant);
+            assert.ok(!stripped.includes('internal') && !stripped.includes('analyzing') && !stripped.includes('planning') && !stripped.includes('评估历史'), '必须剥除变体思考内容');
+            assert.ok(stripped.includes('{"key":"val"}') || stripped.includes('{"key": "val"}'), '必须保留有效主体');
+        }
+
+        // 2.3 未闭合思考标签但后接合法 JSON / 代码块
+        const unclosedWithJson = '<think>\nThinking and token ran low but starts outputting:\n```json\n{"scene": {"location": "后花园"}}\n```';
+        const strippedUnclosed = parserStripThinkingTags(unclosedWithJson);
+        assert.ok(!strippedUnclosed.includes('<think>'), '未闭合思考标签必须被截断剥除');
+        assert.ok(strippedUnclosed.startsWith('```json'), '未闭合思考后必须精准定位 JSON 起始');
+
+        // 2.4 未闭合且完全没有有效 JSON 起始
+        const unclosedNoJson = '<think>\nJust rambling thoughts without any json following...';
+        assert.strictEqual(parserStripThinkingTags(unclosedNoJson), '', '无有效 JSON 的未闭合思考标签应整体剥除');
+
+        // 3. 断尾截断逆序栈修复引擎 (repairTruncatedJson)
+        // 3.1 键名未输入完毕截断
+        const cutKey = '{"scene": {"location": "汴京御街", "incom';
+        const repairedKey = parserRepairTruncatedJson(cutKey);
+        assert.doesNotThrow(() => JSON.parse(repairedKey), '修补后的 JSON 必须可被标准 JSON.parse 解析');
+        const parsedKeyObj = JSON.parse(repairedKey);
+        assert.strictEqual(parsedKeyObj.scene.location, '汴京御街');
+
+        // 3.2 字符串值截断
+        const cutString = '{"scene": {"location": "醉仙楼", "action": "独自倚';
+        const repairedStr = parserRepairTruncatedJson(cutString);
+        const parsedStrObj = JSON.parse(repairedStr);
+        assert.strictEqual(parsedStrObj.scene.location, '醉仙楼');
+        assert.strictEqual(parsedStrObj.scene.action, '独自倚');
+
+        // 3.3 数组与对象多层嵌套末尾截断 (带悬空逗号与不完整对象)
+        // 场景 A: 第二个对象已有部分有效属性，结尾悬空逗号 -> 成功挽回第二个对象的已有属性
+        const cutArrayA = '{"new_memories": [{"type": "fact", "content": "城门已关"}, {"type": "todo", ';
+        const repairedArrA = parserRepairTruncatedJson(cutArrayA);
+        const parsedArrObjA = JSON.parse(repairedArrA);
+        assert.strictEqual(parsedArrObjA.new_memories.length, 2);
+        assert.strictEqual(parsedArrObjA.new_memories[0].content, '城门已关');
+        assert.strictEqual(parsedArrObjA.new_memories[1].type, 'todo');
+
+        // 场景 B: 第二个对象仅输入了残缺首键 -> 安全剔除残缺首键，保留前序完整元素与安全闭合对象
+        const cutArrayB = '{"new_memories": [{"type": "fact", "content": "城门已关"}, {"incom';
+        const repairedArrB = parserRepairTruncatedJson(cutArrayB);
+        const parsedArrObjB = JSON.parse(repairedArrB);
+        assert.strictEqual(parsedArrObjB.new_memories.length, 2);
+        assert.strictEqual(parsedArrObjB.new_memories[0].content, '城门已关');
+        assert.deepStrictEqual(parsedArrObjB.new_memories[1], {});
+
+        // 4. 顶层包装解包器 (unwrapJsonPayload)
+        assert.strictEqual(parserUnwrapJsonPayload(null), null);
+        assert.strictEqual(parserUnwrapJsonPayload('string'), 'string');
+        const wrapped1 = { data: { scene: { location: '江夏' } } };
+        assert.strictEqual(parserUnwrapJsonPayload(wrapped1).scene.location, '江夏');
+        const wrapped2 = { response: { new_memories: [{ id: 'm1' }] } };
+        assert.strictEqual(parserUnwrapJsonPayload(wrapped2).new_memories[0].id, 'm1');
+        const unwrappedDirect = { scene: { location: '汉口' } };
+        assert.strictEqual(parserUnwrapJsonPayload(unwrappedDirect), unwrappedDirect);
+
+        // 5. 静默提炼判定 (isQuietDigestPayload)
+        assert.strictEqual(parserIsQuietDigestPayload(null), false);
+        assert.strictEqual(parserIsQuietDigestPayload({ summary: '闲聊平稳，无新事实沉淀', new_memories: [] }), true);
+        assert.strictEqual(parserIsQuietDigestPayload({ status: 'no_change' }), true);
+        assert.strictEqual(parserIsQuietDigestPayload({ no_change: true }), true);
+        assert.strictEqual(parserIsQuietDigestPayload({ scene: null, new_memories: [] }), true);
+        assert.strictEqual(parserIsQuietDigestPayload({ new_memories: [{ content: '发生了大事' }] }), false);
+
+        // 6. 端到端 cleanAndParseJson 全链路容错集成测试
+        const rawDeepSeekOutput = `
+<think>
+分析本轮对话：
+- 角色A与玩家在演武场切磋完毕
+- 暂时没有新的世界事实更新
+</think>
+\`\`\`json
+{
+    "scene": {
+        "location": "城东演武场",
+        "action": "收剑入鞘，互致敬意"
+    },
+    "summary": "演武比试和平收场",
+    "new_memories": [
+        {
+            "type": "fact",
+            "scope": "character",
+            "character": "角色A",
+            "content": "与玩家在城东演武场进行了剑术切磋",
+            "significance": 2,
+        },
+    ]
+}
+\`\`\`
+`;
+        const parsed = parserCleanAndParseJson(rawDeepSeekOutput);
+        assert(parsed, 'cleanAndParseJson 必须能成功解析带思维链与末尾尾随逗号的 JSON');
+        assert.strictEqual(parsed.scene.location, '城东演武场');
+        assert.strictEqual(parsed.new_memories.length, 1);
+        assert.strictEqual(parsed.new_memories[0].content, '与玩家在城东演武场进行了剑术切磋');
     });
 
     console.log(`\n======================================================`);

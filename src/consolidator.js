@@ -6,14 +6,15 @@
  * 3. 严格校验归并结果 Schema 与 ACL 权限边界，防跨组拼凑、越权提权与幽灵替代
  * 4. 原子批量落盘：将旧细节置为 superseded，入库全新宏观事实
  *
- * @version 0.1.35
+ * @version 0.1.36
  */
 
 import { MODULE_NAME, MEMORY_TYPES, MEMORY_STATUS, MEMORY_LIFECYCLE, MEMORY_SCOPE } from './config.js';
 import { getState, getSettings, addMemory, setMemoryLifecycle, batchUpdate } from './state.js';
 import { getContextParticipants, validateMemoryAcl } from './acl.js';
 import { executeDigestRequest } from './api.js';
-import { cleanAndParseJson, unwrapJsonPayload, getChatTurnCount, getChatIdentifier, sanitizeTriggerKeys } from './extractor.js';
+import { cleanAndParseJson, unwrapJsonPayload } from './parser.js';
+import { getChatTurnCount, getChatIdentifier, sanitizeTriggerKeys } from './extractor.js';
 
 function getContext() {
     return window.SillyTavern?.getContext?.() ?? null;

@@ -1,6 +1,6 @@
 # SillyTavern 持续记忆插件 (ST-Persistent-Memory)
 
-[![Version](https://img.shields.io/badge/version-v0.1.35-blue.svg)](https://github.com/dayuseless/ST-Persistent-Memory)
+[![Version](https://img.shields.io/badge/version-v0.1.36-blue.svg)](https://github.com/dayuseless/ST-Persistent-Memory)
 [![SillyTavern](https://img.shields.io/badge/SillyTavern-1.12.0+-purple.svg)](https://github.com/SillyTavern/SillyTavern)
 [![License](https://img.shields.io/badge/license-MIT-green.svg)](LICENSE)
 
@@ -77,7 +77,7 @@
 
 ### 方式二：手动离线包安装
 
-1. 从 [Releases 页面](https://github.com/dayuseless/ST-Persistent-Memory/releases) 下载 `ST-Persistent-Memory-v0.1.35.zip`。
+1. 从 [Releases 页面](https://github.com/dayuseless/ST-Persistent-Memory/releases) 下载 `ST-Persistent-Memory-v0.1.36.zip`。
 2. 解压到 SillyTavern 的扩展目录中：
    ```text
    SillyTavern/public/scripts/extensions/third-party/ST-Persistent-Memory/
@@ -158,6 +158,18 @@ window.__persistentMemory.digestNow();
 ---
 
 ## 📝 版本历史
+
+### v0.1.36 (文本清洗与容错 JSON 解析解耦：构建独立 parser.js 模块)
+
+- **文本清洗与容错 JSON 解析解耦 (`src/parser.js`)**：
+  - 将近 250 行纯文本处理与容错 JSON 解析纯函数从 `src/extractor.js` 中抽离，独立封装为 `src/parser.js` 模块；
+  - 模块专注于**思考型大模型推理标签剥离 (DeepSeek-R1 / QwQ / Claude thinking)**、**Markdown 代码块提取**、**断尾栈修复 (repairTruncatedJson)**、**顶层安全解包 (unwrapJsonPayload)** 与**良性静默状态判定 (isQuietDigestPayload)**；
+  - 提炼引擎 `src/extractor.js` 代码体积缩减约 200 行，专注于核心请求编排、对话窗口截取与数据准入流水线；
+  - `src/backlog.js` 与 `src/consolidator.js` 直接改从 `src/parser.js` 引用核心解析纯函数，模块间依赖更清晰解耦。
+- **100% 同源透明向后兼容**：
+  - `src/extractor.js` 完整保留代理重导出 (`export { stripThinkingTags, repairTruncatedJson, unwrapJsonPayload, isQuietDigestPayload, cleanAndParseJson } from './parser.js'`)，确保既有扩展与第三方调用零破坏、无感平滑迁移。
+- **测试矩阵扩充至 96 项 (96/96 全绿通过)**：
+  - 新增 **T96**：全面覆盖 `src/parser.js` 与 `src/extractor.js` 的同源重导出契约、思维链清洗（含闭合/未闭合标签与代码块保留）、截断 JSON 逆序栈修补、常见顶层包裹对象解包及良性静默判定。
 
 ### v0.1.35 (现场快照与记忆 Token 上限即时持久化修复、原生抽屉双向联动与防回滚加固)
 
