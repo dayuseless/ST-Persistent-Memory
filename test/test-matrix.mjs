@@ -85,7 +85,8 @@ import {
     restoreSceneSnapshot,
     getSceneHistory,
     pushSceneSnapshot,
-    promoteMemoryToWorldInfo
+    promoteMemoryToWorldInfo,
+    sanitizeLorebookRef
 } from '../src/state.js';
 
 import {
@@ -147,6 +148,13 @@ import {
     isBacklogDigestRunning as backlogIsRunning,
     triggerBacklogDigest as backlogTrigger
 } from '../src/backlog.js';
+
+import {
+    sanitizeLorebookRef as lbSanitizeRef,
+    getActiveWorldBookInfo as lbGetActiveInfo,
+    syncMemoryDeltaToWorldInfo as lbSyncDelta,
+    promoteMemoryToWorldInfo as lbPromote
+} from '../src/lorebook.js';
 import { renderMemoryCard, showPromoteLoreModal } from '../src/ui.js';
 import {
     LOCAL_VECTOR_DIM,
@@ -3013,25 +3021,25 @@ Intermediate analysis details...
     });
 
     // ─────────────────────────────────────────────────────────────
-    // T71: 全工程版本标识严格一致性核验 (0.1.31)
+    // T71: 全工程版本标识严格一致性核验 (0.1.32)
     // ─────────────────────────────────────────────────────────────
-    test('T71: 全工程版本标识严格一致性核验 (manifest, config, index 与各模块头部统一为 0.1.31)', () => {
+    test('T71: 全工程版本标识严格一致性核验 (manifest, config, index 与各模块头部统一为 0.1.32)', () => {
         const currentFile = fileURLToPath(import.meta.url);
         const rootDir = path.resolve(path.dirname(currentFile), '../');
 
         // 1. manifest.json
         const manifestPath = path.join(rootDir, 'manifest.json');
         const manifest = JSON.parse(fs.readFileSync(manifestPath, 'utf8'));
-        assert.strictEqual(manifest.version, '0.1.31', 'manifest.json 版本号应为 0.1.31');
+        assert.strictEqual(manifest.version, '0.1.32', 'manifest.json 版本号应为 0.1.32');
 
         // 2. src/config.js
-        assert.strictEqual(EXTENSION_VERSION, '0.1.31', 'config.js EXTENSION_VERSION 应为 0.1.31');
+        assert.strictEqual(EXTENSION_VERSION, '0.1.32', 'config.js EXTENSION_VERSION 应为 0.1.32');
 
         // 3. index.js
         const indexPath = path.join(rootDir, 'index.js');
         const indexContent = fs.readFileSync(indexPath, 'utf8');
-        assert.ok(indexContent.includes('v0.1.31'), 'index.js 头部必须标注 v0.1.31');
-        assert.ok(!indexContent.includes('v0.1.30'), 'index.js 严禁残留旧版本 v0.1.30 版本头');
+        assert.ok(indexContent.includes('v0.1.32'), 'index.js 头部必须标注 v0.1.32');
+        assert.ok(!indexContent.includes('v0.1.31'), 'index.js 严禁残留旧版本 v0.1.31 版本头');
 
         // 4. 各核心模块头部注释版本检查
         const checkModules = [
@@ -3039,6 +3047,7 @@ Intermediate analysis details...
             'src/api.js',
             'src/consolidator.js',
             'src/backlog.js',
+            'src/lorebook.js',
             'src/state.js',
             'src/extractor.js',
             'src/injector.js',
@@ -3051,12 +3060,12 @@ Intermediate analysis details...
             const content = fs.readFileSync(filePath, 'utf8');
             const first10Lines = content.split('\n').slice(0, 10).join('\n');
             assert.ok(
-                first10Lines.includes('v0.1.31') || first10Lines.includes('0.1.31'),
-                `${relPath} 头部注释必须包含 0.1.31 版本标识`
+                first10Lines.includes('v0.1.32') || first10Lines.includes('0.1.32'),
+                `${relPath} 头部注释必须包含 0.1.32 版本标识`
             );
             assert.ok(
-                !first10Lines.includes('0.1.30') && !first10Lines.includes('v0.1.30'),
-                `${relPath} 头部注释严禁残留旧版本 0.1.30`
+                !first10Lines.includes('0.1.31') && !first10Lines.includes('v0.1.31'),
+                `${relPath} 头部注释严禁残留旧版本 0.1.31`
             );
         }
     });
@@ -3636,6 +3645,97 @@ Intermediate analysis details...
         assert.strictEqual(typeof applyExtractedData, 'function', 'applyExtractedData 必须成功导出');
         const emptySummary = applyExtractedData(null);
         assert.strictEqual(emptySummary, '无有效更新');
+    });
+
+    // ─────────────────────────────────────────────────────────────
+    // T87: 世界书数据结构安全与规范化单元测试 (src/lorebook.js sanitizeLorebookRef)
+    // ─────────────────────────────────────────────────────────────
+    test('T87: 世界书数据结构安全与规范化单元测试 (src/lorebook.js sanitizeLorebookRef 原型防御与溯源解析)', () => {
+        // 1. 非法输入与空输入安全回退
+        assert.strictEqual(lbSanitizeRef(null), null);
+        assert.strictEqual(lbSanitizeRef(undefined), null);
+        assert.strictEqual(lbSanitizeRef('string'), null);
+        assert.strictEqual(lbSanitizeRef(123), null);
+        assert.strictEqual(lbSanitizeRef({}), null, '无 entry_name 且无 entry_uid 时应返回 null');
+
+        // 2. 字段规范化与限长截断
+        const longName = 'A'.repeat(120);
+        const refNorm = lbSanitizeRef({
+            entry_name: longName,
+            entry_uid: '105',
+            book: '测试世界书.json',
+            file_name: '测试世界书.json'
+        });
+        assert.ok(refNorm);
+        assert.strictEqual(refNorm.entry_name.length, 80, 'entry_name 应被截断为 80 字符');
+        assert.strictEqual(refNorm.entry_uid, 105, 'entry_uid 字符串应转换为数值');
+        assert.strictEqual(refNorm.book, '测试世界书.json');
+        assert.strictEqual(refNorm.file_name, '测试世界书.json');
+
+        // 3. 原型污染防御与非法字段剥离
+        const maliciousObj = JSON.parse('{"entry_name":"安全词条","__proto__":{"polluted":true},"extra_junk":"foo"}');
+        const cleanedRef = lbSanitizeRef(maliciousObj);
+        assert.strictEqual(cleanedRef.entry_name, '安全词条');
+        assert.strictEqual(Object.prototype.polluted, undefined, '原型链严禁被污染');
+        assert.strictEqual(cleanedRef.extra_junk, undefined, '未定义字段应被剥离');
+
+        // 4. 升格溯源元数据结构提取
+        const provenanceObj = {
+            entry_name: '神圣护符',
+            entry_uid: 88,
+            promoted_from_scope: 'shared',
+            original_character: '角色A',
+            original_known_by: ['角色A', '角色B', '', null, 123]
+        };
+        const provRes = lbSanitizeRef(provenanceObj);
+        assert.strictEqual(provRes.promoted_from_scope, 'shared');
+        assert.strictEqual(provRes.original_character, '角色A');
+        assert.deepStrictEqual(provRes.original_known_by, ['角色A', '角色B'], '知情者列表应清洗并过滤非字符串');
+    });
+
+    // ─────────────────────────────────────────────────────────────
+    // T88: 动态记忆差量写回与升格边界测试 (src/lorebook.js)
+    // ─────────────────────────────────────────────────────────────
+    await testAsync('T88: 动态记忆差量写回与升格边界单元测试 (syncMemoryDeltaToWorldInfo & promoteMemoryToWorldInfo)', async () => {
+        // 1. syncMemoryDeltaToWorldInfo 边界异常测试
+        const resNonExist = await lbSyncDelta('non_existent_id');
+        assert.strictEqual(resNonExist.success, false);
+        assert.strictEqual(resNonExist.reason, '指定的记忆条目不存在');
+
+        // 2. 无关联条目时的防御
+        mockContext.chatMetadata = {
+            [MODULE_NAME]: {
+                version: 3,
+                memories: [{ id: 'mem_no_lb', content: '未绑定世界书的普通记忆', scope: MEMORY_SCOPE.WORLD }]
+            }
+        };
+        loadCurrentState();
+        const resUnlinked = await lbSyncDelta('mem_no_lb');
+        assert.strictEqual(resUnlinked.success, false);
+        assert.strictEqual(resUnlinked.reason, '该记忆未关联任何世界书条目');
+
+        // 3. promoteMemoryToWorldInfo 不存在记忆边界
+        const resPromoNonExist = await lbPromote('non_existent_id_2');
+        assert.strictEqual(resPromoNonExist.success, false);
+        assert.strictEqual(resPromoNonExist.reason, '指定的记忆条目不存在');
+    });
+
+    // ─────────────────────────────────────────────────────────────
+    // T89: 世界书独立服务解耦与跨层重导出协同测试
+    // ─────────────────────────────────────────────────────────────
+    test('T89: 世界书独立服务解耦与跨层重导出协同测试 (src/lorebook.js ↔ src/state.js 同源性契约)', () => {
+        // 1. 验证 state.js 重导出的世界书方法与 lorebook.js 物理同源
+        assert.strictEqual(sanitizeLorebookRef, lbSanitizeRef, 'sanitizeLorebookRef 重导出必须物理同源');
+        assert.strictEqual(getActiveWorldBookInfo, lbGetActiveInfo, 'getActiveWorldBookInfo 重导出必须物理同源');
+        assert.strictEqual(syncMemoryDeltaToWorldInfo, lbSyncDelta, 'syncMemoryDeltaToWorldInfo 重导出必须物理同源');
+        assert.strictEqual(promoteMemoryToWorldInfo, lbPromote, 'promoteMemoryToWorldInfo 重导出必须物理同源');
+
+        // 2. 验证 state 核心方法依旧稳定独立且不受世界书模块解耦影响
+        assert.strictEqual(typeof getState, 'function');
+        assert.strictEqual(typeof batchUpdate, 'function');
+        assert.strictEqual(typeof addMemory, 'function');
+        assert.strictEqual(typeof updateScene, 'function');
+        assert.strictEqual(typeof loadCurrentState, 'function');
     });
 
     console.log(`\n======================================================`);

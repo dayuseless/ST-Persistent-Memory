@@ -1,6 +1,6 @@
 # SillyTavern 持续记忆插件 (ST-Persistent-Memory)
 
-[![Version](https://img.shields.io/badge/version-v0.1.31-blue.svg)](https://github.com/dayuseless/ST-Persistent-Memory)
+[![Version](https://img.shields.io/badge/version-v0.1.32-blue.svg)](https://github.com/dayuseless/ST-Persistent-Memory)
 [![SillyTavern](https://img.shields.io/badge/SillyTavern-1.12.0+-purple.svg)](https://github.com/SillyTavern/SillyTavern)
 [![License](https://img.shields.io/badge/license-MIT-green.svg)](LICENSE)
 
@@ -77,7 +77,7 @@
 
 ### 方式二：手动离线包安装
 
-1. 从 [Releases 页面](https://github.com/dayuseless/ST-Persistent-Memory/releases) 下载 `ST-Persistent-Memory-v0.1.31.zip`。
+1. 从 [Releases 页面](https://github.com/dayuseless/ST-Persistent-Memory/releases) 下载 `ST-Persistent-Memory-v0.1.32.zip`。
 2. 解压到 SillyTavern 的扩展目录中：
    ```text
    SillyTavern/public/scripts/extensions/third-party/ST-Persistent-Memory/
@@ -158,6 +158,22 @@ window.__persistentMemory.digestNow();
 ---
 
 ## 📝 版本历史
+
+### v0.1.32 (世界书服务解耦：独立设定协同模块、事实差量写回与词条升格分离)
+
+- **世界书协同与外部知识呈现独立解耦 (`src/lorebook.js`)**：
+  - 新增专用服务模块 `src/lorebook.js`，将原本混杂在状态持久化引擎 (`src/state.js`) 中的世界书交互逻辑彻底剥离（精简核心状态代码 400+ 行）。
+  - **结构防御与原型免疫 (`sanitizeLorebookRef`)**：严格清洗世界书关联结构，免疫原型污染 (`__proto__`) 与非法字段注入，规范化 80 字符限长与数字 UID 解析，完整提取并校验升格知情范围与角色溯源元数据。
+  - **会话级世界书动态解析 (`getActiveWorldBookInfo`)**：安全解析聊天绑定专属世界书 (`chatMetadata.world_info`)、当前角色主世界书以及角色内置卡片世界书 (`character_book`)，严格限制在当前单会话作用域内，杜绝跨会话越权。
+  - **事实差量安全写回 (`syncMemoryDeltaToWorldInfo`)**：提供 Write-Back Hook，支持 Dry-Run 差异预览、按条目 UID / 名称双向匹配、时间戳格式化追加与强幂等防重机制，并自动刷新原生世界书编辑器。
+  - **动态记忆词条升格 (`promoteMemoryToWorldInfo`)**：支持将高价值长期记忆一键升格为世界书独立新词条，自增分配安全 UID，在词条标题显式注入知情范围与知情者审计溯源标记（`[持续记忆·私密(角色)]`），并写入统一安全审计日志。
+- **状态持久化引擎纯粹化与透明兼容**：
+  - `src/state.js` 专注于内存状态缓存、`state_revision` 单调递增、快照时光机与会话持久化存储，各层权责高度内聚。
+  - `src/state.js` 对外透明重导出世界书服务的核心方法，UI 与提炼引擎等消费方无感兼容。
+- **自动化测试矩阵扩展至 89 项 (T1-T89 全绿)**：
+  - **T87**：世界书数据结构安全与规范化单元测试（原型链污染防御、80字符截断与知情者清洗）。
+  - **T88**：动态记忆差量写回与升格边界单元测试（不存在记忆容错、未绑定世界书防御与幂等性验证）。
+  - **T89**：世界书独立服务解耦与跨层重导出协同测试（验证接口同源性与状态层纯粹性）。
 
 ### v0.1.31 (子系统领域解耦：长程归并引擎与全量历史回溯管道独立模块化)
 
