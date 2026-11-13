@@ -1,12 +1,13 @@
 /**
- * 提炼引擎 (v0.1.27)
- * 严格落实：状态版本并发保护 (state_revision)、独立API/generateRaw自包含请求、严格拒绝型 Schema 验证、知情者权威名单白名单核验、显式生命周期流转、知情范围隔离与高阶宏观归并 (Consolidation)
+ * 提炼引擎 (v0.1.28)
+ * 严格落实：状态版本并发保护 (state_revision)、独立API/generateRaw自包含请求、统一ACL准入层介入、严格拒绝型 Schema 验证、知情者权威名单白名单核验、显式生命周期流转、知情范围隔离与高阶宏观归并 (Consolidation)
  */
 
 import { MODULE_NAME, MEMORY_TYPES, MEMORY_STATUS, MEMORY_LIFECYCLE, MEMORY_SCOPE } from './config.js';
-import { getState, getSettings, updateScene, addMemory, setMemoryLifecycle, saveCurrentState, batchUpdate, getActiveWorldBookInfo, applyInactivitySleep, getContextParticipants } from './state.js';
+import { getState, getSettings, updateScene, addMemory, setMemoryLifecycle, saveCurrentState, batchUpdate, getActiveWorldBookInfo, applyInactivitySleep } from './state.js';
+import { getContextParticipants, validateMemoryAcl, normalizeAndValidateMemory, checkAclEscalation, recordAclAudit } from './acl.js';
 
-export { getContextParticipants };
+export { getContextParticipants, validateMemoryAcl, normalizeAndValidateMemory, checkAclEscalation, recordAclAudit };
 
 function getContext() {
     return window.SillyTavern?.getContext?.() ?? null;
@@ -333,123 +334,28 @@ export function validateExtractedPayload(raw, currentMemories = [], allowedParti
         }
     }
 
-    // 2. 校验 new_memories 数组 (拒绝策略：非法类型直接丢弃，严禁降级为 fact)
-    const validTypes = new Set(Object.values(MEMORY_TYPES));
-    const validScopes = new Set(Object.values(MEMORY_SCOPE));
-
+    // 2. 校验 new_memories 数组 (统一数据准入判定层 Fail-Closed 核验：非法类型直接丢弃，严禁降级为 fact)
     if (hasMemories) {
         for (const item of target.new_memories) {
             if (!item || typeof item !== 'object') continue;
 
-            const content = typeof item.content === 'string' ? item.content.trim() : '';
-            if (!content || content.length < 2) continue;
-
-            // 规则：类型非法直接剔除！
-            if (!validTypes.has(item.type)) {
-                console.warn(`[${MODULE_NAME}] [Schema 拦截] 记忆类型 "${item.type}" 非法，直接剔除，严禁隐式转为 fact`);
-                continue;
-            }
-
-            // P0 校验：若显式提供了未知非法的 scope，直接剔除！
-            if (item.scope && !validScopes.has(item.scope)) {
-                console.warn(`[${MODULE_NAME}] [Schema 拦截] 记忆知情范围 "${item.scope}" 未知非法，直接剔除`);
-                continue;
-            }
-
-            const char = typeof item.character === 'string' ? item.character.trim().slice(0, 30) : '';
-            let scope = validScopes.has(item.scope) ? item.scope : (char ? MEMORY_SCOPE.CHARACTER : MEMORY_SCOPE.SHARED);
-
-            // 提取知情者集合 (known_by)
-            let knownBy = [];
-            if (Array.isArray(item.known_by)) {
-                knownBy = item.known_by
-                    .filter(x => typeof x === 'string')
-                    .map(x => x.trim().slice(0, 30))
-                    .filter(Boolean);
-            } else if (char) {
-                knownBy = [char];
-            }
-
-            // P1-03 修复：结构与权限合法性约束——严禁将明确带有角色私密或知情限制的信息直接提升为 world 公共常识
-            if (scope === MEMORY_SCOPE.WORLD && char) {
-                scope = MEMORY_SCOPE.CHARACTER;
-            }
-            if (scope === MEMORY_SCOPE.WORLD && knownBy.length > 0) {
-                scope = MEMORY_SCOPE.SHARED;
-            }
-
-            // P0 修复：Fail-Closed 校验：若 scope === character，必须有明确有效的角色归属
-            if (scope === MEMORY_SCOPE.CHARACTER && !char) {
-                console.warn(`[${MODULE_NAME}] [Schema 拦截] 记忆定义为 character 私知，但缺少归属角色，执行 Fail-Closed 拒绝入库`);
-                continue;
-            }
-
-            // P1 修复：Fail-Closed 校验：若 scope === shared，必须有明确知情者集合，严禁作为公共常识入库
-            if (scope === MEMORY_SCOPE.SHARED && knownBy.length === 0) {
-                console.warn(`[${MODULE_NAME}] [Schema 拦截] 记忆定义为 shared 共享记忆，但缺少知情者集合 (known_by / character)，执行 Fail-Closed 拒绝入库`);
-                continue;
-            }
-
-            // P0-v0.1.18 核心加固：可信名单校验 (Trusted Participants Boundary)
-            // 严禁模型推断自行突破实际参与者权限边界：
-            // 1. 若提供了参与者名单且名单为空（size === 0）：对受限范围（character/shared）记忆执行 Fail-Closed 严格拒绝入库！
-            // 2. 若提供了非空名单：known_by 或 character 必须严格属于权威参与者
-            if (trustedParticipants !== null && trustedParticipants !== undefined) {
-                if (trustedParticipants.size === 0) {
-                    if (scope === MEMORY_SCOPE.CHARACTER || scope === MEMORY_SCOPE.SHARED) {
-                        console.warn(`[${MODULE_NAME}] [ACL 拦截] 可信参与者名单为空，受限范围记忆 (${scope}) 无法核验，执行 Fail-Closed 拒绝入库`);
-                        continue;
-                    }
-                } else {
-                    // 1. 若为 character 私密记忆，归属角色必须属于实际参与者名单
-                    if (scope === MEMORY_SCOPE.CHARACTER && (!char || !trustedParticipants.has(char))) {
-                        console.warn(`[${MODULE_NAME}] [ACL 拦截] 私密记忆归属角色 "${char}" 超出当前可信参与者名单，拒绝越权入库`);
-                        continue;
-                    }
-                    // 2. 若为 shared 共享记忆，known_by 中所有知情者必须全部属于实际参与者名单
-                    if (scope === MEMORY_SCOPE.SHARED) {
-                        const unauthorized = knownBy.filter(k => !trustedParticipants.has(k));
-                        if (unauthorized.length > 0 || knownBy.length === 0) {
-                            console.warn(`[${MODULE_NAME}] [ACL 拦截] 共享记忆知情者 "${unauthorized.join(', ')}" 超出当前可信参与者名单，拒绝越权入库`);
-                            continue;
-                        }
-                    }
-                }
-            }
-
-            const status = item.status === MEMORY_STATUS.PINNED ? MEMORY_STATUS.PINNED : MEMORY_STATUS.TRIGGERED;
-
-            // 世界书关联结构校验与净化 (lorebook_ref)
-            let lorebookRef = null;
-            if (item.lorebook_ref && typeof item.lorebook_ref === 'object') {
-                const rawLb = item.lorebook_ref;
-                const entryName = typeof rawLb.entry_name === 'string' ? rawLb.entry_name.trim().slice(0, 80) : '';
-                const bookName = typeof rawLb.book === 'string' ? rawLb.book.trim().slice(0, 80) : '';
-                let uidVal = null;
-                if (Number.isInteger(rawLb.entry_uid)) {
-                    uidVal = rawLb.entry_uid;
-                } else if (rawLb.entry_uid !== null && rawLb.entry_uid !== undefined && !isNaN(Number(rawLb.entry_uid))) {
-                    uidVal = Number(rawLb.entry_uid);
-                }
-                if (entryName || uidVal !== null) {
-                    lorebookRef = {
-                        book: bookName,
-                        entry_uid: uidVal,
-                        entry_name: entryName
-                    };
-                }
-            }
-
-            validated.new_memories.push({
-                type: item.type,
-                content: content.slice(0, maxMemContentLen),
-                trigger_keys: sanitizeTriggerKeys(item.trigger_keys),
-                status: status,
-                character: char,
-                scope: scope,
-                known_by: knownBy,
-                lorebook_ref: lorebookRef
+            const norm = normalizeAndValidateMemory(item, {
+                participants: trustedParticipants,
+                source: 'ai_extraction',
+                maxContentLen: maxMemContentLen,
+                context: typeof getContext === 'function' ? getContext() : null
             });
+
+            if (!norm.valid) {
+                if (norm.aclRejected) {
+                    console.warn(`[${MODULE_NAME}] [ACL 拦截] ${norm.reason}`);
+                } else {
+                    console.warn(`[${MODULE_NAME}] [Schema 拦截] ${norm.reason}`);
+                }
+                continue;
+            }
+
+            validated.new_memories.push(norm.memory);
 
             // 单次提炼吸收上限根据预算动态弹性扩展 (5~15条)
             if (validated.new_memories.length >= maxNewMemoriesAllowed) break;
@@ -1292,21 +1198,16 @@ export function validateConsolidatedPayload(raw, currentMemories = [], allowedPa
         let targetChar = baseChar;
         let targetKnown = Array.isArray(sourceMems[0].known_by) ? [...sourceMems[0].known_by] : [];
 
-        // 验证参与者可信性 (Fail-Closed：空名单严格拒绝受限范围记忆)
-        if (trustedParticipants !== null && trustedParticipants !== undefined) {
-            if (trustedParticipants.size === 0) {
-                if (targetScope === MEMORY_SCOPE.CHARACTER || targetScope === MEMORY_SCOPE.SHARED) {
-                    console.warn(`[${MODULE_NAME}] [Consolidate 拦截] 可信参与者名单为空，受限范围记忆 (${targetScope}) 拒绝入库`);
-                    continue;
-                }
-            } else {
-                if (targetScope === MEMORY_SCOPE.CHARACTER && (!targetChar || !trustedParticipants.has(targetChar))) {
-                    continue;
-                }
-                if (targetScope === MEMORY_SCOPE.SHARED && (!targetKnown.length || targetKnown.some(k => !trustedParticipants.has(k)))) {
-                    continue;
-                }
-            }
+        // 验证参与者可信性 (调用统一 ACL 判定层)
+        const aclRes = validateMemoryAcl({
+            scope: targetScope,
+            character: targetChar,
+            known_by: targetKnown
+        }, trustedParticipants);
+
+        if (!aclRes.allowed) {
+            console.warn(`[${MODULE_NAME}] [Consolidate 拦截] ${aclRes.reason}`);
+            continue;
         }
 
         validConsolidated.push({

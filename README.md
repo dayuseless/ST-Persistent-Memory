@@ -1,6 +1,6 @@
 # SillyTavern 持续记忆插件 (ST-Persistent-Memory)
 
-[![Version](https://img.shields.io/badge/version-v0.1.27-blue.svg)](https://github.com/dayuseless/ST-Persistent-Memory)
+[![Version](https://img.shields.io/badge/version-v0.1.28-blue.svg)](https://github.com/dayuseless/ST-Persistent-Memory)
 [![SillyTavern](https://img.shields.io/badge/SillyTavern-1.12.0+-purple.svg)](https://github.com/SillyTavern/SillyTavern)
 [![License](https://img.shields.io/badge/license-MIT-green.svg)](LICENSE)
 
@@ -77,7 +77,7 @@
 
 ### 方式二：手动离线包安装
 
-1. 从 [Releases 页面](https://github.com/dayuseless/ST-Persistent-Memory/releases) 下载 `ST-Persistent-Memory-v0.1.27.zip`。
+1. 从 [Releases 页面](https://github.com/dayuseless/ST-Persistent-Memory/releases) 下载 `ST-Persistent-Memory-v0.1.28.zip`。
 2. 解压到 SillyTavern 的扩展目录中：
    ```text
    SillyTavern/public/scripts/extensions/third-party/ST-Persistent-Memory/
@@ -166,6 +166,21 @@ window.__persistentMemory.digestNow();
 - **中途启用智能引导与交互横幅 (Smart Mid-Chat Onboarding)**：当检测到会话已有较长历史（$\ge 6$ 条消息）但记忆库为空时，HUD 顶部自动展示友好的智能引导横幅，支持一键点击启动全量回溯；控制台顶部新增“回溯提炼”快捷按钮，自由选择“从头全量提炼”或“增量补全未消化历史”。
 - **实时进度反馈与随时安全中止 (Live Progress & Abort Guard)**：回溯执行期间，HUD 实时呈现带旋转动效的百分比进度条、批次计数与已沉淀记忆数；提供一键“中止”按钮与会话切换自动熔断拦截，绝不发生跨会话污染或挂死。
 - **测试矩阵扩展至 41 项 (T1-T41 全绿)**：新增针对对话轮次回退自愈校准 (T40) 与全量历史分块回溯多批次递进提炼 (T41) 的自动化测试覆盖。
+
+### v0.1.28 (架构解耦：统一 ACL 访问控制层、数据准入流水线与权限变更审计)
+
+- **权限规则与业务操作解耦 (Unified ACL & Ingestion Gate)**：
+  - 新增独立安全核心模块 `src/acl.js`，将原本分散在提炼 (`extractor.js`)、导入 (`state.js`)、手工录入 (`ui.js`) 中的权限校验逻辑彻底抽象收敛。
+  - 各业务入口不再各自为战，统一交由 ACL 判定层（`validateMemoryAcl` / `normalizeAndValidateMemory`）执行权威决策，杜绝权限边界漂移与特权旁路。
+- **数据结构与数据来源解耦 (Provenance != Credibility)**：
+  - 严格确立核心架构纪律——“数据来源不等于数据可信度”。外部数据无论源自 AI 自动提炼、历史回溯、备份文件导入、长程宏观归并还是人工手动录入，全链路经由统一数据准入流水线：格式规范化 ➔ 结构合法性校验 ➔ 权威参与者 ACL 校验 ➔ 越权提权防线 ➔ 纯净记忆落盘。
+  - 严格落实 Fail-Closed 原则，未通过准入校验的数据坚决拦截，受限私密与共享记忆绝不静默降级为 `world` 公共记忆。
+- **越权提权防线与继承性保障 (Escalation Guard & Inheritance)**：
+  - 抽象并统一 `checkAclEscalation` 判定函数，针对语义高度吻合（相似度 $\ge 0.70$）的新增条目，严禁将既有私密记忆提权为公共记忆 (`character` ➔ `world`)、严禁向共享记忆擅自追加知情者 (`known_by`)、严禁借相似条目将角色私知所有权转移给其他角色，强制继承既有条目 ACL。
+- **关键权限流转审计留痕 (Permission Mutation Audit Trail)**：
+  - 在系统全局状态中建立统一的 `acl_audit_log` 环形队列（硬上限 30 条），自动记录世界书升格 (`promote_world_info`)、越权提权拦截 (`scope_escalation_blocked`) 与备份导入越权拦截 (`import_acl_rejected`)，实现关键权限变更的全生命周期透明追溯与留痕。
+- **自动化测试矩阵扩展至 77 项 (T1-T77 全绿)**：
+  - 新增针对统一 ACL 判定层单元测试 (T72)、统一数据准入规范化流水线测试 (T73)、数据来源与可信度解耦跨端一致性测试 (T74)、越权提权防线与继承性测试 (T75)、统一安全审计日志环形缓冲区测试 (T76) 以及状态机持久化契约验证 (T77) 的全量自动化测试覆盖。
 
 ### v0.1.27 (安全审计加固：数据导入全链路参与者校验、世界书升格权限提示与版本统一)
 

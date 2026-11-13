@@ -89,6 +89,13 @@ import {
 } from '../src/state.js';
 
 import {
+    validateMemoryAcl,
+    normalizeAndValidateMemory,
+    checkAclEscalation,
+    recordAclAudit
+} from '../src/acl.js';
+
+import {
     estimateTokens,
     getGeneratingEntity,
     buildAndInjectMemoryPrompt,
@@ -230,33 +237,48 @@ async function runTests() {
     test('T3.2: shared 记忆的 known_by 不可被相似新条目扩大', () => {
         const state = getState();
         state.memories = [];
-        addMemory({
-            content: '角色A知道藏宝图藏在枯井下',
-            type: 'fact',
-            scope: 'shared',
-            known_by: ['角色A']
-        });
+        // 在群聊环境中（角色A与角色B均为会话合法成员），核验语义相似条目无法突破已有 ACL 扩大知情权
+        mockContext.groupId = 'grp_test_acl';
+        mockContext.groups = [{ id: 'grp_test_acl', members: ['角色A', '角色B'] }];
+        try {
+            addMemory({
+                content: '角色A知道藏宝图藏在枯井下',
+                type: 'fact',
+                scope: 'shared',
+                known_by: ['角色A']
+            });
 
-        const attemptedExpansion = addMemory({
-            content: '角色A知道藏宝图藏在枯井下',
-            type: 'fact',
-            scope: 'shared',
-            known_by: ['角色A', '角色B']
-        });
+            const attemptedExpansion = addMemory({
+                content: '角色A知道藏宝图藏在枯井下',
+                type: 'fact',
+                scope: 'shared',
+                known_by: ['角色A', '角色B']
+            });
 
-        assert.deepStrictEqual(attemptedExpansion.known_by, ['角色A'], '模型不得通过新增同义条目让角色B获得知情权');
-        assert.strictEqual(state.memories.length, 1, '等价条目应收敛至已有 ACL，而非创建权限更宽的副本');
+            assert.deepStrictEqual(attemptedExpansion.known_by, ['角色A'], '模型不得通过新增同义条目让角色B获得知情权');
+            assert.strictEqual(state.memories.length, 1, '等价条目应收敛至已有 ACL，而非创建权限更宽的副本');
+        } finally {
+            delete mockContext.groupId;
+            delete mockContext.groups;
+        }
     });
 
     test('T3.3: character 私知不可借相似条目转移给另一角色', () => {
         const state = getState();
         state.memories = [];
-        addMemory({ content: '角色A看过密诏原件', type: 'fact', scope: 'character', character: '角色A' });
-        const attemptedTransfer = addMemory({ content: '角色A看过密诏原件', type: 'fact', scope: 'character', character: '角色B' });
+        mockContext.groupId = 'grp_test_acl';
+        mockContext.groups = [{ id: 'grp_test_acl', members: ['角色A', '角色B'] }];
+        try {
+            addMemory({ content: '角色A看过密诏原件', type: 'fact', scope: 'character', character: '角色A' });
+            const attemptedTransfer = addMemory({ content: '角色A看过密诏原件', type: 'fact', scope: 'character', character: '角色B' });
 
-        assert.strictEqual(attemptedTransfer.character, '角色A', '相似私知条目不得更换所属角色');
-        assert.deepStrictEqual(attemptedTransfer.known_by, ['角色A']);
-        assert.strictEqual(state.memories.length, 1);
+            assert.strictEqual(attemptedTransfer.character, '角色A', '相似私知条目不得更换所属角色');
+            assert.deepStrictEqual(attemptedTransfer.known_by, ['角色A']);
+            assert.strictEqual(state.memories.length, 1);
+        } finally {
+            delete mockContext.groupId;
+            delete mockContext.groups;
+        }
     });
 
     // ─────────────────────────────────────────────────────────────
@@ -2966,28 +2988,29 @@ Intermediate analysis details...
     });
 
     // ─────────────────────────────────────────────────────────────
-    // T71: 全工程版本标识严格一致性核验 (0.1.27)
+    // T71: 全工程版本标识严格一致性核验 (0.1.28)
     // ─────────────────────────────────────────────────────────────
-    test('T71: 全工程版本标识严格一致性核验 (manifest, config, index 与各模块头部统一为 0.1.27)', () => {
+    test('T71: 全工程版本标识严格一致性核验 (manifest, config, index 与各模块头部统一为 0.1.28)', () => {
         const currentFile = fileURLToPath(import.meta.url);
         const rootDir = path.resolve(path.dirname(currentFile), '../');
 
         // 1. manifest.json
         const manifestPath = path.join(rootDir, 'manifest.json');
         const manifest = JSON.parse(fs.readFileSync(manifestPath, 'utf8'));
-        assert.strictEqual(manifest.version, '0.1.27', 'manifest.json 版本号应为 0.1.27');
+        assert.strictEqual(manifest.version, '0.1.28', 'manifest.json 版本号应为 0.1.28');
 
         // 2. src/config.js
-        assert.strictEqual(EXTENSION_VERSION, '0.1.27', 'config.js EXTENSION_VERSION 应为 0.1.27');
+        assert.strictEqual(EXTENSION_VERSION, '0.1.28', 'config.js EXTENSION_VERSION 应为 0.1.28');
 
         // 3. index.js
         const indexPath = path.join(rootDir, 'index.js');
         const indexContent = fs.readFileSync(indexPath, 'utf8');
-        assert.ok(indexContent.includes('v0.1.27'), 'index.js 头部必须标注 v0.1.27');
-        assert.ok(!indexContent.includes('v0.1.18'), 'index.js 严禁残留过时的 v0.1.18 版本头');
+        assert.ok(indexContent.includes('v0.1.28'), 'index.js 头部必须标注 v0.1.28');
+        assert.ok(!indexContent.includes('v0.1.27'), 'index.js 严禁残留旧版本 v0.1.27 版本头');
 
         // 4. 各核心模块头部注释版本检查
         const checkModules = [
+            'src/acl.js',
             'src/state.js',
             'src/extractor.js',
             'src/injector.js',
@@ -3000,14 +3023,244 @@ Intermediate analysis details...
             const content = fs.readFileSync(filePath, 'utf8');
             const first10Lines = content.split('\n').slice(0, 10).join('\n');
             assert.ok(
-                first10Lines.includes('v0.1.27') || first10Lines.includes('0.1.27'),
-                `${relPath} 头部注释必须包含 0.1.27 版本标识`
+                first10Lines.includes('v0.1.28') || first10Lines.includes('0.1.28'),
+                `${relPath} 头部注释必须包含 0.1.28 版本标识`
             );
             assert.ok(
-                !first10Lines.includes('0.1.26') && !first10Lines.includes('v0.1.26'),
-                `${relPath} 头部注释严禁残留旧版本 0.1.26`
+                !first10Lines.includes('0.1.27') && !first10Lines.includes('v0.1.27'),
+                `${relPath} 头部注释严禁残留旧版本 0.1.27`
             );
         }
+    });
+
+    // ─────────────────────────────────────────────────────────────
+    // T72: 统一 ACL 判定层核心功能单元测试 (validateMemoryAcl)
+    // ─────────────────────────────────────────────────────────────
+    test('T72: 统一 ACL 判定层核心功能单元测试 (validateMemoryAcl Fail-Closed 与权限准入)', () => {
+        const participants = new Set(['玩家', '角色A']);
+
+        // 1. 非法 scope 拒绝
+        const resInvalidScope = validateMemoryAcl({ scope: 'unknown_scope' }, participants);
+        assert.strictEqual(resInvalidScope.allowed, false);
+        assert.strictEqual(resInvalidScope.code, 'INVALID_SCOPE');
+
+        // 2. 角色私密记忆缺失归属角色拒绝
+        const resMissingChar = validateMemoryAcl({ scope: 'character', character: '' }, participants);
+        assert.strictEqual(resMissingChar.allowed, false);
+        assert.strictEqual(resMissingChar.code, 'MISSING_CHARACTER');
+
+        // 3. 共享机密记忆缺少知情者拒绝
+        const resEmptyKnownBy = validateMemoryAcl({ scope: 'shared', known_by: [] }, participants);
+        assert.strictEqual(resEmptyKnownBy.allowed, false);
+        assert.strictEqual(resEmptyKnownBy.code, 'EMPTY_KNOWN_BY');
+
+        // 4. 角色私密记忆归属未参战角色拒绝
+        const resUnauthChar = validateMemoryAcl({ scope: 'character', character: '无关路人' }, participants);
+        assert.strictEqual(resUnauthChar.allowed, false);
+        assert.strictEqual(resUnauthChar.code, 'UNAUTHORIZED_CHAR');
+
+        // 5. 共享记忆包含未参战知情者拒绝
+        const resUnauthKnown = validateMemoryAcl({ scope: 'shared', known_by: ['角色A', '敌方间谍'] }, participants);
+        assert.strictEqual(resUnauthKnown.allowed, false);
+        assert.strictEqual(resUnauthKnown.code, 'UNAUTHORIZED_KNOWN_BY');
+
+        // 6. 空名单 Fail-Closed：受限范围记忆全拒绝
+        const resEmptyPartPriv = validateMemoryAcl({ scope: 'character', character: '角色A' }, new Set());
+        assert.strictEqual(resEmptyPartPriv.allowed, false);
+        assert.strictEqual(resEmptyPartPriv.code, 'EMPTY_PARTICIPANTS');
+
+        // 7. 公共记忆在空名单或有效名单下均允许
+        const resWorld = validateMemoryAcl({ scope: 'world' }, new Set());
+        assert.strictEqual(resWorld.allowed, true);
+        assert.strictEqual(resWorld.code, 'OK');
+
+        // 8. 规范化收敛：带有角色的 world 记忆自动收敛为 character，避免越权逃逸
+        const resWorldWithChar = validateMemoryAcl({ scope: 'world', character: '角色A' }, participants);
+        assert.strictEqual(resWorldWithChar.allowed, true);
+        assert.strictEqual(resWorldWithChar.normalizedScope, MEMORY_SCOPE.CHARACTER);
+    });
+
+    // ─────────────────────────────────────────────────────────────
+    // T73: 统一数据准入规范化流水线测试 (normalizeAndValidateMemory)
+    // ─────────────────────────────────────────────────────────────
+    test('T73: 统一数据准入规范化流水线测试 (normalizeAndValidateMemory 数据净化与强类型)', () => {
+        const participants = new Set(['玩家', '角色A']);
+
+        // 1. 空内容或非对象拦截
+        assert.strictEqual(normalizeAndValidateMemory(null).valid, false);
+        assert.strictEqual(normalizeAndValidateMemory({ content: '' }).valid, false);
+        assert.strictEqual(normalizeAndValidateMemory({ content: '   ' }).valid, false);
+
+        // 2. 超长内容安全截断 (默认 150 字符)
+        const longText = 'A'.repeat(200);
+        const resLong = normalizeAndValidateMemory({ content: longText, scope: 'world' }, { participants });
+        assert.strictEqual(resLong.valid, true);
+        assert.strictEqual(resLong.memory.content.length, 150);
+
+        // 3. 非法类型强拦截 (Fail-Closed: 严禁自动降级为 fact)
+        const resBadType = normalizeAndValidateMemory({ content: '测试正文', type: 'hacked_type' }, { participants });
+        assert.strictEqual(resBadType.valid, false);
+        assert.ok(resBadType.reason.includes('非法'));
+
+        // 4. trigger_keys 清洗规范化
+        const resKeys = normalizeAndValidateMemory({
+            content: '触发词清洗测试',
+            scope: 'world',
+            trigger_keys: ['  钥匙A  ', '钥匙A', '', 123, null, '钥匙B']
+        }, { participants });
+        assert.strictEqual(resKeys.valid, true);
+        assert.deepStrictEqual(resKeys.memory.trigger_keys, ['钥匙A', '钥匙B']);
+
+        // 5. 权限不合规时返回 aclRejected 标志
+        const resAclFail = normalizeAndValidateMemory({
+            content: '角色C的秘密',
+            scope: 'character',
+            character: '角色C'
+        }, { participants });
+        assert.strictEqual(resAclFail.valid, false);
+        assert.strictEqual(resAclFail.aclRejected, true);
+    });
+
+    // ─────────────────────────────────────────────────────────────
+    // T74: 数据来源与可信度解耦测试 (AI提炼/备份导入/手工录入一致性门禁)
+    // ─────────────────────────────────────────────────────────────
+    test('T74: 数据来源与可信度解耦测试 (提炼、导入、录入三端遵循完全同一 ACL 判定边界)', () => {
+        const state = getState();
+        state.memories = [];
+        // 当前单聊环境：仅 玩家 与 角色A 具有权限
+        const maliciousItem = {
+            id: 'mem_malicious_source',
+            type: 'fact',
+            content: '来自未参战角色B的私密日记',
+            scope: 'character',
+            character: '角色B'
+        };
+
+        // 入口 1: AI 提炼入口 (validateExtractedPayload)
+        const digestPayload = {
+            new_memories: [maliciousItem]
+        };
+        const digestResult = validateExtractedPayload(digestPayload, state.memories);
+        assert.strictEqual(digestResult.new_memories.length, 0, 'AI 提炼入口必须拦截未参战角色的私密记忆');
+
+        // 入口 2: 备份导入入口 (importMemoryData - merge 模式)
+        const importResult = importMemoryData({
+            version: '0.1.28',
+            memories: [maliciousItem]
+        }, 'merge');
+        assert.strictEqual(importResult.imported, 0, '备份导入入口必须拒绝未参战角色的私密记忆');
+        assert.strictEqual(importResult.aclRejected, 1, '备份导入入口记录 1 条 ACL 拦截');
+        assert.strictEqual(state.memories.length, 0);
+
+        // 入口 3: 手工/状态写入入口 (addMemory)
+        const addResult = addMemory(maliciousItem);
+        assert.strictEqual(addResult, null, 'addMemory 必须拦截未参战角色的私密记忆');
+        assert.strictEqual(state.memories.length, 0, '三端入口均不可突破一致性 ACL 门禁');
+    });
+
+    // ─────────────────────────────────────────────────────────────
+    // T75: checkAclEscalation 越权提权防线与继承性测试
+    // ─────────────────────────────────────────────────────────────
+    test('T75: checkAclEscalation 越权提权防线与继承性测试', () => {
+        // 场景 1: character 私密试图提升为 world 公共
+        const privMem = { id: 'mem_priv_1', scope: 'character', character: '角色A', known_by: ['角色A'] };
+        const escWorld = checkAclEscalation(privMem, { scope: 'world' });
+        assert.strictEqual(escWorld.violated, true);
+        assert.strictEqual(escWorld.inheritedAcl.scope, MEMORY_SCOPE.CHARACTER);
+        assert.strictEqual(escWorld.inheritedAcl.character, '角色A');
+
+        // 场景 2: shared 共享试图扩大知情者范围
+        const sharedMem = { id: 'mem_sh_1', scope: 'shared', known_by: ['角色A'] };
+        const escKnown = checkAclEscalation(sharedMem, { scope: 'shared', known_by: ['角色A', '角色B'] });
+        assert.strictEqual(escKnown.violated, true);
+        assert.deepStrictEqual(escKnown.inheritedAcl.known_by, ['角色A']);
+
+        // 场景 3: character 私密试图转移给其他角色
+        const escCharTransfer = checkAclEscalation(privMem, { scope: 'character', character: '角色B' });
+        assert.strictEqual(escCharTransfer.violated, true);
+        assert.strictEqual(escCharTransfer.inheritedAcl.character, '角色A');
+
+        // 场景 4: world 公共收敛为 character 私密（权限收紧，不构成越权提权）
+        const worldMem = { id: 'mem_w_1', scope: 'world' };
+        const tightenScope = checkAclEscalation(worldMem, { scope: 'character', character: '角色A' });
+        assert.strictEqual(tightenScope.violated, false);
+    });
+
+    // ─────────────────────────────────────────────────────────────
+    // T76: 统一安全审计日志环形缓冲区测试 (recordAclAudit & state.acl_audit_log)
+    // ─────────────────────────────────────────────────────────────
+    await testAsync('T76: 统一安全审计日志环形缓冲区测试 (recordAclAudit 容量保护与事件留痕)', async () => {
+        const state = getState();
+        state.memories = [];
+        state.acl_audit_log = [];
+
+        // 1. 模拟写入普通审计事件
+        recordAclAudit(state, 'test_event', { detail: '测试审计' });
+        assert.strictEqual(state.acl_audit_log.length, 1);
+        assert.strictEqual(state.acl_audit_log[0].action, 'test_event');
+        assert.ok(state.acl_audit_log[0].timestamp);
+
+        // 2. 模拟世界书升格操作，触发 promote_world_info 审计留痕
+        const testMem = {
+            id: 'mem_audit_promo',
+            content: '血色要塞防守图纸',
+            scope: 'character',
+            character: '角色A',
+            known_by: ['角色A']
+        };
+        state.memories.push(testMem);
+
+        mockContext.saveWorldInfo = async () => true;
+        mockContext.loadWorldInfo = async () => ({ entries: {} });
+
+        await promoteMemoryToWorldInfo('mem_audit_promo', { bookName: '测试设定集' });
+        const promoAudit = state.acl_audit_log.find(a => a.action === 'promote_world_info');
+        assert.ok(promoAudit, '世界书升格操作必须在 acl_audit_log 中记录审计');
+        assert.strictEqual(promoAudit.details.fromScope, 'character');
+        assert.strictEqual(promoAudit.details.character, '角色A');
+
+        // 3. 环形缓冲区上限保护 (30 条硬上限)
+        for (let i = 0; i < 40; i++) {
+            recordAclAudit(state, 'flood_test', { i });
+        }
+        assert.strictEqual(state.acl_audit_log.length, 30, '审计日志必须维持在 30 条环形缓冲区硬上限内');
+        assert.strictEqual(state.acl_audit_log[29].details.i, 39, '最新审计记录应始终位于缓冲区末尾');
+    });
+
+    // ─────────────────────────────────────────────────────────────
+    // T77: 状态机与持久化契约验证 (ACL 变更后的状态修订与快照一致性)
+    // ─────────────────────────────────────────────────────────────
+    test('T77: 状态机与持久化契约验证 (ACL 变更后的状态修订与快照一致性)', () => {
+        const state = getState();
+        state.memories = [];
+        const initialRevision = Number(state.state_revision) || 0;
+
+        // 1. 正常入库：state_revision 自增且数据字段规范完备
+        const added = addMemory({
+            content: '角色A在城南采药',
+            type: 'fact',
+            scope: 'character',
+            character: '角色A'
+        });
+        assert.ok(added);
+        assert.strictEqual(state.state_revision, initialRevision + 1, '有效记忆入库后 state_revision 必须递增');
+        assert.strictEqual(added.character, '角色A');
+        assert.deepStrictEqual(added.known_by, ['角色A']);
+        assert.ok(added.created_at);
+        assert.ok(added.updated_at);
+        assert.strictEqual(state.memories.length, 1);
+
+        // 2. 准入拦截：违规数据绝不修改 revision，且不污染 memories 数组
+        const revBefore = state.state_revision;
+        const rejected = addMemory({
+            content: '非法第三者角色秘密',
+            type: 'fact',
+            scope: 'character',
+            character: '未参战角色X'
+        });
+        assert.strictEqual(rejected, null, 'ACL 准入拦截条目应返回 null');
+        assert.strictEqual(state.state_revision, revBefore, '拦截未入库条目绝不得递增 state_revision');
+        assert.strictEqual(state.memories.length, 1, '拦截条目绝不得残留在 state.memories');
     });
 
     console.log(`\n======================================================`);

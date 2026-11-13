@@ -1,78 +1,16 @@
 /**
- * 记忆状态管理器 (v0.1.27)
- * 严格落实 state_revision 状态修订号、L0 三态 PATCH 语义、真正原子回滚事务、数据导入ACL校验、世界书升格溯源、严格知情集合隔离、行内编辑与高阶归并演进
+ * 记忆状态管理器 (v0.1.28)
+ * 严格落实 state_revision 状态修订号、L0 三态 PATCH 语义、真正原子回滚事务、统一ACL判定层介入、数据准入流水线、世界书升格溯源、知情集合隔离与高阶归并演进
  */
 
 import { MODULE_NAME, EXTENSION_VERSION, DEFAULT_SETTINGS, DEFAULT_STATE, MEMORY_STATUS, MEMORY_LIFECYCLE, MEMORY_TYPES, MEMORY_SCOPE } from './config.js';
 import { syncEnsureLocalEmbedding, reindexMemories } from './semantic.js';
+import { getContextParticipants, validateMemoryAcl, normalizeAndValidateMemory, checkAclEscalation, recordAclAudit } from './acl.js';
+
+export { getContextParticipants, validateMemoryAcl, normalizeAndValidateMemory, checkAclEscalation, recordAclAudit };
 
 let stateCache = null;
 const stateChangeListeners = new Set();
-
-/**
- * P1-01 核心加固：计算当前会话权威可信参与者名单 (Authoritative Participants Whitelist)
- * 1. 单聊模式：仅认可当前活跃聊天的双方 (User + 当前激活角色 name2/characterId)，坚决排除角色库中未参战角色！
- * 2. 群聊模式：严格基于 c.groupId 检索 c.groups[groupId].members，解析参战角色并联合 User。
- * 3. 严禁将模型生成的现场名单 (state.scene.in_scene_characters) 纳入授权凭证！防范循环越权漏洞。
- */
-export function getContextParticipants(c, state = null) {
-    const participants = new Set();
-    if (!c) return participants;
-
-    // 1. 玩家身份 (User)
-    if (c.name1 && typeof c.name1 === 'string' && c.name1.trim()) {
-        participants.add(c.name1.trim());
-    }
-
-    // 2. 检查是否为群聊 (Group Chat)
-    // SillyTavern 群聊特征：存在 c.groupId 且匹配 c.groups 中的群组定义
-    const isGroupChat = Boolean(c.groupId);
-    if (isGroupChat && Array.isArray(c.groups)) {
-        const activeGroup = c.groups.find(g => String(g.id) === String(c.groupId));
-        if (activeGroup && Array.isArray(activeGroup.members)) {
-            const memberSet = new Set(activeGroup.members.map(m => String(m).trim().toLowerCase()));
-            if (Array.isArray(c.characters)) {
-                c.characters.forEach(ch => {
-                    if (ch && typeof ch.name === 'string' && ch.name.trim()) {
-                        const avatarName = String(ch.avatar || '').trim().toLowerCase();
-                        const charName = ch.name.trim().toLowerCase();
-                        if (memberSet.has(avatarName) || memberSet.has(charName)) {
-                            participants.add(ch.name.trim());
-                        }
-                    }
-                });
-            }
-            // 兼容 group.members 直接存储角色名字的情形 (无后缀)
-            activeGroup.members.forEach(m => {
-                if (typeof m === 'string' && m.trim() && !m.includes('.')) {
-                    participants.add(m.trim());
-                }
-            });
-        }
-    } else {
-        // 3. 单聊模式 (1-on-1 Chat):
-        // 严格仅认可当前会话激活的角色 (name2 或 characters[characterId])
-        // 严禁将用户角色库 (characters) 中未参战的其他角色混入！
-        if (c.name2 && typeof c.name2 === 'string' && c.name2.trim()) {
-            participants.add(c.name2.trim());
-        } else if (Array.isArray(c.characters) && c.characterId !== undefined && c.characters[c.characterId]) {
-            const activeChar = c.characters[c.characterId];
-            if (activeChar && typeof activeChar.name === 'string' && activeChar.name.trim()) {
-                participants.add(activeChar.name.trim());
-            }
-        }
-    }
-
-    // 兜底保护：若环境仅有单一角色对象且未标明 name2/characterId
-    if (participants.size <= 1 && Array.isArray(c.characters) && c.characters.length === 1) {
-        const onlyChar = c.characters[0];
-        if (onlyChar?.name && typeof onlyChar.name === 'string' && onlyChar.name.trim()) {
-            participants.add(onlyChar.name.trim());
-        }
-    }
-
-    return participants;
-}
 
 /**
  * 校验并规范化世界书关联结构 (lorebook_ref)
@@ -701,79 +639,33 @@ function getRecipientsForScope(scope, character, knownBy) {
 /**
  * 保守去重与认知演化保护
  */
-export function addMemory(item) {
+export function addMemory(item, options = {}) {
     if (!item || typeof item !== 'object') return null;
     const s = getState();
-    if (typeof item.content !== 'string') return null;
-    // P2-04 修复：单条记忆硬长度上限保护，防止超长内容挤占上下文
-    const content = item.content.trim().slice(0, 150);
-    if (!content) return null;
+    const c = options.context || getContext();
 
-    const validTypes = new Set(Object.values(MEMORY_TYPES));
-    const validScopes = new Set(Object.values(MEMORY_SCOPE));
+    // 统一数据准入判定层执行格式规范化与权威参与者 ACL 核验 (v0.1.28)
+    const norm = normalizeAndValidateMemory(item, {
+        participants: options.participants !== undefined ? options.participants : getContextParticipants(c, s),
+        source: options.source || 'add_memory',
+        context: c,
+        maxContentLen: options.maxContentLen,
+        bypassAcl: options.bypassAcl
+    });
 
-    const targetType = item.type || MEMORY_TYPES.FACT;
-    if (!validTypes.has(targetType)) {
-        console.warn(`[${MODULE_NAME}] [Fail-Closed] 拦截非法记忆类型 "${targetType}"，拒绝入库`);
+    if (!norm.valid) {
+        console.warn(`[${MODULE_NAME}] [Fail-Closed] 记忆数据未能通过准入校验: ${norm.reason}`);
         return null;
     }
 
-    let targetChar = typeof item.character === 'string' ? item.character.trim() : '';
+    const candidate = norm.memory;
+    let targetScope = candidate.scope;
+    let targetChar = candidate.character;
+    let knownBy = candidate.known_by;
+    const content = candidate.content;
+    const targetType = candidate.type;
 
-    let knownBy = Array.isArray(item.known_by) && item.known_by.length > 0
-        ? Array.from(new Set(item.known_by.filter(k => typeof k === 'string').map(k => k.trim()).filter(Boolean)))
-        : (targetChar ? [targetChar] : []);
-
-    let targetScope;
-    if (item.scope) {
-        targetScope = item.scope;
-    } else if (targetChar) {
-        targetScope = MEMORY_SCOPE.CHARACTER;
-    } else if (knownBy.length > 0) {
-        targetScope = MEMORY_SCOPE.SHARED;
-    } else {
-        targetScope = MEMORY_SCOPE.WORLD;
-    }
-
-    // P1-03 修复：结构与权限合法性约束 (防提示词注入扩大知情范围)
-    // 规则 A：若绑定了特定角色私有属性，绝不允许直接当成 world 公共世界常识
-    if (targetScope === MEMORY_SCOPE.WORLD && targetChar) {
-        targetScope = MEMORY_SCOPE.CHARACTER;
-    }
-    // 规则 B：若限定了特定知情者名单，绝不允许声称为 world 公开常识
-    if (targetScope === MEMORY_SCOPE.WORLD && knownBy.length > 0) {
-        targetScope = MEMORY_SCOPE.SHARED;
-    }
-
-    if (!validScopes.has(targetScope)) {
-        console.warn(`[${MODULE_NAME}] [Fail-Closed] 拦截非法记忆知情范围 "${targetScope}"，拒绝入库`);
-        return null;
-    }
-
-    // P0 Fail-Closed: 角色私知 (character) 必须具备非空角色归属
-    if (targetScope === MEMORY_SCOPE.CHARACTER && !targetChar) {
-        console.warn(`[${MODULE_NAME}] [Fail-Closed] 拦截角色私有记忆：缺少明确角色归属，拒绝入库`);
-        return null;
-    }
-
-    // P1 Fail-Closed: 现场共知 (shared) 必须具备至少一个知情者 (known_by 或 character)，严禁作为公共记忆入库
-    if (targetScope === MEMORY_SCOPE.SHARED && knownBy.length === 0) {
-        console.warn(`[${MODULE_NAME}] [Fail-Closed] 拦截共享记忆：缺少知情者集合 (known_by / character)，拒绝入库`);
-        return null;
-    }
-
-    // character 私知的知情者由所属角色唯一决定，避免留下相互矛盾的 ACL。
-    if (targetScope === MEMORY_SCOPE.CHARACTER) {
-        knownBy = [targetChar];
-    }
-
-    const SCOPE_RANK = {
-        [MEMORY_SCOPE.CHARACTER]: 1, // 私密
-        [MEMORY_SCOPE.SHARED]: 2,    // 现场共享
-        [MEMORY_SCOPE.WORLD]: 3      // 全域公共
-    };
-
-    // 规则 C (P1-03 核心)：越权提权防线——若既有记忆库中已存在语义吻合的私有/共享条目，严禁模型通过新输出将既有知识越权提升为更高范围
+    // 规则 C (P1-03 核心)：越权提权防线——若既有记忆库中已存在语义吻合的私有/共享条目，严禁通过新输出扩大既有知识范围
     for (const existing of s.memories) {
         if (existing.lifecycle === MEMORY_LIFECYCLE.COMPLETED ||
             existing.lifecycle === MEMORY_LIFECYCLE.SUPERSEDED ||
@@ -782,20 +674,13 @@ export function addMemory(item) {
         }
         const sim = calculateTextSimilarity(existing.content, content);
         if (sim >= 0.70) {
-            const existingRank = SCOPE_RANK[existing.scope] || 1;
-            const newRank = SCOPE_RANK[targetScope] || 1;
-            const existingRecipients = getRecipientsForScope(existing.scope, existing.character || '', existing.known_by);
-            const incomingRecipients = getRecipientsForScope(targetScope, targetChar, knownBy);
-            const expandsRecipients = existingRecipients !== null && (
-                incomingRecipients === null || incomingRecipients.some(name => !existingRecipients.includes(name))
-            );
-
-            // scope 与知情者集合都是权限边界。即使 scope 仍为 shared，新增一个知情者也属于越权。
-            if (newRank > existingRank || expandsRecipients) {
+            const escCheck = checkAclEscalation(existing, { scope: targetScope, character: targetChar, known_by: knownBy });
+            if (escCheck.violated) {
                 console.warn(`[${MODULE_NAME}] [Visibility Escalation Guard] 拦截模型扩大已有受限条目 (ID: ${existing.id}) 的可见范围，强制继承既有 ACL`);
-                targetScope = existing.scope;
-                targetChar = existing.character || '';
-                knownBy = existingRecipients ? [...existingRecipients] : [];
+                targetScope = escCheck.inheritedAcl.scope;
+                targetChar = escCheck.inheritedAcl.character || '';
+                knownBy = escCheck.inheritedAcl.known_by ? [...escCheck.inheritedAcl.known_by] : [];
+                recordAclAudit(s, 'scope_escalation_blocked', { existingId: existing.id, attemptedScope: candidate.scope, inheritedScope: targetScope });
                 break;
             }
         }
@@ -994,81 +879,34 @@ export function importMemoryData(data, strategy = 'merge') {
         return 'mem-' + Date.now().toString(36) + '-' + Math.random().toString(36).substring(2, 6);
     };
 
-    // 严格清洗与归一化导入条目，并施加权威参与者白名单边界核验 (P1-v0.1.27)
+    // 统一数据准入判定层执行格式规范化与权威参与者 ACL 核验 (v0.1.28)
     const participants = getContextParticipants(c, getState?.());
     let aclRejectedCount = 0;
     let skippedCount = 0;
     const validMemories = [];
 
     for (const m of data.memories) {
-        if (!m || typeof m !== 'object' || typeof m.content !== 'string' || !m.content.trim()) {
-            skippedCount++;
+        const norm = normalizeAndValidateMemory(m, {
+            participants,
+            source: 'backup_import',
+            context: c
+        });
+
+        if (!norm.valid) {
+            if (norm.aclRejected) {
+                console.warn(`[${MODULE_NAME}] [Import ACL 拦截] ${norm.reason} (内容: "${(m?.content || '').slice(0, 30)}")`);
+                aclRejectedCount++;
+                try {
+                    const s = getState?.();
+                    if (s) recordAclAudit(s, 'import_acl_rejected', { content: m?.content?.slice(0, 30), reason: norm.reason });
+                } catch {}
+            } else {
+                skippedCount++;
+            }
             continue;
         }
 
-        const content = m.content.trim().slice(0, 150);
-        const type = VALID_TYPES.has(m.type) ? m.type : MEMORY_TYPES.FACT;
-        const scope = VALID_SCOPES.has(m.scope) ? m.scope : MEMORY_SCOPE.CHARACTER;
-        const lifecycle = VALID_LIFECYCLES.has(m.lifecycle) ? m.lifecycle : MEMORY_LIFECYCLE.ACTIVE;
-        const status = VALID_STATUSES.has(m.status) ? m.status : MEMORY_STATUS.TRIGGERED;
-        const character = typeof m.character === 'string' && m.character.trim() ? m.character.trim() : (c?.name2 || 'Character');
-        let knownBy = Array.isArray(m.known_by)
-            ? m.known_by.filter(k => typeof k === 'string' && k.trim()).map(k => k.trim())
-            : [character];
-        if (scope === MEMORY_SCOPE.CHARACTER) {
-            knownBy = [character];
-        } else if (scope === MEMORY_SCOPE.WORLD) {
-            knownBy = [];
-        }
-
-        // P1-v0.1.27 权威参与者边界核验 (Fail-Closed 拒绝未授权/跨会话越权记忆导入)
-        if (participants !== null && participants !== undefined) {
-            if (participants.size === 0) {
-                if (scope === MEMORY_SCOPE.CHARACTER || scope === MEMORY_SCOPE.SHARED) {
-                    console.warn(`[${MODULE_NAME}] [Import ACL 拦截] 当前会话可信参与者名单为空，受限记忆无法核验归属，执行 Fail-Closed 拒绝导入 (内容: "${content.slice(0, 30)}")`);
-                    aclRejectedCount++;
-                    continue;
-                }
-            } else {
-                if (scope === MEMORY_SCOPE.CHARACTER) {
-                    if (!character || !participants.has(character)) {
-                        console.warn(`[${MODULE_NAME}] [Import ACL 拦截] 导入条目归属角色 "${character}" 超出当前会话实际参与者名单，拒绝越权导入 (内容: "${content.slice(0, 30)}")`);
-                        aclRejectedCount++;
-                        continue;
-                    }
-                } else if (scope === MEMORY_SCOPE.SHARED) {
-                    const unauthorized = knownBy.filter(k => !participants.has(k));
-                    if (unauthorized.length > 0 || knownBy.length === 0) {
-                        console.warn(`[${MODULE_NAME}] [Import ACL 拦截] 导入共享记忆知情者 "${unauthorized.join(', ')}" 超出当前会话实际参与者名单，拒绝越权导入 (内容: "${content.slice(0, 30)}")`);
-                        aclRejectedCount++;
-                        continue;
-                    }
-                }
-            }
-        }
-
-        const triggerKeys = Array.isArray(m.trigger_keys)
-            ? m.trigger_keys.filter(k => typeof k === 'string' && k.trim()).map(k => k.trim())
-            : [];
-
-        validMemories.push({
-            id: sanitizeId(m.id),
-            content,
-            type,
-            status,
-            lifecycle,
-            scope,
-            character,
-            known_by: knownBy,
-            lorebook_ref: sanitizeLorebookRef(m.lorebook_ref),
-            synced_to_world_info: Boolean(m.synced_to_world_info),
-            synced_at: typeof m.synced_at === 'string' ? m.synced_at : null,
-            trigger_keys: triggerKeys,
-            floor: Number(m.floor) || 0,
-            last_activated_floor: Number.isInteger(m.last_activated_floor) ? m.last_activated_floor : (Number.isInteger(m.floor) ? Number(m.floor) : 0),
-            created_at: m.created_at || new Date().toISOString(),
-            updated_at: new Date().toISOString()
-        });
+        validMemories.push(norm.memory);
     }
 
     return batchUpdate(() => {
@@ -1639,6 +1477,14 @@ export async function promoteMemoryToWorldInfo(memId, options = {}) {
             if (options.markCompleted !== false) {
                 mem.lifecycle = MEMORY_LIFECYCLE.COMPLETED;
             }
+            recordAclAudit(s, 'promote_world_info', {
+                memId: mem.id,
+                entryUid: newUid,
+                targetBook: targetBookName,
+                fromScope: mem.scope,
+                character: mem.character || null,
+                knownBy: mem.known_by || []
+            });
         });
 
         console.log(`[${MODULE_NAME}] [Lorebook] 记忆 [${mem.id}] 成功升格为世界书【${targetBookName}】新词条 (UID: ${newUid}, 名称: "${entryName}")`);
