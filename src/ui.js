@@ -4,7 +4,7 @@
  */
 
 import { MODULE_NAME, MEMORY_STATUS, MEMORY_LIFECYCLE, MEMORY_SCOPE } from './config.js';
-import { getState, getSettings, updateSettings, saveSettingsImmediately, updateScene, addMemory, updateMemory, deleteMemory, purgeArchivedMemories, cycleMemoryStatus, cycleMemoryType, exportMemoryData, importMemoryData, reindexAllMemories, onStateChange, getActiveWorldBookInfo, syncMemoryDeltaToWorldInfo, promoteMemoryToWorldInfo, batchUpdate, rollbackScene, restoreSceneSnapshot, getSceneHistory } from './state.js';
+import { getState, getSettings, updateSettings, saveSettingsImmediately, updateScene, addMemory, updateMemory, deleteMemory, purgeArchivedMemories, cycleMemoryStatus, cycleMemoryType, exportMemoryData, importMemoryData, reindexAllMemories, onStateChange, getActiveWorldBookInfo, syncMemoryDeltaToWorldInfo, promoteMemoryToWorldInfo, batchUpdate, rollbackScene, restoreSceneSnapshot, getSceneHistory, getContextParticipants } from './state.js';
 import { triggerAsyncDigest, triggerMemoryConsolidation, testCustomApiConnection, triggerBacklogDigest, abortBacklogDigest, isBacklogDigestRunning } from './extractor.js';
 import { testEmbeddingApiConnection } from './semantic.js';
 
@@ -2120,7 +2120,8 @@ function bindPanelEvents(container) {
         if (scope === 'character') {
             memData.character = targets[0] || curCharName;
         } else if (scope === 'shared') {
-            memData.known_by = targets.length > 0 ? targets : (Array.isArray(state.scene.in_scene_characters) && state.scene.in_scene_characters.length > 0 ? state.scene.in_scene_characters : [curCharName, c?.name1 || 'User']);
+            const authoritativeParts = Array.from(getContextParticipants(c, state));
+            memData.known_by = targets.length > 0 ? targets : (authoritativeParts.length > 0 ? authoritativeParts : [curCharName, c?.name1 || 'User']);
         }
 
         const added = addMemory(memData);
