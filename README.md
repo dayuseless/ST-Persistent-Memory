@@ -1,6 +1,6 @@
 # SillyTavern 持续记忆插件 (ST-Persistent-Memory)
 
-[![Version](https://img.shields.io/badge/version-v0.1.24-blue.svg)](https://github.com/dayuseless/ST-Persistent-Memory)
+[![Version](https://img.shields.io/badge/version-v0.1.25-blue.svg)](https://github.com/dayuseless/ST-Persistent-Memory)
 [![SillyTavern](https://img.shields.io/badge/SillyTavern-1.12.0+-purple.svg)](https://github.com/SillyTavern/SillyTavern)
 [![License](https://img.shields.io/badge/license-MIT-green.svg)](LICENSE)
 
@@ -166,6 +166,20 @@ window.__persistentMemory.digestNow();
 - **中途启用智能引导与交互横幅 (Smart Mid-Chat Onboarding)**：当检测到会话已有较长历史（$\ge 6$ 条消息）但记忆库为空时，HUD 顶部自动展示友好的智能引导横幅，支持一键点击启动全量回溯；控制台顶部新增“回溯提炼”快捷按钮，自由选择“从头全量提炼”或“增量补全未消化历史”。
 - **实时进度反馈与随时安全中止 (Live Progress & Abort Guard)**：回溯执行期间，HUD 实时呈现带旋转动效的百分比进度条、批次计数与已沉淀记忆数；提供一键“中止”按钮与会话切换自动熔断拦截，绝不发生跨会话污染或挂死。
 - **测试矩阵扩展至 41 项 (T1-T41 全绿)**：新增针对对话轮次回退自愈校准 (T40) 与全量历史分块回溯多批次递进提炼 (T41) 的自动化测试覆盖。
+
+### v0.1.25 (P2核心推进：记忆一键升格世界书新词条与智能增量提炼节律)
+
+- **记忆一键升格为世界书独立新词条 (Promote Memory to Lorebook Entry)**：
+  - 在记忆卡片底部新增 **“👑 升格词条”** 专属按钮（未关联已有世界书条目时展示），支持将重大剧情里程碑（如击破魔王、获得神器、缔结神圣契约等动态事实）一键升格为独立、永久常驻的世界书新词条。
+  - 自动分配连续无冲突的数字 UID（现有条目最大 UID + 1），规范装配酒馆标准条目结构（Comment、Keys、Content、Selective=true 等），安全调用 ST 原生 `saveWorldInfo` 接口落盘。
+  - 升格成功后自动反向将 `lorebook_ref`（包含书名、词条名、UID）绑定至该条记忆并标记已入册，同时默认将该记忆流转至 `completed`（办结）终态，避免在动态记忆与世界书之间重复双重注入。
+  - 内置角色卡只读内嵌世界书（Embedded Book）安全拦截，杜绝非法写入只读卡片资源。
+- **智能信息增量感知与自适应提炼节律 (Adaptive Extraction Cadence)**：
+  - 智能感知近期增量对话内容量，杜绝日常短句寒暄（如“好的”、“嗯”、“晚安”）频繁触发后台提炼造成的 Token 浪费与 API 费用开销。
+  - 在未达实质剧情推进字数门槛（默认 60 字符，可自由配置 20-500 字）时智能顺延提炼，不浪费任何 LLM API 请求。
+  - 设置最大推迟轮数硬上限保底（默认 `2 * frequency` 轮），确保即使持续短对话也不会永远停滞提炼；手动触发提炼（Force Digest）无条件绕过门槛直接执行。
+  - 在插件设置面板与原生扩展抽屉提供完整的开关与字符门槛配置控件。
+- **测试矩阵扩展至 59 项 (T1-T59 全绿)**：新增针对记忆升格世界书新词条与双向绑定 (T58)、智能信息增量感知与自适应提炼节律全场景验证 (T59) 的自动化测试覆盖。
 
 ### v0.1.24 (P1核心增强：现场快照时光机、思考型推理模型适配与自定义注入模板)
 

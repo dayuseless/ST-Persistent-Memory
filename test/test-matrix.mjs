@@ -81,7 +81,8 @@ import {
     rollbackScene,
     restoreSceneSnapshot,
     getSceneHistory,
-    pushSceneSnapshot
+    pushSceneSnapshot,
+    promoteMemoryToWorldInfo
 } from '../src/state.js';
 
 import {
@@ -2223,6 +2224,161 @@ Intermediate analysis details...
         const stdPrompt = buildAndInjectMemoryPrompt();
         assert.ok(stdPrompt.includes('### 持续情境与记忆核心 (Persistent Memory)'));
         assert.ok(stdPrompt.includes('[当前情境快照 (Scene State)]'));
+    });
+
+    // ─────────────────────────────────────────────────────────────
+    // T58: 记忆一键升格为世界书独立新词条 (P2 核心)
+    // ─────────────────────────────────────────────────────────────
+    await testAsync('T58: 记忆一键升格为世界书独立新词条 (UID 递增、格式合规、条目双向绑定与办结流转)', async () => {
+        mockContext.chatMetadata = {
+            world_info: '艾泽拉斯大百科'
+        };
+        const mockLoreEntries = {
+            "0": { uid: 0, comment: '暴风城', key: ['暴风城'], content: '人类主城' },
+            "5": { uid: 5, comment: '幽暗城', key: ['幽暗城'], content: '被遗忘者主城' }
+        };
+        let savedLoreData = null;
+        let savedLoreName = null;
+
+        mockContext.loadWorldInfo = async (name) => {
+            if (name === '艾泽拉斯大百科') {
+                return { entries: mockLoreEntries };
+            }
+            return null;
+        };
+        mockContext.saveWorldInfo = async (name, data, imm) => {
+            savedLoreName = name;
+            savedLoreData = JSON.parse(JSON.stringify(data));
+            return true;
+        };
+
+        const state = getState();
+        state.memories = [];
+        const mem = addMemory({
+            content: '提里奥·弗丁手持灰烬使者斩断了霜之哀伤',
+            type: 'fact',
+            scope: 'world',
+            trigger_keys: ['灰烬使者', '霜之哀伤']
+        });
+
+        // 1. 执行升格词条
+        const res = await promoteMemoryToWorldInfo(mem.id, {
+            entryName: '灰烬使者重铸',
+            keys: ['灰烬使者', '弗丁', '霜之哀伤'],
+            content: '提里奥·弗丁手持灰烬使者斩断了霜之哀伤，彻底终结了巫妖王的统御之冠。',
+            markCompleted: true
+        });
+
+        assert.strictEqual(res.success, true, '升格操作必须成功');
+        assert.strictEqual(res.bookName, '艾泽拉斯大百科', '目标世界书应正确绑定');
+        assert.strictEqual(res.entryUid, 6, '新词条 UID 必须在现有最大 UID 5 的基础上递增分配为 6');
+        assert.strictEqual(savedLoreName, '艾泽拉斯大百科', '应正确保存至指定世界书');
+        assert.ok(savedLoreData.entries['6'], '世界书条目字典中应包含 UID 6');
+        assert.strictEqual(savedLoreData.entries['6'].comment, '灰烬使者重铸');
+        assert.deepStrictEqual(savedLoreData.entries['6'].key, ['灰烬使者', '弗丁', '霜之哀伤']);
+        assert.strictEqual(savedLoreData.entries['6'].selective, true);
+        assert.strictEqual(savedLoreData.entries['6'].constant, false);
+
+        // 验证记忆自身属性反向写回与履约流转
+        const updatedMem = state.memories.find(m => m.id === mem.id);
+        assert.strictEqual(updatedMem.synced_to_world_info, true);
+        assert.ok(updatedMem.synced_at);
+        assert.strictEqual(updatedMem.lifecycle, 'completed', '勾选 markCompleted 应将记忆流转至 completed 终态');
+        assert.strictEqual(updatedMem.lorebook_ref.entry_uid, 6);
+        assert.strictEqual(updatedMem.lorebook_ref.entry_name, '灰烬使者重铸');
+        assert.strictEqual(updatedMem.lorebook_ref.book, '艾泽拉斯大百科');
+
+        // 2. 角色卡内置只读世界书防御拦截测试
+        mockContext.chatMetadata = {};
+        mockContext.characters[0].data = {
+            character_book: {
+                name: '只读内置设定',
+                entries: [{ id: 1, name: '霜之哀伤' }]
+            }
+        };
+        const memReadonly = addMemory({ content: '不可写记忆', type: 'fact', scope: 'world' });
+        const roRes = await promoteMemoryToWorldInfo(memReadonly.id);
+        assert.strictEqual(roRes.success, false, '内置只读世界书必须拦截新建词条');
+        assert.ok(roRes.reason.includes('只读卡片资源'));
+    });
+
+    // ─────────────────────────────────────────────────────────────
+    // T59: 智能信息增量感知与自适应提炼节律 (P2 核心)
+    // ─────────────────────────────────────────────────────────────
+    await testAsync('T59: 智能信息增量感知与自适应提炼节律 (短句寒暄防空耗、实质增量提炼、上限兜底与强制绕过)', async () => {
+        const state = getState();
+        state.memories = [];
+        state.last_digest_floor = 10;
+        state.last_digest_summary = '';
+
+        // 构建聊天上下文：前 10 轮历史
+        mockContext.chat = [];
+        for (let i = 1; i <= 10; i++) {
+            mockContext.chat.push({ is_user: true, mes: `历史问答 ${i}` });
+            mockContext.chat.push({ is_user: false, name: '角色A', mes: `历史回答 ${i}` });
+        }
+
+        let rawCallCount = 0;
+        mockContext.generateRaw = async () => {
+            rawCallCount++;
+            return JSON.stringify({
+                scene: { location: '增量推进新地点' },
+                new_memories: []
+            });
+        };
+
+        // 启用自适应节律，频率 = 3 轮，字数门槛 = 60 字
+        updateSettings({
+            enabled: true,
+            mode: 'async',
+            asyncFrequency: 3,
+            adaptiveCadenceEnabled: true,
+            adaptiveCadenceMinChars: 60
+        });
+
+        // 场景 1：新增 3 轮短句寒暄 (第 11-13 轮)，字数极少
+        mockContext.chat.push({ is_user: true, mes: '好的' });
+        mockContext.chat.push({ is_user: false, name: '角色A', mes: '嗯' });
+        mockContext.chat.push({ is_user: true, mes: '早点休息' });
+        mockContext.chat.push({ is_user: false, name: '角色A', mes: '好的' });
+        mockContext.chat.push({ is_user: true, mes: '晚安' });
+        mockContext.chat.push({ is_user: false, name: '角色A', mes: '好梦' });
+
+        rawCallCount = 0;
+        await triggerAsyncDigest(false);
+
+        assert.strictEqual(rawCallCount, 0, '字数低于增量门槛且未达到最大推迟轮数时，必须智能跳过提炼');
+        assert.strictEqual(state.last_digest_floor, 10, '跳过提炼时不应推进 last_digest_floor');
+
+        // 场景 2：强制触发 (force = true) 必须绕过自适应增量门槛
+        await triggerAsyncDigest(true);
+        assert.strictEqual(rawCallCount, 1, '手动强制提炼必须无条件执行并调用 LLM API');
+        assert.strictEqual(state.last_digest_floor, 13, '强制提炼完成后楼层应成功推进至 13');
+
+        // 场景 3：新增 3 轮实质剧情推进对话 (第 14-16 轮)，总字数 > 60 字
+        mockContext.chat.push({ is_user: true, mes: '我们在地下黑市发现了失踪已久的古代神器地图！' });
+        mockContext.chat.push({ is_user: false, name: '角色A', mes: '太好了，地图上标记着藏宝密室就在王城大教堂地宫深处，今晚我们就必须出发！' });
+        mockContext.chat.push({ is_user: true, mes: '需要准备哪些破除符咒的道具？' });
+        mockContext.chat.push({ is_user: false, name: '角色A', mes: '准备三瓶圣水和一把淬银匕首即可，千万不要惊动守夜骑士。' });
+        mockContext.chat.push({ is_user: true, mes: '好，我这就去准备。' });
+        mockContext.chat.push({ is_user: false, name: '角色A', mes: '一小时后在教堂侧门汇合。' });
+
+        rawCallCount = 0;
+        await triggerAsyncDigest(false);
+
+        assert.strictEqual(rawCallCount, 1, '剧情增量字数超出门槛时，必须正常触发后台提炼');
+        assert.strictEqual(state.last_digest_floor, 16, '提炼成功后楼层推进至 16');
+
+        // 场景 4：达到最大推迟轮数兜底 (例如 frequency=3, maxDelay=6)
+        // 即使连续 6 轮全都是短消息，也必须强制提炼一次以保证状态不永远停滞
+        for (let i = 17; i <= 22; i++) {
+            mockContext.chat.push({ is_user: true, mes: '啊' });
+            mockContext.chat.push({ is_user: false, name: '角色A', mes: '哦' });
+        }
+        rawCallCount = 0;
+        await triggerAsyncDigest(false);
+        assert.strictEqual(rawCallCount, 1, '达到最大推迟轮数时，即使字数不足也必须执行保底提炼');
+        assert.strictEqual(state.last_digest_floor, 22, '保底提炼后楼层推进至 22');
     });
 
     console.log(`\n======================================================`);

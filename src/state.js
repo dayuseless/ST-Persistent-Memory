@@ -1371,3 +1371,153 @@ export async function syncMemoryDeltaToWorldInfo(memId, options = {}) {
         return { success: false, reason: `写回世界书文件失败: ${e.message}` };
     }
 }
+
+/**
+ * 将某条动态记忆一键升格为世界书独立新词条 (Promote to Lorebook Entry)
+ * @param {string} memId - 记忆 ID
+ * @param {object} [options]
+ * @param {string} [options.bookName] - 目标世界书文件名 (默认自动使用当前绑定的世界书)
+ * @param {string} [options.entryName] - 词条名称 (默认截取记忆正文或已有标题)
+ * @param {string[]} [options.keys] - 触发关键词 (默认继承记忆的 trigger_keys)
+ * @param {string} [options.content] - 词条正文内容 (默认使用记忆完整 content)
+ * @param {boolean} [options.markCompleted=true] - 升格后是否将记忆生命周期标记为 completed 履约
+ * @returns {Promise<{success: boolean, reason?: string, bookName?: string, entryName?: string, entryUid?: number, content?: string}>}
+ */
+export async function promoteMemoryToWorldInfo(memId, options = {}) {
+    const c = getContext();
+    if (!c) {
+        return { success: false, reason: '未找到 SillyTavern 运行上下文' };
+    }
+
+    const s = getState();
+    const mem = s.memories.find(m => m.id === memId);
+    if (!mem) {
+        return { success: false, reason: '指定的记忆条目不存在' };
+    }
+
+    // 确定目标世界书名称
+    let targetBookName = (options.bookName || mem.lorebook_ref?.file_name || '').trim();
+    let isEmbedded = false;
+
+    if (!targetBookName) {
+        const activeInfo = await getActiveWorldBookInfo();
+        if (activeInfo) {
+            targetBookName = activeInfo.bookName;
+            isEmbedded = activeInfo.source === 'character_embedded';
+        }
+    }
+
+    if (isEmbedded) {
+        return { success: false, reason: '当前生效的世界书为角色卡内置设定 (Embedded Character Book)，属于只读卡片资源，无法直接新建词条。请先在酒馆中绑定可编辑的外部世界书。' };
+    }
+
+    if (!targetBookName) {
+        return { success: false, reason: '未指定目标世界书，且当前会话未绑定可用的世界书文件。' };
+    }
+
+    // 加载目标世界书文件
+    let data = null;
+    try {
+        if (typeof c.loadWorldInfo === 'function') {
+            data = await c.loadWorldInfo(targetBookName);
+        } else if (typeof window !== 'undefined' && typeof window.loadWorldInfo === 'function') {
+            data = await window.loadWorldInfo(targetBookName);
+        }
+    } catch (e) {
+        return { success: false, reason: `加载世界书 "${targetBookName}" 异常: ${e.message}` };
+    }
+
+    if (!data) {
+        data = { entries: {} };
+    }
+    if (!data.entries || typeof data.entries !== 'object') {
+        data.entries = {};
+    }
+
+    // 分配新 UID (查找现有数值 UID 最大值 + 1)
+    const existingUids = Object.keys(data.entries).map(Number).filter(n => !isNaN(n));
+    const newUid = existingUids.length > 0 ? Math.max(...existingUids) + 1 : 0;
+
+    // 确定词条名称、触发词与正文
+    const entryName = (options.entryName || (mem.content ? mem.content.slice(0, 16).trim() : '新设定词条')).trim();
+    let entryKeys = [];
+    if (Array.isArray(options.keys) && options.keys.length > 0) {
+        entryKeys = options.keys.map(k => String(k).trim()).filter(Boolean);
+    } else if (Array.isArray(mem.trigger_keys) && mem.trigger_keys.length > 0) {
+        entryKeys = mem.trigger_keys.map(k => String(k).trim()).filter(Boolean);
+    }
+    if (entryKeys.length === 0) {
+        entryKeys = [entryName];
+    }
+
+    const entryContent = (options.content || mem.content || '').trim();
+    if (!entryContent) {
+        return { success: false, reason: '词条设定正文不能为空' };
+    }
+
+    // 构建符合酒馆规范的世界书 Entry 对象
+    const newEntry = {
+        uid: newUid,
+        key: entryKeys,
+        keysecondary: [],
+        comment: entryName,
+        content: entryContent,
+        constant: false,
+        selective: true,
+        order: 100,
+        position: 0,
+        disable: false,
+        excludeRecursion: false,
+        preventRecursion: false,
+        delayUntilRecursion: false,
+        probability: 100,
+        useProbability: true,
+        depth: 4,
+        group: ""
+    };
+
+    data.entries[newUid] = newEntry;
+
+    // 执行保存写入
+    try {
+        if (typeof c.saveWorldInfo === 'function') {
+            await c.saveWorldInfo(targetBookName, data, true);
+        } else if (typeof window !== 'undefined' && typeof window.saveWorldInfo === 'function') {
+            await window.saveWorldInfo(targetBookName, data, true);
+        } else {
+            return { success: false, reason: '当前环境中未找到 saveWorldInfo 接口' };
+        }
+
+        if (typeof c.reloadWorldInfoEditor === 'function') {
+            try { c.reloadWorldInfoEditor(); } catch {}
+        }
+
+        // 更新记忆的关联世界书状态与生命周期
+        batchUpdate(() => {
+            mem.lorebook_ref = {
+                entry_uid: newUid,
+                entry_name: entryName,
+                file_name: targetBookName,
+                book: targetBookName
+            };
+            mem.synced_to_world_info = true;
+            mem.synced_at = new Date().toISOString();
+            if (options.markCompleted !== false) {
+                mem.lifecycle = MEMORY_LIFECYCLE.COMPLETED;
+            }
+        });
+
+        console.log(`[${MODULE_NAME}] [Lorebook] 记忆 [${mem.id}] 成功升格为世界书【${targetBookName}】新词条 (UID: ${newUid}, 名称: "${entryName}")`);
+
+        return {
+            success: true,
+            bookName: targetBookName,
+            entryUid: newUid,
+            entryName: entryName,
+            content: entryContent
+        };
+    } catch (e) {
+        console.error(`[${MODULE_NAME}] 升格世界书新词条保存失败:`, e);
+        return { success: false, reason: `保存世界书文件失败: ${e.message}` };
+    }
+}

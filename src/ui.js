@@ -4,7 +4,7 @@
  */
 
 import { MODULE_NAME, MEMORY_STATUS, MEMORY_LIFECYCLE, MEMORY_SCOPE } from './config.js';
-import { getState, getSettings, updateSettings, saveSettingsImmediately, updateScene, addMemory, updateMemory, deleteMemory, purgeArchivedMemories, cycleMemoryStatus, cycleMemoryType, exportMemoryData, importMemoryData, reindexAllMemories, onStateChange, getActiveWorldBookInfo, syncMemoryDeltaToWorldInfo, batchUpdate, rollbackScene, restoreSceneSnapshot, getSceneHistory } from './state.js';
+import { getState, getSettings, updateSettings, saveSettingsImmediately, updateScene, addMemory, updateMemory, deleteMemory, purgeArchivedMemories, cycleMemoryStatus, cycleMemoryType, exportMemoryData, importMemoryData, reindexAllMemories, onStateChange, getActiveWorldBookInfo, syncMemoryDeltaToWorldInfo, promoteMemoryToWorldInfo, batchUpdate, rollbackScene, restoreSceneSnapshot, getSceneHistory } from './state.js';
 import { triggerAsyncDigest, triggerMemoryConsolidation, testCustomApiConnection, triggerBacklogDigest, abortBacklogDigest, isBacklogDigestRunning } from './extractor.js';
 import { testEmbeddingApiConnection } from './semantic.js';
 
@@ -457,6 +457,20 @@ function renderNativeDrawerContent() {
             </div>
 
             <div class="pm-input-row pm-mb-8">
+                <label class="pm-input-label">智能增量提炼节律：</label>
+                <div class="pm-toggle-group">
+                    <label class="pm-radio-label">
+                        <input type="radio" name="pm-native-adaptive-cadence" value="1" ${settings.adaptiveCadenceEnabled !== false ? 'checked' : ''}>
+                        <span>启用 (防寒暄API浪费)</span>
+                    </label>
+                    <label class="pm-radio-label">
+                        <input type="radio" name="pm-native-adaptive-cadence" value="0" ${settings.adaptiveCadenceEnabled === false ? 'checked' : ''}>
+                        <span>停用 (固定轮数)</span>
+                    </label>
+                </div>
+            </div>
+
+            <div class="pm-input-row pm-mb-8">
                 <label class="pm-input-label">最新提炼动态：</label>
                 <div class="pm-status-box">
                     ${escapeHtml(state.last_digest_summary || '尚未执行提炼')} ${state.last_digest_time ? `<span style="color: #64748b; font-weight: 400;">(${state.last_digest_time})</span>` : ''}
@@ -577,6 +591,7 @@ function renderNativeDrawerContent() {
         const bubble = content.querySelector('#pm-native-bubble-enabled')?.checked ?? true;
         const useCustom = content.querySelector('#pm-native-custom-api-enabled')?.checked ?? false;
         const template = content.querySelector('#pm-native-inject-template')?.value || 'standard';
+        const adaptiveCadence = (content.querySelector('input[name="pm-native-adaptive-cadence"]:checked')?.value ?? '1') === '1';
         updateSettings({
             customApiUrl: url,
             customApiKey: key,
@@ -585,7 +600,8 @@ function renderNativeDrawerContent() {
             enabled: isEnabled,
             showFloatingBubble: bubble,
             useCustomApi: useCustom,
-            injectionTemplate: template
+            injectionTemplate: template,
+            adaptiveCadenceEnabled: adaptiveCadence
         });
     };
 
@@ -1333,6 +1349,20 @@ function renderPanelContent() {
                     </div>
                 </div>
 
+                <div class="pm-grid-2col pm-mb-8">
+                    <div class="pm-input-row">
+                        <label class="pm-input-label">智能增量提炼节律：</label>
+                        <select id="pm-setting-adaptive-cadence" class="pm-input" style="cursor: pointer;">
+                            <option value="1" ${settings.adaptiveCadenceEnabled !== false ? 'selected' : ''}>启用 (寒暄短句延迟以节约API)</option>
+                            <option value="0" ${settings.adaptiveCadenceEnabled === false ? 'selected' : ''}>停用 (按固定轮数强制触发)</option>
+                        </select>
+                    </div>
+                    <div class="pm-input-row">
+                        <label class="pm-input-label">剧情增量门槛 (字数):</label>
+                        <input type="number" id="pm-setting-adaptive-min-chars" class="pm-input" min="20" max="500" value="${settings.adaptiveCadenceMinChars || 60}">
+                    </div>
+                </div>
+
                 <!-- 语义检索与向量基建 -->
                 <div class="pm-section-card pm-mt-12" style="background: #f8fafc; border: 1px solid #e2e8f0; border-radius: 8px; padding: 12px; margin-top: 14px;">
                     <div class="pm-section-header" style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 6px;">
@@ -1557,7 +1587,11 @@ export function renderMemoryCard(mem) {
                         <button class="pm-sync-lore-btn ${mem.synced_to_world_info ? 'pm-synced' : ''}" data-action="sync-lore" title="${mem.synced_to_world_info ? '已同步写入世界书设定，点击可再次同步' : '点击将此条动态事实安全同步追加至世界书设定'}">
                             <i class="fa-solid ${mem.synced_to_world_info ? 'fa-check-double' : 'fa-file-arrow-up'}"></i> ${mem.synced_to_world_info ? '已入册' : '写入设定'}
                         </button>
-                    ` : ''}
+                    ` : `
+                        <button class="pm-promote-lore-btn" data-action="promote-lore" title="将此条动态事实一键升格为世界书独立新词条 (永久常驻设定)">
+                            <i class="fa-solid fa-crown"></i> 升格词条
+                        </button>
+                    `}
                     ${Array.isArray(mem.embedding) && mem.embedding.length > 0 ? `<span class="pm-embedding-tag" title="已缓存 ${mem.embedding.length} 维密集语义向量 (${escapeHtml(mem.embedding_provider || 'local')})"><i class="fa-solid fa-brain"></i></span>` : ''}
                 </div>
             </div>
@@ -1656,6 +1690,15 @@ function bindPanelEvents(container) {
     container.querySelector('#pm-setting-auto-sleep-turns')?.addEventListener('change', (e) => {
         const val = Math.max(5, Math.min(100, parseInt(e.target.value) || 20));
         updateSettings({ autoSleepTurns: val });
+    });
+
+    container.querySelector('#pm-setting-adaptive-cadence')?.addEventListener('change', (e) => {
+        updateSettings({ adaptiveCadenceEnabled: e.target.value === '1' });
+    });
+
+    container.querySelector('#pm-setting-adaptive-min-chars')?.addEventListener('change', (e) => {
+        const val = Math.max(20, Math.min(500, parseInt(e.target.value) || 60));
+        updateSettings({ adaptiveCadenceMinChars: val });
     });
 
     // 全局插件启用
@@ -1903,6 +1946,9 @@ function bindPanelEvents(container) {
         const autoSleepEnabled = (container.querySelector('#pm-setting-auto-sleep')?.value ?? '1') === '1';
         const rawSleepTurns = parseInt(container.querySelector('#pm-setting-auto-sleep-turns')?.value);
         const autoSleepTurns = !isNaN(rawSleepTurns) ? Math.max(5, Math.min(100, rawSleepTurns)) : 20;
+        const adaptiveCadenceEnabled = (container.querySelector('#pm-setting-adaptive-cadence')?.value ?? '1') === '1';
+        const rawAdaptiveMinChars = parseInt(container.querySelector('#pm-setting-adaptive-min-chars')?.value);
+        const adaptiveCadenceMinChars = !isNaN(rawAdaptiveMinChars) ? Math.max(20, Math.min(500, rawAdaptiveMinChars)) : 60;
 
         const isSemEnabled = container.querySelector('#pm-setting-semantic-enabled')?.checked ?? true;
         const embProvider = container.querySelector('#pm-setting-embedding-provider')?.value || 'local';
@@ -1938,6 +1984,8 @@ function bindPanelEvents(container) {
             consolidateThreshold,
             autoSleepEnabled,
             autoSleepTurns,
+            adaptiveCadenceEnabled,
+            adaptiveCadenceMinChars,
             semanticRetrievalEnabled: isSemEnabled,
             embeddingProvider: embProvider,
             semanticThreshold: semThresh,
@@ -2186,6 +2234,44 @@ function bindPanelEvents(container) {
                 window.toastr?.error?.('同步异常: ' + err.message, '持续记忆');
             } finally {
                 if (syncBtn) syncBtn.disabled = false;
+            }
+        });
+
+        // P2: 一键升格为世界书独立新词条 (Promote to Lorebook Entry)
+        card.querySelector('[data-action="promote-lore"]')?.addEventListener('click', async () => {
+            const promoteBtn = card.querySelector('[data-action="promote-lore"]');
+            if (promoteBtn) promoteBtn.disabled = true;
+
+            try {
+                const memObj = getState().memories.find(m => m.id === id);
+                if (!memObj) {
+                    window.toastr?.error?.('未找到该条记忆', '持续记忆');
+                    return;
+                }
+
+                const activeBookInfo = await getActiveWorldBookInfo();
+                const defaultBook = activeBookInfo?.bookName || '';
+
+                showPromoteLoreModal(memObj, defaultBook, async ({ bookName, entryName, keys, content, markCompleted }) => {
+                    const res = await promoteMemoryToWorldInfo(id, {
+                        bookName,
+                        entryName,
+                        keys,
+                        content,
+                        markCompleted
+                    });
+
+                    if (res.success) {
+                        window.toastr?.success?.(`已成功将事实升格为世界书【${res.bookName} - ${res.entryName}】(UID: ${res.entryUid})！`, '持续记忆');
+                        renderPanelContent();
+                    } else {
+                        window.toastr?.error?.(`升格失败: ${res.reason}`, '持续记忆');
+                    }
+                });
+            } catch (err) {
+                window.toastr?.error?.('升格异常: ' + err.message, '持续记忆');
+            } finally {
+                if (promoteBtn) promoteBtn.disabled = false;
             }
         });
     });
@@ -2559,6 +2645,84 @@ function showSyncLoreModal(preview, onConfirm) {
         closeModal();
         if (typeof onConfirm === 'function') {
             onConfirm(markCompleted);
+        }
+    });
+}
+
+/**
+ * 弹出记忆一键升格为世界书独立新词条的配置对话框
+ */
+function showPromoteLoreModal(mem, activeBookName, onConfirm) {
+    if (typeof document === 'undefined') return;
+
+    // 清理已有模态框
+    document.querySelectorAll('#pm-lore-promote-modal').forEach(el => el.remove());
+
+    const defaultTitle = (mem.content || '').slice(0, 16).trim() || '新设定词条';
+    const defaultKeys = (mem.trigger_keys || []).join(', ') || defaultTitle;
+
+    const modalHtml = `
+        <div class="pm-modal-backdrop" id="pm-lore-promote-modal">
+            <div class="pm-modal-card">
+                <div class="pm-modal-header">
+                    <span style="font-weight: 700; color: #b45309; font-size: 13px; display: flex; align-items: center; gap: 6px;">
+                        <i class="fa-solid fa-crown" style="color: #f59e0b;"></i> 升格记忆为世界书独立新词条
+                    </span>
+                    <button class="pm-modal-close" id="pm-promote-modal-close" style="background: none; border: none; font-size: 18px; cursor: pointer; color: #94a3b8; line-height: 1;">&times;</button>
+                </div>
+                <div class="pm-modal-body" style="padding: 10px 0;">
+                    <div class="pm-input-row" style="margin-bottom: 8px;">
+                        <label class="pm-input-label" style="font-size: 11px; font-weight: 600; color: #334155;">目标世界书名称：</label>
+                        <input type="text" id="pm-promote-target-book" class="pm-input" value="${escapeHtml(activeBookName || '')}" placeholder="输入或确认世界书名称 (留空将自动匹配当前角色绑定的世界书)" style="width: 100%; box-sizing: border-box; font-size: 12px;">
+                    </div>
+                    <div class="pm-grid-2col" style="display: grid; grid-template-columns: 1fr 1fr; gap: 8px; margin-bottom: 8px;">
+                        <div class="pm-input-row">
+                            <label class="pm-input-label" style="font-size: 11px; font-weight: 600; color: #334155;">新词条标题 (Comment)：</label>
+                            <input type="text" id="pm-promote-entry-name" class="pm-input" value="${escapeHtml(defaultTitle)}" placeholder="例如：霜之哀伤" style="width: 100%; box-sizing: border-box; font-size: 12px;">
+                        </div>
+                        <div class="pm-input-row">
+                            <label class="pm-input-label" style="font-size: 11px; font-weight: 600; color: #334155;">触发关键词 (Keys，逗号分隔)：</label>
+                            <input type="text" id="pm-promote-entry-keys" class="pm-input" value="${escapeHtml(defaultKeys)}" placeholder="例如：霜之哀伤, 符文剑" style="width: 100%; box-sizing: border-box; font-size: 12px;">
+                        </div>
+                    </div>
+                    <div class="pm-input-row" style="margin-bottom: 8px;">
+                        <label class="pm-input-label" style="font-size: 11px; font-weight: 600; color: #334155;">词条设定正文 (Content)：</label>
+                        <textarea id="pm-promote-entry-content" class="pm-input" rows="3" style="width: 100%; box-sizing: border-box; font-size: 12px; resize: vertical; line-height: 1.4;">${escapeHtml(mem.content || '')}</textarea>
+                    </div>
+                    <div style="margin-top: 10px;">
+                        <label style="display: flex; align-items: center; gap: 6px; font-size: 12px; color: #334155; cursor: pointer;">
+                            <input type="checkbox" id="pm-promote-mark-completed" checked>
+                            <span>升格后将本记忆标记为<b>【履约/办结】</b>(转化为静态世界书设定常驻，不再重复作为动态记忆抽取)</span>
+                        </label>
+                    </div>
+                </div>
+                <div class="pm-modal-footer" style="display: flex; justify-content: flex-end; gap: 8px; margin-top: 8px;">
+                    <button class="pm-btn-secondary" id="pm-promote-modal-cancel" style="padding: 4px 12px; font-size: 12px;">取消</button>
+                    <button class="pm-btn-primary" id="pm-promote-modal-confirm" style="padding: 4px 14px; font-size: 12px; background: #b45309; border-color: #92400e;"><i class="fa-solid fa-crown"></i> 确认升格</button>
+                </div>
+            </div>
+        </div>
+    `;
+
+    document.body.insertAdjacentHTML('beforeend', modalHtml);
+    const modalEl = document.getElementById('pm-lore-promote-modal');
+
+    const closeModal = () => modalEl?.remove();
+
+    modalEl.querySelector('#pm-promote-modal-close')?.addEventListener('click', closeModal);
+    modalEl.querySelector('#pm-promote-modal-cancel')?.addEventListener('click', closeModal);
+
+    modalEl.querySelector('#pm-promote-modal-confirm')?.addEventListener('click', () => {
+        const bookName = modalEl.querySelector('#pm-promote-target-book')?.value?.trim();
+        const entryName = modalEl.querySelector('#pm-promote-entry-name')?.value?.trim() || defaultTitle;
+        const rawKeys = modalEl.querySelector('#pm-promote-entry-keys')?.value || '';
+        const keys = rawKeys.split(/[,，]/).map(k => k.trim()).filter(Boolean);
+        const content = modalEl.querySelector('#pm-promote-entry-content')?.value?.trim() || mem.content;
+        const markCompleted = Boolean(modalEl.querySelector('#pm-promote-mark-completed')?.checked);
+
+        closeModal();
+        if (typeof onConfirm === 'function') {
+            onConfirm({ bookName, entryName, keys, content, markCompleted });
         }
     });
 }

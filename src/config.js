@@ -1,8 +1,8 @@
 /**
- * 持续记忆插件配置与常量定义 (v0.1.24)
+ * 持续记忆插件配置与常量定义 (v0.1.25)
  */
 
-export const EXTENSION_VERSION = '0.1.24';
+export const EXTENSION_VERSION = '0.1.25';
 export const MODULE_NAME = 'st_persistent_memory';
 export const INJECT_KEY = 'PERSISTENT_MEMORY_INJECT';
 
@@ -83,7 +83,11 @@ export const DEFAULT_SETTINGS = {
     // 世界书关联与协同 (World Info Integration) - 当前会话作用域
     worldBookIntegrationEnabled: true,    // 是否启用世界书条目关联与动态注入
     worldBookContextToExtractor: true,    // 提炼时是否注入当前世界书条目索引供模型参考关联
-    worldBookBoostScore: 0.35             // 命中关联世界书时的激活加权分 (0.0~1.0)
+    worldBookBoostScore: 0.35,            // 命中关联世界书时的激活加权分 (0.0~1.0)
+
+    // 智能信息增量感知提炼节律 (Adaptive Extraction Cadence)
+    adaptiveCadenceEnabled: true,         // 是否启用智能信息增量感知 (跳过无实质剧情进展的闲聊)
+    adaptiveCadenceMinChars: 60           // 触发提炼所需的最小增量字符数 (低于此值且无转折则智能延迟)
 };
 
 export const DEFAULT_STATE = {

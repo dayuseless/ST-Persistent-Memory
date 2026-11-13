@@ -816,6 +816,25 @@ export async function triggerAsyncDigest(force = false) {
         return;
     }
 
+    // P2: 智能信息增量感知与自适应提炼节律 (防止寒暄/短消息徒增 API 消耗)
+    if (!force && settings.adaptiveCadenceEnabled !== false) {
+        const deltaTurns = currentTurn - (state.last_digest_floor || 0);
+        const maxDelayTurns = Math.max(4, frequency * 2);
+        if (deltaTurns < maxDelayTurns) {
+            const startMsgIdx = findMessageIndexByTurn(chat, state.last_digest_floor || 0);
+            const incrementalMessages = chat.slice(startMsgIdx);
+            const totalIncrementalChars = incrementalMessages
+                .map(m => (typeof m.mes === 'string' ? m.mes.trim() : ''))
+                .join('').length;
+
+            const minChars = Math.max(20, Number(settings.adaptiveCadenceMinChars) || 60);
+            if (totalIncrementalChars < minChars) {
+                console.log(`[${MODULE_NAME}] [Adaptive] 近期 ${deltaTurns} 轮增量对话总字数仅 ${totalIncrementalChars} 字 (< 设定阈值 ${minChars} 字)，未检测到实质剧情推进，智能延迟提炼以节约 API 消耗`);
+                return;
+            }
+        }
+    }
+
     activeChatDigests.add(startChatId);
     console.log(`[${MODULE_NAME}] [Async] 启动提炼任务 (会话: ${startChatId}, 修订版本: rev.${startRevision}, 轮次: 第 ${currentTurn} 轮)...`);
 
