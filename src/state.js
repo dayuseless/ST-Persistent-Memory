@@ -1,13 +1,13 @@
 /**
- * 记忆状态管理器 (v0.1.28)
+ * 记忆状态管理器 (v0.1.29)
  * 严格落实 state_revision 状态修订号、L0 三态 PATCH 语义、真正原子回滚事务、统一ACL判定层介入、数据准入流水线、世界书升格溯源、知情集合隔离与高阶归并演进
  */
 
 import { MODULE_NAME, EXTENSION_VERSION, DEFAULT_SETTINGS, DEFAULT_STATE, MEMORY_STATUS, MEMORY_LIFECYCLE, MEMORY_TYPES, MEMORY_SCOPE } from './config.js';
 import { syncEnsureLocalEmbedding, reindexMemories } from './semantic.js';
-import { getContextParticipants, validateMemoryAcl, normalizeAndValidateMemory, checkAclEscalation, recordAclAudit } from './acl.js';
+import { getContextParticipants, validateMemoryAcl, normalizeAndValidateMemory, checkAclEscalation, recordAclAudit, canRecipientAccessMemory } from './acl.js';
 
-export { getContextParticipants, validateMemoryAcl, normalizeAndValidateMemory, checkAclEscalation, recordAclAudit };
+export { getContextParticipants, validateMemoryAcl, normalizeAndValidateMemory, checkAclEscalation, recordAclAudit, canRecipientAccessMemory };
 
 let stateCache = null;
 const stateChangeListeners = new Set();

@@ -1,15 +1,17 @@
 /**
- * 注入引擎 (v0.1.28)
+ * 注入引擎 (v0.1.29)
  * 严格落实：
- * 1. P1-01 角色级知情范围严格路由 (生成主体 POV 与现场角色集合严格解耦)
- * 2. P2-01 L0 现场快照时间字段 (scene.time) 纳入与三态存在判定
- * 3. P2-02 真实 Token 预算全开销扣除 (包含韩文 Hangul 估算与 Sync 协议开销扣除)
- * 4. Fail-Closed 拒绝优先与知情者隔离防线
+ * 1. P0 统一 ACL 准出端 (Egress) 访问控制与 POV 知情范围路由
+ * 2. P1-01 角色级知情范围严格路由 (生成主体 POV 与现场角色集合严格解耦)
+ * 3. P2-01 L0 现场快照时间字段 (scene.time) 纳入与三态存在判定
+ * 4. P2-02 真实 Token 预算全开销扣除 (包含韩文 Hangul 估算与 Sync 协议开销扣除)
+ * 5. Fail-Closed 拒绝优先与知情者隔离防线
  */
 
 import { MODULE_NAME, INJECT_KEY, MEMORY_STATUS, MEMORY_LIFECYCLE, MEMORY_SCOPE, MEMORY_TYPES, INJECTION_TEMPLATES } from './config.js';
 import { getState, getSettings, saveCurrentState } from './state.js';
 import { buildQueryContext, calculateHybridMemoryScore } from './semantic.js';
+import { canRecipientAccessMemory } from './acl.js';
 
 function getContext() {
     return window.SillyTavern?.getContext?.() ?? null;
@@ -356,53 +358,17 @@ export function buildAndInjectMemoryPrompt() {
             continue;
         }
 
-        // 规则 C：Scope 白名单与知情范围判定
-        const scope = mem.scope || (mem.character ? MEMORY_SCOPE.CHARACTER : MEMORY_SCOPE.SHARED);
+        // 规则 C (P0 解耦收敛)：统一由 ACL 判定层裁决当前生成接收主体 (POV) 是否有权获知该条记忆
+        const access = canRecipientAccessMemory(mem, generatingEntity, inScene, {
+            userName: c?.name1 || '',
+            requireInScene: true
+        });
 
-        // P0 校验：未知 scope 严格拒绝，绝不默认当成 world 公开常识
-        if (!VALID_SCOPES.has(scope)) {
+        if (!access.allowed) {
             continue;
         }
 
-        let extraWarning = '';
-
-        if (scope === MEMORY_SCOPE.CHARACTER) {
-            // P1-01 修复：角色私密记忆仅允许路由给该角色自身生成的上下文！
-            // 若当前生成主体无法确定（如旁白/未知），或当前生成角色并非记忆归属者，一律严格拒绝注入！
-            if (!generatingEntity || mem.character !== generatingEntity) {
-                continue;
-            }
-            // 现场物理在场核验：该角色当下必须在场
-            if (!inScene.includes(generatingEntity)) {
-                continue;
-            }
-        } else if (scope === MEMORY_SCOPE.SHARED) {
-            const knownList = Array.isArray(mem.known_by) && mem.known_by.length > 0
-                ? mem.known_by
-                : (mem.character ? [mem.character] : []);
-
-            if (knownList.length === 0) {
-                continue; // 缺知情者信息，进入休眠
-            }
-
-            // P1-01 修复：当前生成角色必须本身在知情者列表 (known_by) 中！
-            // 严禁因为现场“存在一个知情者”而将秘密注入其他不知情角色的生成上下文！
-            if (!generatingEntity || !knownList.includes(generatingEntity)) {
-                continue;
-            }
-
-            // 现场物理在场核验：知情角色当下必须在场
-            if (!inScene.includes(generatingEntity)) {
-                continue;
-            }
-
-            // 机密边界强化：若现场存在不知情角色，添加保密提示，防止当前角色失言穿帮
-            const outsidersInScene = inScene.filter(k => k && k !== c.name1 && !knownList.includes(k));
-            if (outsidersInScene.length > 0) {
-                extraWarning = ` [保密提示: 现场存在不知情者 ${outsidersInScene.join(', ')}，当前角色切勿透露此秘密]`;
-            }
-        }
-        // scope === MEMORY_SCOPE.WORLD: 世界公共常识，允许任何角色接收
+        const extraWarning = access.extraWarning || '';
 
         const prefix = getMemoryPrefix(mem, template);
         const loreTag = (mem.lorebook_ref && typeof mem.lorebook_ref === 'object' && mem.lorebook_ref.entry_name)

@@ -92,7 +92,8 @@ import {
     validateMemoryAcl,
     normalizeAndValidateMemory,
     checkAclEscalation,
-    recordAclAudit
+    recordAclAudit,
+    canRecipientAccessMemory
 } from '../src/acl.js';
 
 import {
@@ -2988,25 +2989,25 @@ Intermediate analysis details...
     });
 
     // ─────────────────────────────────────────────────────────────
-    // T71: 全工程版本标识严格一致性核验 (0.1.28)
+    // T71: 全工程版本标识严格一致性核验 (0.1.29)
     // ─────────────────────────────────────────────────────────────
-    test('T71: 全工程版本标识严格一致性核验 (manifest, config, index 与各模块头部统一为 0.1.28)', () => {
+    test('T71: 全工程版本标识严格一致性核验 (manifest, config, index 与各模块头部统一为 0.1.29)', () => {
         const currentFile = fileURLToPath(import.meta.url);
         const rootDir = path.resolve(path.dirname(currentFile), '../');
 
         // 1. manifest.json
         const manifestPath = path.join(rootDir, 'manifest.json');
         const manifest = JSON.parse(fs.readFileSync(manifestPath, 'utf8'));
-        assert.strictEqual(manifest.version, '0.1.28', 'manifest.json 版本号应为 0.1.28');
+        assert.strictEqual(manifest.version, '0.1.29', 'manifest.json 版本号应为 0.1.29');
 
         // 2. src/config.js
-        assert.strictEqual(EXTENSION_VERSION, '0.1.28', 'config.js EXTENSION_VERSION 应为 0.1.28');
+        assert.strictEqual(EXTENSION_VERSION, '0.1.29', 'config.js EXTENSION_VERSION 应为 0.1.29');
 
         // 3. index.js
         const indexPath = path.join(rootDir, 'index.js');
         const indexContent = fs.readFileSync(indexPath, 'utf8');
-        assert.ok(indexContent.includes('v0.1.28'), 'index.js 头部必须标注 v0.1.28');
-        assert.ok(!indexContent.includes('v0.1.27'), 'index.js 严禁残留旧版本 v0.1.27 版本头');
+        assert.ok(indexContent.includes('v0.1.29'), 'index.js 头部必须标注 v0.1.29');
+        assert.ok(!indexContent.includes('v0.1.28'), 'index.js 严禁残留旧版本 v0.1.28 版本头');
 
         // 4. 各核心模块头部注释版本检查
         const checkModules = [
@@ -3023,12 +3024,12 @@ Intermediate analysis details...
             const content = fs.readFileSync(filePath, 'utf8');
             const first10Lines = content.split('\n').slice(0, 10).join('\n');
             assert.ok(
-                first10Lines.includes('v0.1.28') || first10Lines.includes('0.1.28'),
-                `${relPath} 头部注释必须包含 0.1.28 版本标识`
+                first10Lines.includes('v0.1.29') || first10Lines.includes('0.1.29'),
+                `${relPath} 头部注释必须包含 0.1.29 版本标识`
             );
             assert.ok(
-                !first10Lines.includes('0.1.27') && !first10Lines.includes('v0.1.27'),
-                `${relPath} 头部注释严禁残留旧版本 0.1.27`
+                !first10Lines.includes('0.1.28') && !first10Lines.includes('v0.1.28'),
+                `${relPath} 头部注释严禁残留旧版本 0.1.28`
             );
         }
     });
@@ -3261,6 +3262,145 @@ Intermediate analysis details...
         assert.strictEqual(rejected, null, 'ACL 准入拦截条目应返回 null');
         assert.strictEqual(state.state_revision, revBefore, '拦截未入库条目绝不得递增 state_revision');
         assert.strictEqual(state.memories.length, 1, '拦截条目绝不得残留在 state.memories');
+    });
+
+    // ─────────────────────────────────────────────────────────────
+    // T78: 准出端 POV 访问控制单元测试 (canRecipientAccessMemory)
+    // ─────────────────────────────────────────────────────────────
+    test('T78: 准出端 POV 访问控制单元测试 (canRecipientAccessMemory 权限判定、在场核验与保密提示)', () => {
+        const inScene = ['角色A', '角色B', '玩家'];
+
+        // 1. world 公共记忆：任何主体或未知主体均放行
+        const worldMem = { scope: 'world', content: '天下大势' };
+        assert.strictEqual(canRecipientAccessMemory(worldMem, '角色A', inScene).allowed, true);
+        assert.strictEqual(canRecipientAccessMemory(worldMem, null, inScene).allowed, true);
+
+        // 2. Fail-Closed: 生成主体未知时拒绝私密与共享记忆
+        const privMem = { scope: 'character', character: '角色A', content: '角色A日记' };
+        const sharedMem = { scope: 'shared', known_by: ['角色A'], content: '地下密道' };
+        assert.strictEqual(canRecipientAccessMemory(privMem, null, inScene).allowed, false);
+        assert.strictEqual(canRecipientAccessMemory(sharedMem, null, inScene).allowed, false);
+
+        // 3. character 私密：仅归属者本人作为 POV 且在场时放行
+        assert.strictEqual(canRecipientAccessMemory(privMem, '角色A', inScene).allowed, true);
+        const wrongCharRes = canRecipientAccessMemory(privMem, '角色B', inScene);
+        assert.strictEqual(wrongCharRes.allowed, false);
+        assert.ok(wrongCharRes.reason.includes('不匹配'));
+
+        // 4. character 私密：归属角色不在物理现场时拒绝 (物理在场核验)
+        const absentRes = canRecipientAccessMemory(privMem, '角色A', ['角色B', '玩家']);
+        assert.strictEqual(absentRes.allowed, false);
+        assert.ok(absentRes.reason.includes('不在物理现场名单中'));
+
+        // 5. shared 共享：知情者在场放行，并向现场其他不知情角色计算保密提示
+        const resSharedWithOutsiders = canRecipientAccessMemory(
+            sharedMem,
+            '角色A',
+            inScene,
+            { userName: '玩家' }
+        );
+        assert.strictEqual(resSharedWithOutsiders.allowed, true);
+        assert.ok(resSharedWithOutsiders.extraWarning.includes('角色B'));
+        assert.ok(resSharedWithOutsiders.extraWarning.includes('切勿透露此秘密'));
+
+        // 6. shared 共享：不知情者作为 POV 生成时坚决拦截
+        const resUnaware = canRecipientAccessMemory(sharedMem, '角色B', inScene);
+        assert.strictEqual(resUnaware.allowed, false);
+        assert.ok(resUnaware.reason.includes('不在知情者列表'));
+    });
+
+    // ─────────────────────────────────────────────────────────────
+    // T79: 提示词注入引擎准出权限统一收敛核验 (buildAndInjectMemoryPrompt 协同)
+    // ─────────────────────────────────────────────────────────────
+    test('T79: 提示词注入引擎准出权限统一收敛核验 (buildAndInjectMemoryPrompt 协同路由与保密加固)', () => {
+        const state = getState();
+        state.memories = [];
+        state.scene = {
+            location: '清风寨',
+            in_scene_characters: ['角色A', '角色B', '玩家']
+        };
+
+        // 录入测试记忆
+        state.memories.push({
+            id: 'mem_priv_a',
+            content: '角色A私藏了先王玉玺',
+            type: 'fact',
+            scope: 'character',
+            character: '角色A',
+            status: 'triggered',
+            lifecycle: 'active'
+        });
+        state.memories.push({
+            id: 'mem_shared_ab',
+            content: '角色A和角色B密谋起兵',
+            type: 'fact',
+            scope: 'shared',
+            known_by: ['角色A', '角色B'],
+            status: 'triggered',
+            lifecycle: 'active'
+        });
+        state.memories.push({
+            id: 'mem_world_all',
+            content: '今年北方大旱粮荒',
+            type: 'fact',
+            scope: 'world',
+            status: 'triggered',
+            lifecycle: 'active'
+        });
+
+        // 场景 1: 当前生成主体为 角色A
+        mockContext.characterId = 0;
+        mockContext.name2 = '角色A';
+        buildAndInjectMemoryPrompt();
+        const injectedA = mockContext._injectedPrompt;
+        assert.ok(injectedA.includes('角色A私藏了先王玉玺'), '角色A自身生成时应注入私密记忆');
+        assert.ok(injectedA.includes('角色A和角色B密谋起兵'), '角色A作为知情者应注入共享秘密');
+        assert.ok(injectedA.includes('今年北方大旱粮荒'), '公共记忆始终注入');
+
+        // 场景 2: 当前生成主体切换为 角色B
+        mockContext.characterId = 1;
+        mockContext.name2 = '角色B';
+        buildAndInjectMemoryPrompt();
+        const injectedB = mockContext._injectedPrompt;
+        assert.ok(!injectedB.includes('角色A私藏了先王玉玺'), '角色B生成时绝不得注入角色A的私密记忆');
+        assert.ok(injectedB.includes('角色A和角色B密谋起兵'), '角色B作为知情者应注入共享秘密');
+        assert.ok(injectedB.includes('今年北方大旱粮荒'), '公共记忆始终注入');
+
+        // 场景 3: 恢复单聊 context
+        mockContext.characterId = 0;
+        mockContext.name2 = '角色A';
+    });
+
+    // ─────────────────────────────────────────────────────────────
+    // T80: 访问控制层双向对称性契约验证 (Ingress 准入与 Egress 准出权限边界严格等价)
+    // ─────────────────────────────────────────────────────────────
+    test('T80: 访问控制层双向对称性契约验证 (Ingress 准入与 Egress 准出权限边界严格等价)', () => {
+        // 构造一个由未参战角色持有的恶意记忆
+        const rogueMem = {
+            id: 'mem_rogue_shadow',
+            content: '深渊刺客的密令',
+            type: 'fact',
+            scope: 'character',
+            character: '刺客X',
+            status: 'triggered',
+            lifecycle: 'active'
+        };
+
+        const participants = new Set(['玩家', '角色A']);
+
+        // 1. 准入验证 (Ingress): validateMemoryAcl 坚决拦截
+        const ingressCheck = validateMemoryAcl(rogueMem, participants);
+        assert.strictEqual(ingressCheck.allowed, false, '准入端必须拒绝未参战角色的私密记忆');
+        assert.strictEqual(ingressCheck.code, 'UNAUTHORIZED_CHAR');
+
+        // 2. 准出验证 (Egress): canRecipientAccessMemory 坚决拦截
+        // 假设该数据被异常手段绕过写入内存，当角色A生成时
+        const egressCheckA = canRecipientAccessMemory(rogueMem, '角色A', ['角色A', '玩家']);
+        assert.strictEqual(egressCheckA.allowed, false, '准出端绝对禁止向无关角色注入未授权记忆');
+
+        // 当刺客X生成时，因其不在现场或参与者名单中
+        const egressCheckX = canRecipientAccessMemory(rogueMem, '刺客X', ['角色A', '玩家']);
+        assert.strictEqual(egressCheckX.allowed, false, '准出端核验在场物理名单拦截刺客X');
     });
 
     console.log(`\n======================================================`);

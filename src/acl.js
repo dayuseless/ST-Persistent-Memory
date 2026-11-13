@@ -1,11 +1,12 @@
 /**
- * 持续记忆访问控制与统一数据准入判定层 (Unified ACL & Ingestion Gate, v0.1.28)
+ * 持续记忆访问控制与统一数据准入判定层 (Unified ACL & Ingestion Gate, v0.1.29)
  *
  * 核心设计纪律：
  * 1. 权责解耦：AI 负责提出记忆变更建议，ACL 负责验证变更合法性，状态引擎负责执行状态落盘。
  * 2. 来源与可信度解耦：数据来源 (AI提炼 / 历史回溯 / 备份导入 / 手工录入 / 长程归并) 不等于数据可信度。
  *    所有外部与内部数据统一经由本模块执行：格式规范化 -> 结构合法性校验 -> 权威参与者 ACL 校验 -> 越权提权防线。
  * 3. 严格 Fail-Closed：校验未通过坚决拒绝入库，受限私密与共享记忆绝不静默降级为 world 公共记忆。
+ * 4. 双向准入/准出闭环：准入 (Ingress) 严格核验参与者资质，准出 (Egress) 严格核验生成接收主体 (POV) 与在场保密约束。
  */
 
 import { MODULE_NAME, MEMORY_TYPES, MEMORY_STATUS, MEMORY_LIFECYCLE, MEMORY_SCOPE } from './config.js';
@@ -423,4 +424,137 @@ export function recordAclAudit(state, action, details = {}) {
     if (state.acl_audit_log.length > 30) {
         state.acl_audit_log.shift();
     }
+}
+
+/**
+ * P0 准出端权限判定 (Egress Access Control / POV Routing Gate)
+ * 判定指定生成接收主体 (Recipient / POV) 是否有权获知该条记忆，并评估现场保密风险
+ *
+ * 核心规则：
+ * 1. world: 全域公共记忆，任何接收主体均可接收。
+ * 2. Fail-Closed: 生成接收主体 (POV) 为空或未知时，受限范围记忆 (character / shared) 坚决拒绝注入。
+ * 3. 现场在场物理核验 (requireInScene=true): 受限范围记忆要求当前生成接收主体必须物理在场。
+ * 4. character: 角色私密记忆，严格仅限该角色本人 (mem.character === recipient) 作为 POV 生成时获知。
+ * 5. shared: 现场共享秘密，当前生成主体必须明确位于 known_by 知情者列表中。若现场有其他不知情角色，生成保密预警约束。
+ *
+ * @param {object} memory - 记忆条目 (含 scope, character, known_by 等)
+ * @param {string|null} recipient - 当前生成接收主体角色名 (如 '角色A')
+ * @param {Array<string>|null} [inSceneCharacters] - 当前现场在场角色名单 (用于在场物理校验与不知情者保密约束)
+ * @param {object} [options]
+ * @param {string} [options.userName] - 玩家角色名 (默认为空，用于在计算旁观泄密时排除玩家)
+ * @param {boolean} [options.requireInScene=true] - 是否强制要求生成主体当前在场
+ * @returns {{
+ *   allowed: boolean,
+ *   reason?: string,
+ *   scope: string,
+ *   extraWarning?: string,
+ *   outsidersInScene?: string[]
+ * }}
+ */
+export function canRecipientAccessMemory(memory, recipient, inSceneCharacters = null, options = {}) {
+    if (!memory || typeof memory !== 'object') {
+        return { allowed: false, reason: '记忆对象无效', scope: 'unknown' };
+    }
+
+    const scope = memory.scope || (memory.character ? MEMORY_SCOPE.CHARACTER : MEMORY_SCOPE.SHARED);
+    if (!VALID_SCOPES.has(scope)) {
+        return { allowed: false, reason: `未知或非法的知情范围 "${scope}"`, scope: 'invalid' };
+    }
+
+    const trimmedRecipient = typeof recipient === 'string' && recipient.trim() ? recipient.trim() : null;
+    const sceneChars = Array.isArray(inSceneCharacters)
+        ? inSceneCharacters.filter(c => typeof c === 'string' && c.trim()).map(c => c.trim())
+        : null;
+
+    const requireInScene = options.requireInScene !== false;
+
+    // 1. 全域公共记忆 (World Scope): 世界公共常识，允许任何角色接收
+    if (scope === MEMORY_SCOPE.WORLD) {
+        return {
+            allowed: true,
+            scope: MEMORY_SCOPE.WORLD,
+            extraWarning: '',
+            outsidersInScene: []
+        };
+    }
+
+    // 2. Fail-Closed 闭环：受限范围记忆 (Character / Shared) 必须具备已明确识别的生成接收主体
+    if (!trimmedRecipient) {
+        return {
+            allowed: false,
+            reason: '生成接收主体 (POV) 未知或缺失，受限记忆拒绝注入',
+            scope
+        };
+    }
+
+    // 3. 现场在场物理核验：受限记忆要求生成主体当下必须在物理现场名单中
+    if (requireInScene && sceneChars !== null && sceneChars.length > 0) {
+        if (!sceneChars.includes(trimmedRecipient)) {
+            return {
+                allowed: false,
+                reason: `生成主体 "${trimmedRecipient}" 当前不在物理现场名单中`,
+                scope
+            };
+        }
+    }
+
+    // 4. 角色私密记忆 (Character Scope): 仅允许归属角色自身生成时获知
+    if (scope === MEMORY_SCOPE.CHARACTER) {
+        const char = typeof memory.character === 'string' ? memory.character.trim() : '';
+        if (!char) {
+            return { allowed: false, reason: '角色私密记忆缺失归属角色', scope };
+        }
+        if (char !== trimmedRecipient) {
+            return {
+                allowed: false,
+                reason: `私密记忆归属角色 "${char}" 与当前生成主体 "${trimmedRecipient}" 不匹配`,
+                scope
+            };
+        }
+        return {
+            allowed: true,
+            scope: MEMORY_SCOPE.CHARACTER,
+            extraWarning: '',
+            outsidersInScene: []
+        };
+    }
+
+    // 5. 现场共享记忆 (Shared Scope): 接收主体必须包含在 known_by 知情者列表中
+    if (scope === MEMORY_SCOPE.SHARED) {
+        const knownList = Array.isArray(memory.known_by) && memory.known_by.length > 0
+            ? memory.known_by.filter(k => typeof k === 'string' && k.trim()).map(k => k.trim())
+            : (memory.character ? [memory.character.trim()] : []);
+
+        if (knownList.length === 0) {
+            return { allowed: false, reason: '共享机密记忆缺少知情者名单', scope };
+        }
+
+        if (!knownList.includes(trimmedRecipient)) {
+            return {
+                allowed: false,
+                reason: `当前生成主体 "${trimmedRecipient}" 不在知情者列表 [${knownList.join(', ')}] 中`,
+                scope
+            };
+        }
+
+        // 计算现场不知情旁观者 (Outsiders)，防穿帮失言
+        let extraWarning = '';
+        let outsidersInScene = [];
+        if (sceneChars !== null && sceneChars.length > 0) {
+            const userName = typeof options.userName === 'string' ? options.userName.trim() : '';
+            outsidersInScene = sceneChars.filter(k => k && k !== userName && !knownList.includes(k));
+            if (outsidersInScene.length > 0) {
+                extraWarning = ` [保密提示: 现场存在不知情者 ${outsidersInScene.join(', ')}，当前角色切勿透露此秘密]`;
+            }
+        }
+
+        return {
+            allowed: true,
+            scope: MEMORY_SCOPE.SHARED,
+            extraWarning,
+            outsidersInScene
+        };
+    }
+
+    return { allowed: false, reason: '未知分支拦截', scope };
 }

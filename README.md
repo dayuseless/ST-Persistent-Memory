@@ -1,6 +1,6 @@
 # SillyTavern 持续记忆插件 (ST-Persistent-Memory)
 
-[![Version](https://img.shields.io/badge/version-v0.1.28-blue.svg)](https://github.com/dayuseless/ST-Persistent-Memory)
+[![Version](https://img.shields.io/badge/version-v0.1.29-blue.svg)](https://github.com/dayuseless/ST-Persistent-Memory)
 [![SillyTavern](https://img.shields.io/badge/SillyTavern-1.12.0+-purple.svg)](https://github.com/SillyTavern/SillyTavern)
 [![License](https://img.shields.io/badge/license-MIT-green.svg)](LICENSE)
 
@@ -77,7 +77,7 @@
 
 ### 方式二：手动离线包安装
 
-1. 从 [Releases 页面](https://github.com/dayuseless/ST-Persistent-Memory/releases) 下载 `ST-Persistent-Memory-v0.1.28.zip`。
+1. 从 [Releases 页面](https://github.com/dayuseless/ST-Persistent-Memory/releases) 下载 `ST-Persistent-Memory-v0.1.29.zip`。
 2. 解压到 SillyTavern 的扩展目录中：
    ```text
    SillyTavern/public/scripts/extensions/third-party/ST-Persistent-Memory/
@@ -166,6 +166,19 @@ window.__persistentMemory.digestNow();
 - **中途启用智能引导与交互横幅 (Smart Mid-Chat Onboarding)**：当检测到会话已有较长历史（$\ge 6$ 条消息）但记忆库为空时，HUD 顶部自动展示友好的智能引导横幅，支持一键点击启动全量回溯；控制台顶部新增“回溯提炼”快捷按钮，自由选择“从头全量提炼”或“增量补全未消化历史”。
 - **实时进度反馈与随时安全中止 (Live Progress & Abort Guard)**：回溯执行期间，HUD 实时呈现带旋转动效的百分比进度条、批次计数与已沉淀记忆数；提供一键“中止”按钮与会话切换自动熔断拦截，绝不发生跨会话污染或挂死。
 - **测试矩阵扩展至 41 项 (T1-T41 全绿)**：新增针对对话轮次回退自愈校准 (T40) 与全量历史分块回溯多批次递进提炼 (T41) 的自动化测试覆盖。
+
+### v0.1.29 (准出权限收敛：统一 POV 访问控制、保密提示与输入输出双向 ACL 对称)
+
+- **准出端权限路由统一收口至 ACL 服务 (Egress Access Control / POV Routing Gate)**：
+  - 在 `src/acl.js` 中新增核心准出判定函数 `canRecipientAccessMemory(memory, recipient, inSceneCharacters, options)`，彻底收敛原本内嵌在提示词注入引擎 (`src/injector.js`) 中的分散权限判定逻辑。
+  - **角色私密经历严格私有隔离**：仅允许归属角色自身生成时（`mem.character === recipient`）作为 POV 接收；跨主体生成坚决拒绝。
+  - **现场共享机密与不知情者保密预警**：生成主体必须位于 `known_by` 知情列表中；当现场存在其他不知情者（Outsiders）时，自动计算并附加保密提示（`[保密提示: 现场存在不知情者 X，当前角色切勿透露此秘密]`），防止大模型穿帮失言。
+  - **物理在场核验 (In-Scene Presence)**：受限记忆强制核验生成主体当下是否在物理现场名单中，离场角色记忆自动静默休眠，杜绝跨空域千里传音。
+  - **Fail-Closed 闭环**：当生成主体缺失或无法确定时，角色私密与现场共享记忆一律严格拒绝注入，仅放行全域公共常识（`world`）。
+- **访问控制层双向对称性闭环 (Bidirectional ACL Symmetry)**：
+  - 数据准入（Ingress）由 `validateMemoryAcl` 严密把关，数据准出（Egress）由 `canRecipientAccessMemory` 严密把关，形成输入/输出全链路 100% 由 `src/acl.js` 裁决的对称式权限闭环，彻底根除注入端规则越权逃逸风险。
+- **自动化测试矩阵扩展至 80 项 (T1-T80 全绿)**：
+  - 新增针对准出端 POV 访问控制单元测试 (T78)、注入引擎协同路由与保密加固测试 (T79)、双向对称性契约验证 (T80) 的全自动化回归测试。
 
 ### v0.1.28 (架构解耦：统一 ACL 访问控制层、数据准入流水线与权限变更审计)
 
