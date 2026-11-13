@@ -104,6 +104,14 @@ import {
 } from '../src/injector.js';
 
 import {
+    normalizeChatCompletionsUrl,
+    executeDigestRequest,
+    testCustomApiConnection,
+    DIGEST_REQUEST_TIMEOUT_MS,
+    TEST_CONNECTION_TIMEOUT_MS
+} from '../src/api.js';
+
+import {
     cleanAndParseJson,
     stripThinkingTags,
     repairTruncatedJson,
@@ -2989,29 +2997,30 @@ Intermediate analysis details...
     });
 
     // ─────────────────────────────────────────────────────────────
-    // T71: 全工程版本标识严格一致性核验 (0.1.29)
+    // T71: 全工程版本标识严格一致性核验 (0.1.30)
     // ─────────────────────────────────────────────────────────────
-    test('T71: 全工程版本标识严格一致性核验 (manifest, config, index 与各模块头部统一为 0.1.29)', () => {
+    test('T71: 全工程版本标识严格一致性核验 (manifest, config, index 与各模块头部统一为 0.1.30)', () => {
         const currentFile = fileURLToPath(import.meta.url);
         const rootDir = path.resolve(path.dirname(currentFile), '../');
 
         // 1. manifest.json
         const manifestPath = path.join(rootDir, 'manifest.json');
         const manifest = JSON.parse(fs.readFileSync(manifestPath, 'utf8'));
-        assert.strictEqual(manifest.version, '0.1.29', 'manifest.json 版本号应为 0.1.29');
+        assert.strictEqual(manifest.version, '0.1.30', 'manifest.json 版本号应为 0.1.30');
 
         // 2. src/config.js
-        assert.strictEqual(EXTENSION_VERSION, '0.1.29', 'config.js EXTENSION_VERSION 应为 0.1.29');
+        assert.strictEqual(EXTENSION_VERSION, '0.1.30', 'config.js EXTENSION_VERSION 应为 0.1.30');
 
         // 3. index.js
         const indexPath = path.join(rootDir, 'index.js');
         const indexContent = fs.readFileSync(indexPath, 'utf8');
-        assert.ok(indexContent.includes('v0.1.29'), 'index.js 头部必须标注 v0.1.29');
-        assert.ok(!indexContent.includes('v0.1.28'), 'index.js 严禁残留旧版本 v0.1.28 版本头');
+        assert.ok(indexContent.includes('v0.1.30'), 'index.js 头部必须标注 v0.1.30');
+        assert.ok(!indexContent.includes('v0.1.29'), 'index.js 严禁残留旧版本 v0.1.29 版本头');
 
         // 4. 各核心模块头部注释版本检查
         const checkModules = [
             'src/acl.js',
+            'src/api.js',
             'src/state.js',
             'src/extractor.js',
             'src/injector.js',
@@ -3024,12 +3033,12 @@ Intermediate analysis details...
             const content = fs.readFileSync(filePath, 'utf8');
             const first10Lines = content.split('\n').slice(0, 10).join('\n');
             assert.ok(
-                first10Lines.includes('v0.1.29') || first10Lines.includes('0.1.29'),
-                `${relPath} 头部注释必须包含 0.1.29 版本标识`
+                first10Lines.includes('v0.1.30') || first10Lines.includes('0.1.30'),
+                `${relPath} 头部注释必须包含 0.1.30 版本标识`
             );
             assert.ok(
-                !first10Lines.includes('0.1.28') && !first10Lines.includes('v0.1.28'),
-                `${relPath} 头部注释严禁残留旧版本 0.1.28`
+                !first10Lines.includes('0.1.29') && !first10Lines.includes('v0.1.29'),
+                `${relPath} 头部注释严禁残留旧版本 0.1.29`
             );
         }
     });
@@ -3401,6 +3410,103 @@ Intermediate analysis details...
         // 当刺客X生成时，因其不在现场或参与者名单中
         const egressCheckX = canRecipientAccessMemory(rogueMem, '刺客X', ['角色A', '玩家']);
         assert.strictEqual(egressCheckX.allowed, false, '准出端核验在场物理名单拦截刺客X');
+    });
+
+    // ─────────────────────────────────────────────────────────────
+    // T81: API 端点规范化与超时/主动中止控制器单元测试 (src/api.js)
+    // ─────────────────────────────────────────────────────────────
+    await testAsync('T81: API 端点规范化与超时/主动中止控制器单元测试 (normalizeChatCompletionsUrl & withTimeout)', async () => {
+        // 1. 端点 URL 规范化
+        assert.strictEqual(normalizeChatCompletionsUrl('https://api.openai.com/v1'), 'https://api.openai.com/v1/chat/completions');
+        assert.strictEqual(normalizeChatCompletionsUrl('https://api.openai.com/v1/'), 'https://api.openai.com/v1/chat/completions');
+        assert.strictEqual(normalizeChatCompletionsUrl('https://api.openai.com/v1/chat/completions'), 'https://api.openai.com/v1/chat/completions');
+        assert.strictEqual(normalizeChatCompletionsUrl('http://localhost:11434/v1/'), 'http://localhost:11434/v1/chat/completions');
+        assert.strictEqual(normalizeChatCompletionsUrl(''), '');
+        assert.strictEqual(normalizeChatCompletionsUrl(null), '');
+
+        // 2. withTimeout 即时中止信号拦截
+        const preAborted = new AbortController();
+        preAborted.abort();
+        await assert.rejects(
+            withTimeout(() => Promise.resolve('ok'), 5000, '预先中止任务', preAborted.signal),
+            /已被中止取消/
+        );
+
+        // 3. withTimeout 运行时信号主动中断
+        const liveAbort = new AbortController();
+        const slowPromise = () => new Promise((_, reject) => {
+            setTimeout(() => liveAbort.abort(), 10);
+        });
+
+        await assert.rejects(
+            withTimeout(slowPromise, 5000, '运行时中止任务', liveAbort.signal),
+            /已被用户手动中止取消/
+        );
+    });
+
+    // ─────────────────────────────────────────────────────────────
+    // T82: 提炼网络请求分级降级调度流水线测试 (executeDigestRequest)
+    // ─────────────────────────────────────────────────────────────
+    await testAsync('T82: 提炼网络请求分级降级调度流水线测试 (原生 generateRaw / generateQuietPrompt 降级)', async () => {
+        // 场景 1: 原生 generateRaw 存在，优先以单轮纯净 Prompt 调用
+        let rawCalledWith = null;
+        const mockRawContext = {
+            generateRaw: async (args) => {
+                rawCalledWith = args;
+                return '{"scene": null, "new_memories": []}';
+            }
+        };
+
+        const resRaw = await executeDigestRequest(mockRawContext, 'TEST_PROMPT_1', { useCustomApi: false });
+        assert.strictEqual(resRaw, '{"scene": null, "new_memories": []}');
+        assert.strictEqual(rawCalledWith.prompt, 'TEST_PROMPT_1');
+        assert.strictEqual(rawCalledWith.responseLength, 2048, '必须显式指定 2048 输出上限');
+
+        // 场景 2: generateRaw 缺失，平滑降级至 generateQuietPrompt 并剔除 reasoning
+        let quietCalledWith = null;
+        const mockQuietContext = {
+            generateQuietPrompt: async (args) => {
+                quietCalledWith = args;
+                return '{"scene": null, "new_memories": []}';
+            }
+        };
+
+        const resQuiet = await executeDigestRequest(mockQuietContext, 'TEST_PROMPT_2', { useCustomApi: false });
+        assert.strictEqual(resQuiet, '{"scene": null, "new_memories": []}');
+        assert.strictEqual(quietCalledWith.quietPrompt, 'TEST_PROMPT_2');
+        assert.strictEqual(quietCalledWith.removeReasoning, true, '必须显式要求剥离思维链防格式错乱');
+
+        // 场景 3: 外部中止信号预先触发时快速熔断拒绝
+        const abortCtrl = new AbortController();
+        abortCtrl.abort();
+        await assert.rejects(
+            executeDigestRequest(mockRawContext, 'TEST_PROMPT_3', { useCustomApi: false }, abortCtrl.signal),
+            /提炼请求已被主动中止/
+        );
+
+        // 场景 4: 无可用接口时友好抛错
+        await assert.rejects(
+            executeDigestRequest({}, 'TEST_PROMPT_4', { useCustomApi: false }),
+            /未发现可用的文本生成接口/
+        );
+    });
+
+    // ─────────────────────────────────────────────────────────────
+    // T83: 独立 API 连通性探测接口测试 (testCustomApiConnection & 错误隔离)
+    // ─────────────────────────────────────────────────────────────
+    await testAsync('T83: 独立 API 连通性探测接口测试 (testCustomApiConnection 缺少配置提示与错误自愈)', async () => {
+        // 1. 缺少 URL 时的友好提示
+        const resEmpty = await testCustomApiConnection({ customApiUrl: '' });
+        assert.strictEqual(resEmpty.success, false);
+        assert.ok(resEmpty.error.includes('请先填写 Base URL'));
+
+        // 2. 模拟网络异常时的优雅捕获 (绝不引起未捕获崩溃)
+        const resNetworkErr = await testCustomApiConnection({
+            customApiUrl: 'http://127.0.0.1:99999/invalid_port',
+            customApiKey: 'dummy_key'
+        });
+        assert.strictEqual(resNetworkErr.success, false);
+        assert.ok(resNetworkErr.error);
     });
 
     console.log(`\n======================================================`);

@@ -1,6 +1,6 @@
 # SillyTavern 持续记忆插件 (ST-Persistent-Memory)
 
-[![Version](https://img.shields.io/badge/version-v0.1.29-blue.svg)](https://github.com/dayuseless/ST-Persistent-Memory)
+[![Version](https://img.shields.io/badge/version-v0.1.30-blue.svg)](https://github.com/dayuseless/ST-Persistent-Memory)
 [![SillyTavern](https://img.shields.io/badge/SillyTavern-1.12.0+-purple.svg)](https://github.com/SillyTavern/SillyTavern)
 [![License](https://img.shields.io/badge/license-MIT-green.svg)](LICENSE)
 
@@ -77,7 +77,7 @@
 
 ### 方式二：手动离线包安装
 
-1. 从 [Releases 页面](https://github.com/dayuseless/ST-Persistent-Memory/releases) 下载 `ST-Persistent-Memory-v0.1.29.zip`。
+1. 从 [Releases 页面](https://github.com/dayuseless/ST-Persistent-Memory/releases) 下载 `ST-Persistent-Memory-v0.1.30.zip`。
 2. 解压到 SillyTavern 的扩展目录中：
    ```text
    SillyTavern/public/scripts/extensions/third-party/ST-Persistent-Memory/
@@ -166,6 +166,17 @@ window.__persistentMemory.digestNow();
 - **中途启用智能引导与交互横幅 (Smart Mid-Chat Onboarding)**：当检测到会话已有较长历史（$\ge 6$ 条消息）但记忆库为空时，HUD 顶部自动展示友好的智能引导横幅，支持一键点击启动全量回溯；控制台顶部新增“回溯提炼”快捷按钮，自由选择“从头全量提炼”或“增量补全未消化历史”。
 - **实时进度反馈与随时安全中止 (Live Progress & Abort Guard)**：回溯执行期间，HUD 实时呈现带旋转动效的百分比进度条、批次计数与已沉淀记忆数；提供一键“中止”按钮与会话切换自动熔断拦截，绝不发生跨会话污染或挂死。
 - **测试矩阵扩展至 41 项 (T1-T41 全绿)**：新增针对对话轮次回退自愈校准 (T40) 与全量历史分块回溯多批次递进提炼 (T41) 的自动化测试覆盖。
+
+### v0.1.30 (网络传输层解耦：独立 API 客户端模块、多级请求降级与中止联动)
+
+- **网络通信与提炼引擎彻底解耦 (API Transport Layer Decoupling)**：
+  - 新增专用网络通信模块 `src/api.js`，将底层 HTTP fetch 请求、原生酒馆 `generateRaw` 降级适配、`AbortController` 超时管理从原本 1700+ 行的 `src/extractor.js` 中彻底剥离（精简提炼核心 230+ 行代码）。
+  - **三级生成调度降级**：优先使用独立 OpenAI 兼容自定义端点（自包含单轮 Prompt，根治主会话思维链丢失与上下文污染）；无自定义端点时优先调用原生 `generateRaw`；兜底回退至 `generateQuietPrompt`。
+  - **全链路主动中止与超时联动**：统一实现 `withTimeout` 与 `executeDigestRequest`，实现 45 秒提炼超时与 15 秒探测超时控制，并在用户点击「中止」或切换会话时实现级联毫秒级取消，坚决阻断挂起死锁。
+  - **端点 URL 智能规范化**：提供 `normalizeChatCompletionsUrl()`，智能去除多余末尾斜杠并按需补全 `/chat/completions`，提高跨服务兼容性。
+  - **轻量独立连通性探针**：`testCustomApiConnection()` 独立收纳，使用 8 tokens 极简探针测试往返延迟，异常全面安全隔离，绝不引发未捕获崩溃。
+- **自动化测试矩阵扩展至 83 项 (T1-T83 全绿)**：
+  - 新增针对 API 端点规范化与超时控制器测试 (T81)、提炼网络请求分级降级调度流水线测试 (T82)、独立 API 连通性探测接口测试 (T83) 的自动化回归测试。
 
 ### v0.1.29 (准出权限收敛：统一 POV 访问控制、保密提示与输入输出双向 ACL 对称)
 
