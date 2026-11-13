@@ -4,6 +4,9 @@
  */
 
 import assert from 'assert';
+import fs from 'fs';
+import path from 'path';
+import { fileURLToPath } from 'url';
 
 // 模拟 SillyTavern 环境
 let mockLocalStorage = {};
@@ -112,7 +115,7 @@ import {
     findMessageIndexByTurn,
     getContextParticipants
 } from '../src/extractor.js';
-import { renderMemoryCard } from '../src/ui.js';
+import { renderMemoryCard, showPromoteLoreModal } from '../src/ui.js';
 import {
     LOCAL_VECTOR_DIM,
     cosineSimilarity,
@@ -677,7 +680,7 @@ async function runTests() {
                 null,
                 {}, // 空损坏
                 { content: '神殿深处的誓言', type: 'statement' }, // 完全相同内容 (去重)
-                { id: 'ext_mem_1', content: '藏在壁画后的地图', type: 'fact', scope: 'shared', known_by: ['角色A', '角色B'] }
+                { id: 'ext_mem_1', content: '藏在壁画后的地图', type: 'fact', scope: 'shared', known_by: ['角色A', '玩家'] }
             ]
         };
 
@@ -2623,6 +2626,388 @@ Intermediate analysis details...
         // 验证总字符数被限制在 3500 左右 (加上角色名标签前缀不会超过 4500)
         assert(extractedDialogue.length <= 4500, `回溯批次对话总字数应受安全上限保护 (实际为 ${extractedDialogue.length} 字符，严禁达 8000 字符)`);
         assert(extractedDialogue.includes('[中间叙事已压缩]'), '超长单条消息应包含压缩标记');
+    });
+
+    // ─────────────────────────────────────────────────────────────
+    // T65: 备份导入路径严格复用权威参与者校验 (单聊私密记忆越权拦截与 Fail-Closed)
+    // ─────────────────────────────────────────────────────────────
+    test('T65: 备份导入严格校验单聊可信参与者名单 (排除未参战角色的私密记忆，禁止越权入库)', () => {
+        const state = getState();
+        state.memories = [];
+
+        // 当前单聊环境：仅 '玩家' 与 '角色A'
+        mockContext.groupId = null;
+        mockContext.groups = [];
+        mockContext.name1 = '玩家';
+        mockContext.name2 = '角色A';
+
+        const backupData = {
+            memories: [
+                // 合法 1: 角色A 的私密记忆 (合法参战者)
+                { id: 'mem_a_ok', content: '角色A私藏的宝石钥匙', scope: 'character', character: '角色A' },
+                // 合法 2: 公共常识 (world 范围无论角色均可导入)
+                { id: 'mem_w_ok', content: '暴风城建立于数百年前', scope: 'world' },
+                // 越权 1: 角色库中存在但并未参与本会话的角色B (越权跨会话私密记忆)
+                { id: 'mem_b_bad', content: '角色B秘密谋划政变', scope: 'character', character: '角色B' },
+                // 越权 2: 外部完全未知角色 (越权入侵记忆)
+                { id: 'mem_c_bad', content: '刺客C在暗处窥伺', scope: 'character', character: '刺客C' }
+            ]
+        };
+
+        const res = importMemoryData(backupData, 'merge');
+        assert.strictEqual(res.success, true);
+        assert.strictEqual(res.imported, 2, '仅导入2条当前会话合法条目');
+        assert.strictEqual(res.aclRejected, 2, '2条越权私密记忆应被 ACL 严格拦截');
+        assert.strictEqual(state.memories.length, 2);
+
+        const contents = state.memories.map(m => m.content);
+        assert.ok(contents.includes('角色A私藏的宝石钥匙'));
+        assert.ok(contents.includes('暴风城建立于数百年前'));
+        assert.ok(!contents.includes('角色B秘密谋划政变'), '未参战角色B的私密记忆严禁入库');
+        assert.ok(!contents.includes('刺客C在暗处窥伺'), '未知角色C的私密记忆严禁入库');
+    });
+
+    // ─────────────────────────────────────────────────────────────
+    // T66: 备份导入共享记忆知情者白名单安全核验 (排除未参战角色跨会话渗入)
+    // ─────────────────────────────────────────────────────────────
+    test('T66: 备份导入共享记忆知情者白名单安全核验 (排除未参战角色跨会话渗入)', () => {
+        const state = getState();
+        state.memories = [];
+
+        mockContext.groupId = null;
+        mockContext.groups = [];
+        mockContext.name1 = '玩家';
+        mockContext.name2 = '角色A';
+
+        const backupData = {
+            memories: [
+                // 合法: 仅包含当前参战双方
+                { id: 'sh_ok', content: '枯井下藏着羊皮纸卷轴', scope: 'shared', known_by: ['角色A', '玩家'] },
+                // 越权: 包含未参战的角色B
+                { id: 'sh_leak_b', content: '密诏原件藏在书房壁炉暗格', scope: 'shared', known_by: ['角色A', '角色B'] },
+                // 越权: 包含完全外部角色
+                { id: 'sh_leak_c', content: '城防布防图秘密', scope: 'shared', known_by: ['角色A', '间谍X'] },
+                // 越权: 空知情者 (Fail-Closed)
+                { id: 'sh_empty', content: '不知是谁留下的纸条', scope: 'shared', known_by: [] }
+            ]
+        };
+
+        const res = importMemoryData(backupData, 'merge');
+        assert.strictEqual(res.success, true);
+        assert.strictEqual(res.imported, 1, '仅导入1条合法共享记忆');
+        assert.strictEqual(res.aclRejected, 3, '3条知情者越权或空知情者共享记忆被全部拦截');
+        assert.strictEqual(state.memories.length, 1);
+        assert.strictEqual(state.memories[0].content, '枯井下藏着羊皮纸卷轴');
+    });
+
+    // ─────────────────────────────────────────────────────────────
+    // T67: 备份导入模式安全等价性 (replace 与 merge 执行同等强度的 ACL 约束)
+    // ─────────────────────────────────────────────────────────────
+    test('T67: 备份导入模式安全等价性 (replace 与 merge 执行同等强度的 ACL 约束，防全量替换绕过)', () => {
+        const state = getState();
+
+        mockContext.groupId = null;
+        mockContext.name1 = '玩家';
+        mockContext.name2 = '角色A';
+
+        const mixedData = {
+            memories: [
+                { id: 'm_ok', content: '角色A的真实身份是王族后裔', scope: 'character', character: '角色A' },
+                { id: 'm_bad1', content: '角色B谋杀先王的证词', scope: 'character', character: '角色B' },
+                { id: 'm_bad2', content: '暗月马戏团集会暗号', scope: 'shared', known_by: ['角色B', '角色C'] }
+            ]
+        };
+
+        // 1. replace 模式
+        state.memories = [{ id: 'old_1', content: '旧记忆条目', scope: 'character', character: '角色A' }];
+        const resReplace = importMemoryData(mixedData, 'replace');
+        assert.strictEqual(resReplace.success, true);
+        assert.strictEqual(resReplace.imported, 1);
+        assert.strictEqual(resReplace.aclRejected, 2);
+        assert.strictEqual(state.memories.length, 1);
+        assert.strictEqual(state.memories[0].content, '角色A的真实身份是王族后裔');
+
+        // 2. merge 模式
+        state.memories = [{ id: 'old_1', content: '旧记忆条目', scope: 'character', character: '角色A' }];
+        const resMerge = importMemoryData(mixedData, 'merge');
+        assert.strictEqual(resMerge.success, true);
+        assert.strictEqual(resMerge.imported, 1);
+        assert.strictEqual(resMerge.aclRejected, 2);
+        assert.strictEqual(state.memories.length, 2); // old_1 + m_ok
+    });
+
+    // ─────────────────────────────────────────────────────────────
+    // T68: 世界书升格安全防护：私密/现场机密记忆升格显式警示知情范围扩散，并强制二次确认
+    // ─────────────────────────────────────────────────────────────
+    test('T68: 世界书升格安全防护：私密/现场机密记忆升格显式警示知情范围扩散，并强制二次确认', () => {
+        let htmlSnippet = '';
+        const listeners = {};
+        let toastWarningMsg = '';
+
+        const origToastr = global.window.toastr;
+        global.window.toastr = {
+            ...origToastr,
+            warning: (msg) => { toastWarningMsg = msg; }
+        };
+
+        const modalEl = {
+            remove: () => { htmlSnippet = ''; },
+            querySelector: (sel) => {
+                if (sel === '#pm-promote-acl-warning') {
+                    return htmlSnippet.includes('id="pm-promote-acl-warning"') ? { id: 'pm-promote-acl-warning' } : null;
+                }
+                if (sel === '#pm-promote-confirm-acl-escalation') {
+                    return mockCheckbox;
+                }
+                if (sel === '#pm-promote-target-book') return { value: '测试世界书' };
+                if (sel === '#pm-promote-entry-name') return { value: '王室密约' };
+                if (sel === '#pm-promote-entry-keys') return { value: '密约, 盟誓' };
+                if (sel === '#pm-promote-entry-content') return { value: '不可告人的盟约正文' };
+                if (sel === '#pm-promote-mark-completed') return { checked: true };
+                if (sel === '#pm-promote-modal-confirm') {
+                    return {
+                        addEventListener: (ev, cb) => { listeners['confirm'] = cb; }
+                    };
+                }
+                return null;
+            }
+        };
+
+        const mockCheckbox = { checked: false };
+
+        const origDocument = global.document;
+        global.document = {
+            querySelectorAll: () => [],
+            getElementById: (id) => id === 'pm-lore-promote-modal' ? modalEl : null,
+            body: {
+                insertAdjacentHTML: (pos, html) => {
+                    htmlSnippet = html;
+                }
+            }
+        };
+
+        try {
+            // 场景 1: 私密记忆 (scope: 'character')
+            const privateMem = {
+                id: 'mem_priv_1',
+                content: '不可告人的盟约正文',
+                scope: 'character',
+                character: '角色A',
+                trigger_keys: ['密约']
+            };
+
+            let confirmedPayload = null;
+            showPromoteLoreModal(privateMem, '测试世界书', (payload) => {
+                confirmedPayload = payload;
+            });
+
+            // 验证 HTML 注入了权限变更预警和二次确认复选框
+            assert.ok(htmlSnippet.includes('权限范围变更预警'), '受限记忆应显示权限扩散预警');
+            assert.ok(htmlSnippet.includes('pm-promote-confirm-acl-escalation'), '受限记忆必须包含二次确认复选框');
+            assert.ok(htmlSnippet.includes('角色A'), '预警中应明确标明原始知情角色');
+
+            // 未勾选复选框直接点击确认
+            mockCheckbox.checked = false;
+            toastWarningMsg = '';
+            listeners['confirm']();
+            assert.strictEqual(confirmedPayload, null, '未勾选知情范围扩大确认时，严禁触发升格回调');
+            assert.ok(toastWarningMsg.includes('授权知情范围扩大'), '应向用户弹出安全阻断警告');
+
+            // 勾选复选框后再次点击确认
+            mockCheckbox.checked = true;
+            listeners['confirm']();
+            assert.ok(confirmedPayload !== null, '勾选确认后应成功触发升格');
+            assert.strictEqual(confirmedPayload.entryName, '王室密约');
+            assert.strictEqual(confirmedPayload.markCompleted, true);
+
+            // 场景 2: 公共常识记忆 (scope: 'world')
+            confirmedPayload = null;
+            htmlSnippet = '';
+            const worldMem = {
+                id: 'mem_world_1',
+                content: '太阳从东方升起',
+                scope: 'world',
+                trigger_keys: ['日出']
+            };
+
+            showPromoteLoreModal(worldMem, '测试世界书', (payload) => {
+                confirmedPayload = payload;
+            });
+
+            assert.ok(!htmlSnippet.includes('pm-promote-acl-warning'), '公共常识记忆无需权限变更预警');
+            assert.ok(!htmlSnippet.includes('pm-promote-confirm-acl-escalation'), '公共常识记忆无需二次权限确认');
+
+            // 直接确认
+            listeners['confirm']();
+            assert.ok(confirmedPayload !== null, '公共常识记忆可直接无阻碍升格');
+
+        } finally {
+            global.document = origDocument;
+            global.window.toastr = origToastr;
+        }
+    });
+
+    // ─────────────────────────────────────────────────────────────
+    // T69: 世界书升格条目全生命周期溯源追溯 (lorebook_ref 完整记录原始 scope、角色与知情者)
+    // ─────────────────────────────────────────────────────────────
+    await testAsync('T69: 世界书升格条目全生命周期溯源追溯 (lorebook_ref 完整记录原始 scope、角色与知情者)', async () => {
+        const state = getState();
+        state.memories = [];
+
+        // 构造角色私有记忆与共享机密记忆
+        const privMem = {
+            id: 'mem_trace_priv',
+            content: '血色十字军密信原稿',
+            scope: 'character',
+            character: '角色A',
+            trigger_keys: ['十字军密信']
+        };
+        const sharedMem = {
+            id: 'mem_trace_shared',
+            content: '刺客联盟地下暗道暗号',
+            scope: 'shared',
+            known_by: ['角色A', '玩家'],
+            trigger_keys: ['地下暗号']
+        };
+        state.memories.push(privMem, sharedMem);
+
+        let savedWorldData = null;
+        mockContext.loadWorldInfo = async () => ({ entries: {} });
+        mockContext.saveWorldInfo = async (name, data) => {
+            savedWorldData = data;
+            return true;
+        };
+
+        // 1. 升格私有记忆
+        const res1 = await promoteMemoryToWorldInfo('mem_trace_priv', { bookName: '艾泽拉斯秘闻' });
+        assert.strictEqual(res1.success, true);
+        assert.strictEqual(privMem.lorebook_ref.promoted_from_scope, 'character');
+        assert.strictEqual(privMem.lorebook_ref.original_character, '角色A');
+        assert.strictEqual(privMem.lorebook_ref.book, '艾泽拉斯秘闻');
+        // 验证世界书词条 comment 中携带溯源审计信息
+        const entry1 = savedWorldData.entries[res1.entryUid];
+        assert.ok(entry1.comment.includes('[持续记忆·私密(角色A)]'), '世界书词条必须包含原始私密归属溯源');
+
+        // 2. 升格共享机密记忆
+        const res2 = await promoteMemoryToWorldInfo('mem_trace_shared', { bookName: '艾泽拉斯秘闻' });
+        assert.strictEqual(res2.success, true);
+        assert.strictEqual(sharedMem.lorebook_ref.promoted_from_scope, 'shared');
+        assert.deepStrictEqual(sharedMem.lorebook_ref.original_known_by, ['角色A', '玩家']);
+        const entry2 = savedWorldData.entries[res2.entryUid];
+        assert.ok(entry2.comment.includes('[持续记忆·机密(知情:角色A,玩家)]'), '世界书词条必须包含原始共享知情者溯源');
+    });
+
+    // ─────────────────────────────────────────────────────────────
+    // T70: 世界书升格边界极端容错 (非数字 UID 过滤、只读内置世界书拦截、缺失内容防御)
+    // ─────────────────────────────────────────────────────────────
+    await testAsync('T70: 世界书升格边界极端容错 (非数字 UID 过滤、只读内置世界书拦截、缺失内容防御)', async () => {
+        const state = getState();
+        state.memories = [];
+
+        const testMem = {
+            id: 'mem_err_test',
+            content: '泰坦符文之语',
+            scope: 'world'
+        };
+        state.memories.push(testMem);
+
+        // 1. 目标世界书中存在脏键 (字符串键、非数字 UID)
+        let savedData = null;
+        mockContext.loadWorldInfo = async () => ({
+            entries: {
+                'invalid_str': { uid: 'not_a_number' },
+                '15': { uid: 15 },
+                'bad_obj': null
+            }
+        });
+        mockContext.saveWorldInfo = async (name, data) => {
+            savedData = data;
+            return true;
+        };
+
+        const resUid = await promoteMemoryToWorldInfo('mem_err_test', { bookName: '泰坦古籍' });
+        assert.strictEqual(resUid.success, true);
+        assert.strictEqual(resUid.entryUid, 16, '新 UID 应基于数值 UID 最大值 15 递增为 16');
+
+        // 2. 空内容防御
+        const resEmpty = await promoteMemoryToWorldInfo('mem_err_test', { bookName: '泰坦古籍', content: '   ' });
+        assert.strictEqual(resEmpty.success, false);
+        assert.strictEqual(resEmpty.reason, '词条设定正文不能为空');
+
+        // 3. 只读角色内置世界书 (Embedded Character Book) 防御
+        const prevCharacters = mockContext.characters;
+        const prevMetadata = mockContext.chatMetadata;
+        mockContext.chatMetadata = {};
+        mockContext.characterId = 0;
+        mockContext.characters = [{
+            name: '角色A',
+            data: {
+                character_book: {
+                    name: '只读内置设定书',
+                    entries: [{ uid: 1, comment: 'test' }]
+                }
+            }
+        }];
+
+        const embedMem = {
+            id: 'mem_embed_test',
+            content: '内置设定测试条目',
+            scope: 'world'
+        };
+        state.memories.push(embedMem);
+
+        const resEmbed = await promoteMemoryToWorldInfo('mem_embed_test', { bookName: '' });
+        assert.strictEqual(resEmbed.success, false);
+        assert.ok(resEmbed.reason.includes('角色卡内置设定'), '只读卡片资源应明确拦截并拒绝升格写入');
+
+        // 恢复 mockContext
+        mockContext.characters = prevCharacters;
+        mockContext.chatMetadata = prevMetadata;
+    });
+
+    // ─────────────────────────────────────────────────────────────
+    // T71: 全工程版本标识严格一致性核验 (0.1.27)
+    // ─────────────────────────────────────────────────────────────
+    test('T71: 全工程版本标识严格一致性核验 (manifest, config, index 与各模块头部统一为 0.1.27)', () => {
+        const currentFile = fileURLToPath(import.meta.url);
+        const rootDir = path.resolve(path.dirname(currentFile), '../');
+
+        // 1. manifest.json
+        const manifestPath = path.join(rootDir, 'manifest.json');
+        const manifest = JSON.parse(fs.readFileSync(manifestPath, 'utf8'));
+        assert.strictEqual(manifest.version, '0.1.27', 'manifest.json 版本号应为 0.1.27');
+
+        // 2. src/config.js
+        assert.strictEqual(EXTENSION_VERSION, '0.1.27', 'config.js EXTENSION_VERSION 应为 0.1.27');
+
+        // 3. index.js
+        const indexPath = path.join(rootDir, 'index.js');
+        const indexContent = fs.readFileSync(indexPath, 'utf8');
+        assert.ok(indexContent.includes('v0.1.27'), 'index.js 头部必须标注 v0.1.27');
+        assert.ok(!indexContent.includes('v0.1.18'), 'index.js 严禁残留过时的 v0.1.18 版本头');
+
+        // 4. 各核心模块头部注释版本检查
+        const checkModules = [
+            'src/state.js',
+            'src/extractor.js',
+            'src/injector.js',
+            'src/semantic.js',
+            'src/ui.js'
+        ];
+
+        for (const relPath of checkModules) {
+            const filePath = path.join(rootDir, relPath);
+            const content = fs.readFileSync(filePath, 'utf8');
+            const first10Lines = content.split('\n').slice(0, 10).join('\n');
+            assert.ok(
+                first10Lines.includes('v0.1.27') || first10Lines.includes('0.1.27'),
+                `${relPath} 头部注释必须包含 0.1.27 版本标识`
+            );
+            assert.ok(
+                !first10Lines.includes('0.1.26') && !first10Lines.includes('v0.1.26'),
+                `${relPath} 头部注释严禁残留旧版本 0.1.26`
+            );
+        }
     });
 
     console.log(`\n======================================================`);

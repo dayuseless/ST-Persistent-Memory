@@ -1,6 +1,6 @@
 /**
- * UI 管理器 (v0.1.26)：原生扩展抽屉集成、屏幕快捷悬浮按钮（支持自由拖拽与持久化）与 HUD 侧边控制台
- * 全面升级：行内即时编辑、记忆数据独立导出/导入迁移、长程宏观归并 (Consolidation)、终态记忆过滤与归档清理抽屉
+ * UI 管理器 (v0.1.27)：原生扩展抽屉集成、屏幕快捷悬浮按钮（支持自由拖拽与持久化）与 HUD 侧边控制台
+ * 全面升级：行内即时编辑、记忆数据独立导出/导入迁移、数据导入ACL校验、世界书升格权限提示、长程宏观归并 (Consolidation)、终态记忆过滤与归档清理抽屉
  */
 
 import { MODULE_NAME, MEMORY_STATUS, MEMORY_LIFECYCLE, MEMORY_SCOPE } from './config.js';
@@ -2580,7 +2580,13 @@ function bindPanelEvents(container) {
             try {
                 const parsed = JSON.parse(event.target.result);
                 const res = importMemoryData(parsed, 'merge');
-                window.toastr?.success?.(`成功导入 ${res.count} 条新记忆 (当前总数: ${res.total})`, '持续记忆');
+                let msg = `成功导入 ${res.count} 条新记忆 (当前总数: ${res.total})`;
+                if (res.aclRejected > 0) {
+                    msg += `，${res.aclRejected} 条因非当前会话参战角色越权被安全拦截`;
+                    window.toastr?.warning?.(msg, '持续记忆导入');
+                } else {
+                    window.toastr?.success?.(msg, '持续记忆');
+                }
             } catch (err) {
                 console.error('[st_persistent_memory] 导入记忆数据失败:', err);
                 window.toastr?.error?.('导入失败: ' + (err.message || '文件格式畸形'), '持续记忆');
@@ -2651,8 +2657,9 @@ function showSyncLoreModal(preview, onConfirm) {
 
 /**
  * 弹出记忆一键升格为世界书独立新词条的配置对话框
+ * P2-01: 对受限范围 (私密/现场机密) 记忆增加显式权限变更预警与二次确认
  */
-function showPromoteLoreModal(mem, activeBookName, onConfirm) {
+export function showPromoteLoreModal(mem, activeBookName, onConfirm) {
     if (typeof document === 'undefined') return;
 
     // 清理已有模态框
@@ -2660,6 +2667,26 @@ function showPromoteLoreModal(mem, activeBookName, onConfirm) {
 
     const defaultTitle = (mem.content || '').slice(0, 16).trim() || '新设定词条';
     const defaultKeys = (mem.trigger_keys || []).join(', ') || defaultTitle;
+    const isRestrictedScope = mem.scope === MEMORY_SCOPE.CHARACTER || mem.scope === MEMORY_SCOPE.SHARED;
+
+    const scopeWarningHtml = isRestrictedScope ? `
+        <div class="pm-alert-warning" id="pm-promote-acl-warning" style="background: #fffbeb; border: 1px solid #fde68a; border-radius: 6px; padding: 8px 10px; margin-bottom: 10px; font-size: 11px; color: #92400e; display: flex; align-items: flex-start; gap: 6px;">
+            <i class="fa-solid fa-triangle-exclamation" style="font-size: 14px; margin-top: 1px; color: #d97706; flex-shrink: 0;"></i>
+            <div>
+                <b>权限范围变更预警：</b>该条记忆原为<b>【${mem.scope === MEMORY_SCOPE.CHARACTER ? `角色私密 (${escapeHtml(mem.character || '未知')})` : `现场机密 (知情: ${escapeHtml((mem.known_by || []).join(', '))})`}】</b>。
+                升格为世界书独立条目后，将作为静态知识对绑定该世界书的所有会话与角色开放常驻，知情权限将实质性扩大。
+            </div>
+        </div>
+    ` : '';
+
+    const escalationCheckboxHtml = isRestrictedScope ? `
+        <div style="margin-top: 8px; background: #fff7ed; border: 1px dashed #fdba74; border-radius: 4px; padding: 6px 8px;">
+            <label style="display: flex; align-items: flex-start; gap: 6px; font-size: 11px; color: #9a3412; cursor: pointer;">
+                <input type="checkbox" id="pm-promote-confirm-acl-escalation">
+                <span><b>安全确认：</b>我已知悉此条记忆原属受限机密，确认升格为公开/全员常驻世界书条目并承担知情范围扩大后果。</span>
+            </label>
+        </div>
+    ` : '';
 
     const modalHtml = `
         <div class="pm-modal-backdrop" id="pm-lore-promote-modal">
@@ -2671,6 +2698,7 @@ function showPromoteLoreModal(mem, activeBookName, onConfirm) {
                     <button class="pm-modal-close" id="pm-promote-modal-close" style="background: none; border: none; font-size: 18px; cursor: pointer; color: #94a3b8; line-height: 1;">&times;</button>
                 </div>
                 <div class="pm-modal-body" style="padding: 10px 0;">
+                    ${scopeWarningHtml}
                     <div class="pm-input-row" style="margin-bottom: 8px;">
                         <label class="pm-input-label" style="font-size: 11px; font-weight: 600; color: #334155;">目标世界书名称：</label>
                         <input type="text" id="pm-promote-target-book" class="pm-input" value="${escapeHtml(activeBookName || '')}" placeholder="输入或确认世界书名称 (留空将自动匹配当前角色绑定的世界书)" style="width: 100%; box-sizing: border-box; font-size: 12px;">
@@ -2695,6 +2723,7 @@ function showPromoteLoreModal(mem, activeBookName, onConfirm) {
                             <span>升格后将本记忆标记为<b>【履约/办结】</b>(转化为静态世界书设定常驻，不再重复作为动态记忆抽取)</span>
                         </label>
                     </div>
+                    ${escalationCheckboxHtml}
                 </div>
                 <div class="pm-modal-footer" style="display: flex; justify-content: flex-end; gap: 8px; margin-top: 8px;">
                     <button class="pm-btn-secondary" id="pm-promote-modal-cancel" style="padding: 4px 12px; font-size: 12px;">取消</button>
@@ -2713,6 +2742,14 @@ function showPromoteLoreModal(mem, activeBookName, onConfirm) {
     modalEl.querySelector('#pm-promote-modal-cancel')?.addEventListener('click', closeModal);
 
     modalEl.querySelector('#pm-promote-modal-confirm')?.addEventListener('click', () => {
+        if (isRestrictedScope) {
+            const confirmedAcl = Boolean(modalEl.querySelector('#pm-promote-confirm-acl-escalation')?.checked);
+            if (!confirmedAcl) {
+                window.toastr?.warning?.('此记忆属于受限机密，升格世界书前请先勾选确认授权知情范围扩大。', '持续记忆安全提示');
+                return;
+            }
+        }
+
         const bookName = modalEl.querySelector('#pm-promote-target-book')?.value?.trim();
         const entryName = modalEl.querySelector('#pm-promote-entry-name')?.value?.trim() || defaultTitle;
         const rawKeys = modalEl.querySelector('#pm-promote-entry-keys')?.value || '';

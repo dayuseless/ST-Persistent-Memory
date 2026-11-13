@@ -1,81 +1,15 @@
 /**
- * 提炼引擎 (v0.1.26)
+ * 提炼引擎 (v0.1.27)
  * 严格落实：状态版本并发保护 (state_revision)、独立API/generateRaw自包含请求、严格拒绝型 Schema 验证、知情者权威名单白名单核验、显式生命周期流转、知情范围隔离与高阶宏观归并 (Consolidation)
  */
 
 import { MODULE_NAME, MEMORY_TYPES, MEMORY_STATUS, MEMORY_LIFECYCLE, MEMORY_SCOPE } from './config.js';
-import { getState, getSettings, updateScene, addMemory, setMemoryLifecycle, saveCurrentState, batchUpdate, getActiveWorldBookInfo, applyInactivitySleep } from './state.js';
+import { getState, getSettings, updateScene, addMemory, setMemoryLifecycle, saveCurrentState, batchUpdate, getActiveWorldBookInfo, applyInactivitySleep, getContextParticipants } from './state.js';
+
+export { getContextParticipants };
 
 function getContext() {
     return window.SillyTavern?.getContext?.() ?? null;
-}
-
-/**
- * 获取当前场景与会话的可信参与者名单 (Trusted Participants)
- * 用于对提炼产出的 known_by 和归属角色进行权威边界白名单校验
- *
- * 核心安全纪律 (ACL Invariant):
- * 1. 单聊模式：仅包含玩家 (name1) 与当前激活角色 (name2 或 characters[characterId])。严禁将角色库中未参战的其他角色混入！
- * 2. 群聊模式：仅包含玩家 (name1) 与当前群组真实成员 (通过 groupId 索引 groups[groupId].members 解析出的角色)。
- * 3. 严禁将模型生成的现场名单 (state.scene.in_scene_characters) 纳入授权凭证！防范循环越权漏洞。
- */
-export function getContextParticipants(c, state = null) {
-    const participants = new Set();
-    if (!c) return participants;
-
-    // 1. 玩家身份 (User)
-    if (c.name1 && typeof c.name1 === 'string' && c.name1.trim()) {
-        participants.add(c.name1.trim());
-    }
-
-    // 2. 检查是否为群聊 (Group Chat)
-    // SillyTavern 群聊特征：存在 c.groupId 且匹配 c.groups 中的群组定义
-    const isGroupChat = Boolean(c.groupId);
-    if (isGroupChat && Array.isArray(c.groups)) {
-        const activeGroup = c.groups.find(g => String(g.id) === String(c.groupId));
-        if (activeGroup && Array.isArray(activeGroup.members)) {
-            const memberSet = new Set(activeGroup.members.map(m => String(m).trim().toLowerCase()));
-            if (Array.isArray(c.characters)) {
-                c.characters.forEach(ch => {
-                    if (ch && typeof ch.name === 'string' && ch.name.trim()) {
-                        const avatarName = String(ch.avatar || '').trim().toLowerCase();
-                        const charName = ch.name.trim().toLowerCase();
-                        if (memberSet.has(avatarName) || memberSet.has(charName)) {
-                            participants.add(ch.name.trim());
-                        }
-                    }
-                });
-            }
-            // 兼容 group.members 直接存储角色名字的情形 (无后缀)
-            activeGroup.members.forEach(m => {
-                if (typeof m === 'string' && m.trim() && !m.includes('.')) {
-                    participants.add(m.trim());
-                }
-            });
-        }
-    } else {
-        // 3. 单聊模式 (1-on-1 Chat):
-        // 严格仅认可当前会话激活的角色 (name2 或 characters[characterId])
-        // 严禁将用户角色库 (characters) 中未参战的其他角色混入！
-        if (c.name2 && typeof c.name2 === 'string' && c.name2.trim()) {
-            participants.add(c.name2.trim());
-        } else if (Array.isArray(c.characters) && c.characterId !== undefined && c.characters[c.characterId]) {
-            const activeChar = c.characters[c.characterId];
-            if (activeChar && typeof activeChar.name === 'string' && activeChar.name.trim()) {
-                participants.add(activeChar.name.trim());
-            }
-        }
-    }
-
-    // 兜底保护：若环境仅有单一角色对象且未标明 name2/characterId
-    if (participants.size <= 1 && Array.isArray(c.characters) && c.characters.length === 1) {
-        const onlyChar = c.characters[0];
-        if (onlyChar?.name && typeof onlyChar.name === 'string' && onlyChar.name.trim()) {
-            participants.add(onlyChar.name.trim());
-        }
-    }
-
-    return participants;
 }
 
 // 针对模型提炼接口，只允许流转至终态 (P1 修复：严禁模型将已完结记忆重新激活为 active)

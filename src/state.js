@@ -1,6 +1,6 @@
 /**
- * 记忆状态管理器 (v0.1.26)
- * 严格落实 state_revision 状态修订号、L0 三态 PATCH 语义、真正原子回滚事务、严格知情集合隔离、行内编辑与高阶归并演进
+ * 记忆状态管理器 (v0.1.27)
+ * 严格落实 state_revision 状态修订号、L0 三态 PATCH 语义、真正原子回滚事务、数据导入ACL校验、世界书升格溯源、严格知情集合隔离、行内编辑与高阶归并演进
  */
 
 import { MODULE_NAME, EXTENSION_VERSION, DEFAULT_SETTINGS, DEFAULT_STATE, MEMORY_STATUS, MEMORY_LIFECYCLE, MEMORY_TYPES, MEMORY_SCOPE } from './config.js';
@@ -8,9 +8,75 @@ import { syncEnsureLocalEmbedding, reindexMemories } from './semantic.js';
 
 let stateCache = null;
 const stateChangeListeners = new Set();
+
+/**
+ * P1-01 核心加固：计算当前会话权威可信参与者名单 (Authoritative Participants Whitelist)
+ * 1. 单聊模式：仅认可当前活跃聊天的双方 (User + 当前激活角色 name2/characterId)，坚决排除角色库中未参战角色！
+ * 2. 群聊模式：严格基于 c.groupId 检索 c.groups[groupId].members，解析参战角色并联合 User。
+ * 3. 严禁将模型生成的现场名单 (state.scene.in_scene_characters) 纳入授权凭证！防范循环越权漏洞。
+ */
+export function getContextParticipants(c, state = null) {
+    const participants = new Set();
+    if (!c) return participants;
+
+    // 1. 玩家身份 (User)
+    if (c.name1 && typeof c.name1 === 'string' && c.name1.trim()) {
+        participants.add(c.name1.trim());
+    }
+
+    // 2. 检查是否为群聊 (Group Chat)
+    // SillyTavern 群聊特征：存在 c.groupId 且匹配 c.groups 中的群组定义
+    const isGroupChat = Boolean(c.groupId);
+    if (isGroupChat && Array.isArray(c.groups)) {
+        const activeGroup = c.groups.find(g => String(g.id) === String(c.groupId));
+        if (activeGroup && Array.isArray(activeGroup.members)) {
+            const memberSet = new Set(activeGroup.members.map(m => String(m).trim().toLowerCase()));
+            if (Array.isArray(c.characters)) {
+                c.characters.forEach(ch => {
+                    if (ch && typeof ch.name === 'string' && ch.name.trim()) {
+                        const avatarName = String(ch.avatar || '').trim().toLowerCase();
+                        const charName = ch.name.trim().toLowerCase();
+                        if (memberSet.has(avatarName) || memberSet.has(charName)) {
+                            participants.add(ch.name.trim());
+                        }
+                    }
+                });
+            }
+            // 兼容 group.members 直接存储角色名字的情形 (无后缀)
+            activeGroup.members.forEach(m => {
+                if (typeof m === 'string' && m.trim() && !m.includes('.')) {
+                    participants.add(m.trim());
+                }
+            });
+        }
+    } else {
+        // 3. 单聊模式 (1-on-1 Chat):
+        // 严格仅认可当前会话激活的角色 (name2 或 characters[characterId])
+        // 严禁将用户角色库 (characters) 中未参战的其他角色混入！
+        if (c.name2 && typeof c.name2 === 'string' && c.name2.trim()) {
+            participants.add(c.name2.trim());
+        } else if (Array.isArray(c.characters) && c.characterId !== undefined && c.characters[c.characterId]) {
+            const activeChar = c.characters[c.characterId];
+            if (activeChar && typeof activeChar.name === 'string' && activeChar.name.trim()) {
+                participants.add(activeChar.name.trim());
+            }
+        }
+    }
+
+    // 兜底保护：若环境仅有单一角色对象且未标明 name2/characterId
+    if (participants.size <= 1 && Array.isArray(c.characters) && c.characters.length === 1) {
+        const onlyChar = c.characters[0];
+        if (onlyChar?.name && typeof onlyChar.name === 'string' && onlyChar.name.trim()) {
+            participants.add(onlyChar.name.trim());
+        }
+    }
+
+    return participants;
+}
+
 /**
  * 校验并规范化世界书关联结构 (lorebook_ref)
- * 防止对象注入、原型污染与非安全字段
+ * 防止对象注入、原型污染与非安全字段，记录升格溯源 (P2-01)
  */
 export function sanitizeLorebookRef(rawLb) {
     if (!rawLb || typeof rawLb !== 'object') return null;
@@ -23,11 +89,27 @@ export function sanitizeLorebookRef(rawLb) {
         uidVal = Number(rawLb.entry_uid);
     }
     if (!entryName && uidVal === null) return null;
-    return {
+
+    const res = {
         book: bookName,
         entry_uid: uidVal,
         entry_name: entryName
     };
+    if (rawLb.file_name && typeof rawLb.file_name === 'string') {
+        res.file_name = rawLb.file_name.trim().slice(0, 80);
+    }
+    if (rawLb.promoted_from_scope && typeof rawLb.promoted_from_scope === 'string') {
+        res.promoted_from_scope = rawLb.promoted_from_scope.trim();
+    }
+    if (rawLb.original_character && typeof rawLb.original_character === 'string') {
+        res.original_character = rawLb.original_character.trim();
+    }
+    if (Array.isArray(rawLb.original_known_by)) {
+        res.original_known_by = rawLb.original_known_by
+            .filter(k => typeof k === 'string' && k.trim())
+            .map(k => k.trim());
+    }
+    return res;
 }
 
 let isBatchUpdating = false;
@@ -912,47 +994,82 @@ export function importMemoryData(data, strategy = 'merge') {
         return 'mem-' + Date.now().toString(36) + '-' + Math.random().toString(36).substring(2, 6);
     };
 
-    // 严格清洗与归一化导入条目
-    const validMemories = data.memories
-        .filter(m => m && typeof m === 'object' && typeof m.content === 'string' && m.content.trim().length > 0)
-        .map(m => {
-            const content = m.content.trim().slice(0, 150);
-            const type = VALID_TYPES.has(m.type) ? m.type : MEMORY_TYPES.FACT;
-            const scope = VALID_SCOPES.has(m.scope) ? m.scope : MEMORY_SCOPE.CHARACTER;
-            const lifecycle = VALID_LIFECYCLES.has(m.lifecycle) ? m.lifecycle : MEMORY_LIFECYCLE.ACTIVE;
-            const status = VALID_STATUSES.has(m.status) ? m.status : MEMORY_STATUS.TRIGGERED;
-            const character = typeof m.character === 'string' && m.character.trim() ? m.character.trim() : (c?.name2 || 'Character');
-            let knownBy = Array.isArray(m.known_by)
-                ? m.known_by.filter(k => typeof k === 'string' && k.trim()).map(k => k.trim())
-                : [character];
-            if (scope === MEMORY_SCOPE.CHARACTER) {
-                knownBy = [character];
-            } else if (scope === MEMORY_SCOPE.WORLD) {
-                knownBy = [];
-            }
-            const triggerKeys = Array.isArray(m.trigger_keys)
-                ? m.trigger_keys.filter(k => typeof k === 'string' && k.trim()).map(k => k.trim())
-                : [];
+    // 严格清洗与归一化导入条目，并施加权威参与者白名单边界核验 (P1-v0.1.27)
+    const participants = getContextParticipants(c, getState?.());
+    let aclRejectedCount = 0;
+    let skippedCount = 0;
+    const validMemories = [];
 
-            return {
-                id: sanitizeId(m.id),
-                content,
-                type,
-                status,
-                lifecycle,
-                scope,
-                character,
-                known_by: knownBy,
-                lorebook_ref: sanitizeLorebookRef(m.lorebook_ref),
-                synced_to_world_info: Boolean(m.synced_to_world_info),
-                synced_at: typeof m.synced_at === 'string' ? m.synced_at : null,
-                trigger_keys: triggerKeys,
-                floor: Number(m.floor) || 0,
-                last_activated_floor: Number.isInteger(m.last_activated_floor) ? m.last_activated_floor : (Number.isInteger(m.floor) ? Number(m.floor) : 0),
-                created_at: m.created_at || new Date().toISOString(),
-                updated_at: new Date().toISOString()
-            };
+    for (const m of data.memories) {
+        if (!m || typeof m !== 'object' || typeof m.content !== 'string' || !m.content.trim()) {
+            skippedCount++;
+            continue;
+        }
+
+        const content = m.content.trim().slice(0, 150);
+        const type = VALID_TYPES.has(m.type) ? m.type : MEMORY_TYPES.FACT;
+        const scope = VALID_SCOPES.has(m.scope) ? m.scope : MEMORY_SCOPE.CHARACTER;
+        const lifecycle = VALID_LIFECYCLES.has(m.lifecycle) ? m.lifecycle : MEMORY_LIFECYCLE.ACTIVE;
+        const status = VALID_STATUSES.has(m.status) ? m.status : MEMORY_STATUS.TRIGGERED;
+        const character = typeof m.character === 'string' && m.character.trim() ? m.character.trim() : (c?.name2 || 'Character');
+        let knownBy = Array.isArray(m.known_by)
+            ? m.known_by.filter(k => typeof k === 'string' && k.trim()).map(k => k.trim())
+            : [character];
+        if (scope === MEMORY_SCOPE.CHARACTER) {
+            knownBy = [character];
+        } else if (scope === MEMORY_SCOPE.WORLD) {
+            knownBy = [];
+        }
+
+        // P1-v0.1.27 权威参与者边界核验 (Fail-Closed 拒绝未授权/跨会话越权记忆导入)
+        if (participants !== null && participants !== undefined) {
+            if (participants.size === 0) {
+                if (scope === MEMORY_SCOPE.CHARACTER || scope === MEMORY_SCOPE.SHARED) {
+                    console.warn(`[${MODULE_NAME}] [Import ACL 拦截] 当前会话可信参与者名单为空，受限记忆无法核验归属，执行 Fail-Closed 拒绝导入 (内容: "${content.slice(0, 30)}")`);
+                    aclRejectedCount++;
+                    continue;
+                }
+            } else {
+                if (scope === MEMORY_SCOPE.CHARACTER) {
+                    if (!character || !participants.has(character)) {
+                        console.warn(`[${MODULE_NAME}] [Import ACL 拦截] 导入条目归属角色 "${character}" 超出当前会话实际参与者名单，拒绝越权导入 (内容: "${content.slice(0, 30)}")`);
+                        aclRejectedCount++;
+                        continue;
+                    }
+                } else if (scope === MEMORY_SCOPE.SHARED) {
+                    const unauthorized = knownBy.filter(k => !participants.has(k));
+                    if (unauthorized.length > 0 || knownBy.length === 0) {
+                        console.warn(`[${MODULE_NAME}] [Import ACL 拦截] 导入共享记忆知情者 "${unauthorized.join(', ')}" 超出当前会话实际参与者名单，拒绝越权导入 (内容: "${content.slice(0, 30)}")`);
+                        aclRejectedCount++;
+                        continue;
+                    }
+                }
+            }
+        }
+
+        const triggerKeys = Array.isArray(m.trigger_keys)
+            ? m.trigger_keys.filter(k => typeof k === 'string' && k.trim()).map(k => k.trim())
+            : [];
+
+        validMemories.push({
+            id: sanitizeId(m.id),
+            content,
+            type,
+            status,
+            lifecycle,
+            scope,
+            character,
+            known_by: knownBy,
+            lorebook_ref: sanitizeLorebookRef(m.lorebook_ref),
+            synced_to_world_info: Boolean(m.synced_to_world_info),
+            synced_at: typeof m.synced_at === 'string' ? m.synced_at : null,
+            trigger_keys: triggerKeys,
+            floor: Number(m.floor) || 0,
+            last_activated_floor: Number.isInteger(m.last_activated_floor) ? m.last_activated_floor : (Number.isInteger(m.floor) ? Number(m.floor) : 0),
+            created_at: m.created_at || new Date().toISOString(),
+            updated_at: new Date().toISOString()
         });
+    }
 
     return batchUpdate(() => {
         const s = getState();
@@ -977,6 +1094,7 @@ export function importMemoryData(data, strategy = 'merge') {
 
             for (const item of validMemories) {
                 if (existingContents.has(item.content.trim().toLowerCase())) {
+                    skippedCount++;
                     continue; // 相同文本条目自动跳过
                 }
                 if (existingIds.has(item.id)) {
@@ -996,7 +1114,14 @@ export function importMemoryData(data, strategy = 'merge') {
             }
         }
 
-        return { success: true, count: importedCount, total: s.memories.length };
+        return {
+            success: true,
+            count: importedCount,
+            imported: importedCount,
+            total: s.memories.length,
+            skipped: skippedCount,
+            aclRejected: aclRejectedCount
+        };
     });
 }
 
@@ -1434,8 +1559,8 @@ export async function promoteMemoryToWorldInfo(memId, options = {}) {
         data.entries = {};
     }
 
-    // 分配新 UID (查找现有数值 UID 最大值 + 1)
-    const existingUids = Object.keys(data.entries).map(Number).filter(n => !isNaN(n));
+    // 分配新 UID (查找现有数值 UID 最大值 + 1，增强边界健壮性)
+    const existingUids = Object.keys(data.entries).map(k => Number(k)).filter(n => Number.isInteger(n) && n >= 0);
     const newUid = existingUids.length > 0 ? Math.max(...existingUids) + 1 : 0;
 
     // 确定词条名称、触发词与正文
@@ -1455,12 +1580,18 @@ export async function promoteMemoryToWorldInfo(memId, options = {}) {
         return { success: false, reason: '词条设定正文不能为空' };
     }
 
+    // 溯源与知情范围标注 (P2 加固：受限记忆升格世界书显式记录原始范围，供全员常驻审计)
+    const scopeProvenance = mem.scope === MEMORY_SCOPE.CHARACTER
+        ? `[持续记忆·私密(${mem.character || '角色'})]`
+        : (mem.scope === MEMORY_SCOPE.SHARED ? `[持续记忆·机密(知情:${(mem.known_by || []).join(',')})]` : '');
+    const commentWithProvenance = scopeProvenance ? `${entryName} ${scopeProvenance}` : entryName;
+
     // 构建符合酒馆规范的世界书 Entry 对象
     const newEntry = {
         uid: newUid,
         key: entryKeys,
         keysecondary: [],
-        comment: entryName,
+        comment: commentWithProvenance,
         content: entryContent,
         constant: false,
         selective: true,
@@ -1492,13 +1623,16 @@ export async function promoteMemoryToWorldInfo(memId, options = {}) {
             try { c.reloadWorldInfoEditor(); } catch {}
         }
 
-        // 更新记忆的关联世界书状态与生命周期
+        // 更新记忆的关联世界书状态、溯源与生命周期 (P2-01: 完整保留原始知情范围与知情者追溯)
         batchUpdate(() => {
             mem.lorebook_ref = {
                 entry_uid: newUid,
                 entry_name: entryName,
                 file_name: targetBookName,
-                book: targetBookName
+                book: targetBookName,
+                promoted_from_scope: mem.scope || null,
+                original_character: mem.character || null,
+                original_known_by: Array.isArray(mem.known_by) ? [...mem.known_by] : []
             };
             mem.synced_to_world_info = true;
             mem.synced_at = new Date().toISOString();

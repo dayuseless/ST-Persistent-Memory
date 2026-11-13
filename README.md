@@ -1,6 +1,6 @@
 # SillyTavern 持续记忆插件 (ST-Persistent-Memory)
 
-[![Version](https://img.shields.io/badge/version-v0.1.26-blue.svg)](https://github.com/dayuseless/ST-Persistent-Memory)
+[![Version](https://img.shields.io/badge/version-v0.1.27-blue.svg)](https://github.com/dayuseless/ST-Persistent-Memory)
 [![SillyTavern](https://img.shields.io/badge/SillyTavern-1.12.0+-purple.svg)](https://github.com/SillyTavern/SillyTavern)
 [![License](https://img.shields.io/badge/license-MIT-green.svg)](LICENSE)
 
@@ -166,6 +166,21 @@ window.__persistentMemory.digestNow();
 - **中途启用智能引导与交互横幅 (Smart Mid-Chat Onboarding)**：当检测到会话已有较长历史（$\ge 6$ 条消息）但记忆库为空时，HUD 顶部自动展示友好的智能引导横幅，支持一键点击启动全量回溯；控制台顶部新增“回溯提炼”快捷按钮，自由选择“从头全量提炼”或“增量补全未消化历史”。
 - **实时进度反馈与随时安全中止 (Live Progress & Abort Guard)**：回溯执行期间，HUD 实时呈现带旋转动效的百分比进度条、批次计数与已沉淀记忆数；提供一键“中止”按钮与会话切换自动熔断拦截，绝不发生跨会话污染或挂死。
 - **测试矩阵扩展至 41 项 (T1-T41 全绿)**：新增针对对话轮次回退自愈校准 (T40) 与全量历史分块回溯多批次递进提炼 (T41) 的自动化测试覆盖。
+
+### v0.1.27 (安全审计加固：数据导入全链路参与者校验、世界书升格权限提示与版本统一)
+
+- **备份导入全链路参与者白名单校验 (Import ACL Boundary Hardening, P1 修复)**：
+  - **对齐提炼入口最高防护级别**：彻底消除数据导入（`importMemoryData`）与模型提炼入口的权限边界差异。在导入记忆数据（无论是 `merge` 增量合并还是 `replace` 全量覆盖模式）时，全面调用权威参与者白名单 `getContextParticipants()`。
+  - **跨会话越权记忆坚决拦截**：单聊模式下坚决拦截非当前参战角色的私密记忆（`character`）及包含非参战角色的共享记忆（`shared`），严禁未参战角色的隐私记忆渗透入库；受限记忆绝不静默降级为 `world` 公共记忆，执行严格的 Fail-Closed 拦截。
+  - **导入结果透明审计**：`importMemoryData` 结果中明确返回 `aclRejected` 计数，UI 层弹出即时 Toastr 安全预警，向用户清晰披露拦截条数与原因。
+- **世界书升格权限范围提示与溯源追溯 (Lorebook Promotion Escalation Guard & Traceability, P2 修复)**：
+  - **显式权限扩散预警与二次确认**：当用户尝试将【角色私密 (`character`)】或【现场机密 (`shared`)】记忆升格为独立世界书词条时，升格弹窗顶部自动弹出醒目的琥珀色权限变更预警，提醒用户世界书条目将向绑定该书的所有会话与角色开放常驻；必须主动勾选「安全确认：确认授权可见范围扩大」复选框方可确认升格，杜绝误触导致的知情权外泄。
+  - **全生命周期溯源追溯凭据**：在记忆的 `lorebook_ref` 中完整持久化 `promoted_from_scope`、`original_character` 与 `original_known_by`，同时在世界书词条 `comment` 注释中明确附加原始归属标记（如 `[持续记忆·私密(角色A)]`、`[持续记忆·机密(知情:角色A,玩家)]`），便于后续审计与多会话溯源。
+  - **极端边界与只读卡片资源防御**：强化对世界书非数字 UID 的过滤与自增分配，并在遇到只读角色卡内置世界书 (`character_embedded`) 或空正文时予以安全拦截并友好提示。
+- **全工程版本标识严格统一 (P3 修复)**：
+  - 彻底修正 `index.js` 第一行滞后的 `v0.1.18` 版本头，将 `manifest.json`、`src/config.js`、`index.js` 以及所有核心模块（`src/state.js`, `src/extractor.js`, `src/injector.js`, `src/semantic.js`, `src/ui.js`）头部注释严格统一为 `v0.1.27`。
+- **自动化测试矩阵扩展至 71 项 (T1-T71 全绿)**：
+  - 新增针对单聊备份导入拦截未参战角色私密记忆 (T65)、共享记忆非当前参战者越权渗入拦截 (T66)、replace 与 merge 模式 ACL 约束等价性 (T67)、世界书升格受限记忆权限预警与强制确认 (T68)、世界书升格条目全生命周期溯源追溯 (T69)、世界书升格边界极端容错 (T70) 以及全工程各模块版本标识统一一致性扫描 (T71) 的全量自动化测试。
 
 ### v0.1.26 (安全审计加固：权威白名单权限收敛、历史回溯中止与并发竞态修复)
 
