@@ -11,7 +11,7 @@
 
 import { MODULE_NAME, MEMORY_TYPES, MEMORY_STATUS, MEMORY_LIFECYCLE, MEMORY_SCOPE } from './config.js';
 import { getState, getSettings, addMemory, setMemoryLifecycle, batchUpdate } from './state.js';
-import { getContextParticipants, validateMemoryAcl } from './acl.js';
+import { getContextParticipants, validateMemoryAcl, normalizeAndValidateMemory } from './acl.js';
 import { executeDigestRequest } from './api.js';
 import { cleanAndParseJson, unwrapJsonPayload } from './parser.js';
 import { validateConsolidatedPayload, sanitizeTriggerKeys } from './schema.js';
@@ -147,6 +147,21 @@ export async function triggerMemoryConsolidation(force = false) {
             let supersededCount = 0;
 
             for (const item of validated.consolidated) {
+                // A. 预先校验新记忆能否通过数据准入，若无法准入绝不触碰旧记忆 (Pre-flight Gate)
+                const preNorm = normalizeAndValidateMemory({
+                    type: item.type,
+                    content: item.content,
+                    scope: item.scope,
+                    character: item.character,
+                    known_by: item.known_by,
+                    trigger_keys: item.trigger_keys,
+                    status: MEMORY_STATUS.TRIGGERED
+                }, { participants, context: c });
+
+                if (!preNorm.valid) {
+                    throw new Error(`归并宏观记忆准入预校验未通过: ${preNorm.reason}，中止归并事务`);
+                }
+
                 // 1. 先验证所有待替代源记忆依然处于 active 状态 (双重防线)
                 const currentMemoriesMap = new Map((getState().memories || []).map(m => [m.id, m]));
                 for (const oldId of item.supersedes) {
@@ -174,7 +189,7 @@ export async function triggerMemoryConsolidation(force = false) {
                     status: MEMORY_STATUS.TRIGGERED,
                     floor: currentTurn,
                     last_activated_floor: currentTurn
-                });
+                }, { participants, context: c });
 
                 // P1 核心原子性修复：若新记忆创建失败，必须主动抛出异常触发 batchUpdate 完整回滚！
                 // 严禁在 addMemory 返回 null 时静默成功，导致旧记忆被置为 superseded 而新记忆丢失！

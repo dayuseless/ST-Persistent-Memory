@@ -126,9 +126,19 @@ export function validateMemoryAcl(candidate, participants = null, options = {}) 
         knownBy = [];
     }
 
-    // 权威可信参与者边界核验
-    if (participants !== null && participants !== undefined) {
-        if (participants.size === 0) {
+    // 权威可信参与者边界核验 (Fail-Closed: 受限私密/共享记忆必须有权威名单佐证)
+    let effectiveParticipants = participants;
+    if (effectiveParticipants === null || effectiveParticipants === undefined) {
+        const c = options.context !== undefined
+            ? options.context
+            : (typeof window !== 'undefined' ? window.SillyTavern?.getContext?.() : null);
+        if (c) {
+            effectiveParticipants = getContextParticipants(c);
+        }
+    }
+
+    if (effectiveParticipants !== null && effectiveParticipants !== undefined) {
+        if (effectiveParticipants.size === 0) {
             // 名单为空时，受限范围记忆全部 Fail-Closed 拒绝
             if (scope === MEMORY_SCOPE.CHARACTER || scope === MEMORY_SCOPE.SHARED) {
                 return {
@@ -139,7 +149,7 @@ export function validateMemoryAcl(candidate, participants = null, options = {}) 
             }
         } else {
             // 1. 角色私密记忆：归属角色必须属于实际参战者
-            if (scope === MEMORY_SCOPE.CHARACTER && !participants.has(char)) {
+            if (scope === MEMORY_SCOPE.CHARACTER && !effectiveParticipants.has(char)) {
                 return {
                     allowed: false,
                     reason: `私密记忆归属角色 "${char}" 超出当前会话实际参与者名单`,
@@ -148,7 +158,7 @@ export function validateMemoryAcl(candidate, participants = null, options = {}) 
             }
             // 2. 共享机密记忆：known_by 中所有知情者必须全部属于实际参战者
             if (scope === MEMORY_SCOPE.SHARED) {
-                const unauthorized = knownBy.filter(k => !participants.has(k));
+                const unauthorized = knownBy.filter(k => !effectiveParticipants.has(k));
                 if (unauthorized.length > 0) {
                     return {
                         allowed: false,
@@ -158,6 +168,15 @@ export function validateMemoryAcl(candidate, participants = null, options = {}) 
                     };
                 }
             }
+        }
+    } else if (scope === MEMORY_SCOPE.CHARACTER || scope === MEMORY_SCOPE.SHARED) {
+        // 若完全无法取得有效参与者名单且未显式指定 bypassAcl，受限记忆 Fail-Closed 坚决拒绝
+        if (options.bypassAcl !== true) {
+            return {
+                allowed: false,
+                reason: `缺失可信参与者名单，受限范围记忆 (${scope}) 拒绝准入`,
+                code: 'MISSING_PARTICIPANTS'
+            };
         }
     }
 

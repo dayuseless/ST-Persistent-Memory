@@ -5050,51 +5050,64 @@ Intermediate analysis details...
         const state = getState();
         state.memories = [];
 
-        // 创建两条同权限待归并的活跃记忆
+        // 场景 A: 多分组批量归并部分失败时的原子回滚验证
+        // 创建 4 条初始记忆：组 1 (m1, m2)，组 2 (m3, m4)
         const m1 = addMemory({ content: '角色A在山洞找到铁剑', type: 'fact', scope: 'character', character: '角色A' });
         const m2 = addMemory({ content: '角色A在山洞找到盾牌', type: 'fact', scope: 'character', character: '角色A' });
-        assert.ok(m1 && m2, '初始记忆创建成功');
-        assert.strictEqual(m1.lifecycle, MEMORY_LIFECYCLE.ACTIVE);
-        assert.strictEqual(m2.lifecycle, MEMORY_LIFECYCLE.ACTIVE);
+        const m3 = addMemory({ content: '角色A探索了废弃矿井', type: 'fact', scope: 'character', character: '角色A' });
+        const m4 = addMemory({ content: '角色A绘制了矿井地图', type: 'fact', scope: 'character', character: '角色A' });
+        assert.ok(m1 && m2 && m3 && m4, '初始 4 条记忆创建成功');
 
-        // 模拟归并事务中入库失败回滚场景：
-        // 验证 batchUpdate 在遇到归并入库失败异常时，能够完整将已被置为 superseded 的源记忆回滚为 active
         let threw = false;
         try {
             batchUpdate(() => {
-                // 1. 旧记忆置为 superseded
+                // 分组 1 成功处理：m1, m2 置为 superseded 并添加入库新记忆
                 setMemoryLifecycle(m1.id, MEMORY_LIFECYCLE.SUPERSEDED);
                 setMemoryLifecycle(m2.id, MEMORY_LIFECYCLE.SUPERSEDED);
-                assert.strictEqual(state.memories.find(m => m.id === m1.id).lifecycle, MEMORY_LIFECYCLE.SUPERSEDED);
-                assert.strictEqual(state.memories.find(m => m.id === m2.id).lifecycle, MEMORY_LIFECYCLE.SUPERSEDED);
+                const newMem1 = addMemory({
+                    type: 'fact',
+                    content: '角色A在山洞获得了全套攻防武器',
+                    scope: 'character',
+                    character: '角色A'
+                });
+                assert.ok(newMem1, '分组 1 新记忆创建成功');
 
-                // 2. 模拟新记忆入库失败 (addMemory 返回 null，触发抛出异常回滚)
-                const added = null;
-                if (!added) {
-                    throw new Error('归并宏观记忆入库失败，已触发事务原子回滚');
+                // 分组 2 处理：m3, m4 置为 superseded，但新记忆入库失败 (模拟准入拦截返回 null)
+                setMemoryLifecycle(m3.id, MEMORY_LIFECYCLE.SUPERSEDED);
+                setMemoryLifecycle(m4.id, MEMORY_LIFECYCLE.SUPERSEDED);
+                const newMem2 = null; // 模拟创建失败
+                if (!newMem2) {
+                    throw new Error('归并宏观记忆入库失败 (准入拦截)，触发事务原子回滚');
                 }
             });
         } catch (e) {
             threw = true;
-            assert.ok(e.message.includes('事务原子回滚'));
+            assert.ok(e.message.includes('触发事务原子回滚'));
         }
 
-        assert.strictEqual(threw, true, '事务必须抛出异常');
+        assert.strictEqual(threw, true, '多分组部分失败时事务必须抛出异常');
 
-        // 关键断言：事务回滚后，最新状态中的原始记忆 m1 与 m2 必须依然处于 ACTIVE 状态，绝不能被置为 superseded！
+        // 关键断言 1：全局内存快照必须完整回滚，分组 1 和分组 2 的所有原始记忆 (m1, m2, m3, m4) 必须 100% 恢复为 active！
         const currentState = getState();
         const mem1After = currentState.memories.find(m => m.id === m1.id);
         const mem2After = currentState.memories.find(m => m.id === m2.id);
-        assert.ok(mem1After && mem2After, '原始记忆依然存在');
-        assert.strictEqual(mem1After.lifecycle, MEMORY_LIFECYCLE.ACTIVE, 'm1 生命周期必须完整恢复为 active');
-        assert.strictEqual(mem2After.lifecycle, MEMORY_LIFECYCLE.ACTIVE, 'm2 生命周期必须完整恢复为 active');
+        const mem3After = currentState.memories.find(m => m.id === m3.id);
+        const mem4After = currentState.memories.find(m => m.id === m4.id);
+        assert.strictEqual(mem1After.lifecycle, MEMORY_LIFECYCLE.ACTIVE, 'm1 必须恢复为 active');
+        assert.strictEqual(mem2After.lifecycle, MEMORY_LIFECYCLE.ACTIVE, 'm2 必须恢复为 active');
+        assert.strictEqual(mem3After.lifecycle, MEMORY_LIFECYCLE.ACTIVE, 'm3 必须恢复为 active');
+        assert.strictEqual(mem4After.lifecycle, MEMORY_LIFECYCLE.ACTIVE, 'm4 必须恢复为 active');
 
-        // 验证 triggerMemoryConsolidation 在异常时的安全防护与无损退出
+        // 关键断言 2：分组 1 哪怕中途添加成功的新记忆，回滚后也必须彻底消失，绝不残留半提交孤儿条目！
+        const orphanMem = currentState.memories.find(m => m.content === '角色A在山洞获得了全套攻防武器');
+        assert.strictEqual(orphanMem, undefined, '回滚后中间创建的新记忆必须被彻底擦除');
+
+        // 场景 B: 真实 triggerMemoryConsolidation 遇到异常时的安全防护与无损退出
         mockContext.characters = [{ name: '角色A' }];
-        mockContext.generateRaw = async () => { throw new Error('API 网络中断'); };
+        mockContext.generateRaw = async () => { throw new Error('API 模拟网络中断超时'); };
         const failRes = await triggerMemoryConsolidation(true);
         assert.strictEqual(failRes.success, false, 'API 失败时必须安全返回失败且不修改状态');
-        assert.strictEqual(mem1After.lifecycle, MEMORY_LIFECYCLE.ACTIVE, 'm1 依然保持 active');
+        assert.strictEqual(mem1After.lifecycle, MEMORY_LIFECYCLE.ACTIVE, 'API 失败后 m1 依然保持 active');
     });
 
     // ─────────────────────────────────────────────────────────────
@@ -5107,9 +5120,10 @@ Intermediate analysis details...
         const m2 = addMemory({ content: '角色A获得藏宝图下半张', type: 'fact', scope: 'character', character: '角色A' });
 
         mockContext.characters = [{ name: '角色A' }];
-        // 在模型请求等待期间，模拟用户在前台手动修改了情境或记忆，导致 state_revision 自增
+
+        // 测试分支 1: 异步等待期间用户在前台修改情境快照 (updateScene)
         mockContext.generateRaw = async () => {
-            // 模拟并发编辑
+            // 模拟并发编辑情境
             updateScene({ location: '用户在此期间修改了地点' });
             return JSON.stringify({
                 consolidated: [
@@ -5124,13 +5138,34 @@ Intermediate analysis details...
             });
         };
 
-        const result = await triggerMemoryConsolidation(true);
-        assert.strictEqual(result.success, false, '检测到并发编辑时归并必须安全放弃');
-        assert.ok(result.reason.includes('并发编辑'), '原因应明确提示并发编辑冲突保护');
+        const result1 = await triggerMemoryConsolidation(true);
+        assert.strictEqual(result1.success, false, '检测到并发编辑时归并必须安全放弃');
+        assert.ok(result1.reason.includes('并发编辑'), '原因应明确提示并发编辑冲突保护');
 
-        // 原始记忆保持不变
+        // 测试分支 2: 异步等待期间用户在前台原位编辑候选记忆本身 (updateMemory)
+        mockContext.generateRaw = async () => {
+            // 模拟用户在等待期间手动微调了记忆内容
+            updateMemory(m1.id, { content: '角色A实际获得的是高仿藏宝图上半张' });
+            return JSON.stringify({
+                consolidated: [
+                    {
+                        content: '角色A获得了完整的藏宝图',
+                        type: 'fact',
+                        scope: 'character',
+                        character: '角色A',
+                        supersedes: [m1.id, m2.id]
+                    }
+                ]
+            });
+        };
+
+        const result2 = await triggerMemoryConsolidation(true);
+        assert.strictEqual(result2.success, false, '检测到候选记忆被并发编辑时归并必须安全放弃');
+
+        // 验证用户编辑被完美保留，原始记忆未被模型结果覆盖
         const mem1 = state.memories.find(m => m.id === m1.id);
-        assert.strictEqual(mem1.lifecycle, MEMORY_LIFECYCLE.ACTIVE, '原始记忆未被错误替代');
+        assert.strictEqual(mem1.content, '角色A实际获得的是高仿藏宝图上半张', '用户编辑的记忆正文必须完好保留');
+        assert.strictEqual(mem1.lifecycle, MEMORY_LIFECYCLE.ACTIVE, '原始记忆依然保持 active');
     });
 
     // ─────────────────────────────────────────────────────────────
@@ -5171,12 +5206,12 @@ Intermediate analysis details...
     // ─────────────────────────────────────────────────────────────
     // T106: 现场明确无人 sceneChars = [] 严格物理在场核验防御测试 (P1 修复)
     // ─────────────────────────────────────────────────────────────
-    test('T106: 现场明确无人 sceneChars = [] 严格物理在场核验防御测试 (Fail-Closed 杜绝泄露)', () => {
-        const memChar = { scope: MEMORY_SCOPE.CHARACTER, character: '角色A', content: '角色A独有私密记忆' };
-        const memShared = { scope: MEMORY_SCOPE.SHARED, character: '角色A', known_by: ['角色A', '角色B'], content: '双人机密' };
-        const memWorld = { scope: MEMORY_SCOPE.WORLD, content: '公开常识' };
+    test('T106: 现场明确无人 sceneChars = [] 严格物理在场核验防御测试 (Fail-Closed 杜绝泄露与端到端注入压制)', () => {
+        const memChar = { id: 'm-char-t106', scope: MEMORY_SCOPE.CHARACTER, character: '角色A', content: '角色A独有私密记忆', status: MEMORY_STATUS.PINNED, lifecycle: MEMORY_LIFECYCLE.ACTIVE };
+        const memShared = { id: 'm-shared-t106', scope: MEMORY_SCOPE.SHARED, character: '角色A', known_by: ['角色A', '角色B'], content: '双人机密', status: MEMORY_STATUS.PINNED, lifecycle: MEMORY_LIFECYCLE.ACTIVE };
+        const memWorld = { id: 'm-world-t106', scope: MEMORY_SCOPE.WORLD, content: '公开常识', status: MEMORY_STATUS.PINNED, lifecycle: MEMORY_LIFECYCLE.ACTIVE };
 
-        // 场景 1: sceneChars = [] (明确现场空无一人)
+        // 单元断言 1: sceneChars = [] (明确现场空无一人)
         const emptyScene = [];
         const resCharEmpty = canRecipientAccessMemory(memChar, '角色A', emptyScene, { requireInScene: true });
         assert.strictEqual(resCharEmpty.allowed, false, '现场明确无人时，私密记忆必须被拦截拒绝注入');
@@ -5190,13 +5225,40 @@ Intermediate analysis details...
         const resWorldEmpty = canRecipientAccessMemory(memWorld, '角色A', emptyScene, { requireInScene: true });
         assert.strictEqual(resWorldEmpty.allowed, true, '全域世界常识在空现场依然可注入');
 
-        // 场景 2: sceneChars = null (未知现场，跳过物理核验)
+        // 单元断言 2: 接收主体角色A不在现场 (现场只有角色B)
+        const resRecipientNotInScene = canRecipientAccessMemory(memChar, '角色A', ['角色B'], { requireInScene: true });
+        assert.strictEqual(resRecipientNotInScene.allowed, false, '生成主体不在现场名单中必须被拦截');
+
+        // 单元断言 3: sceneChars = null (未知现场，跳过物理核验)
         const resCharNull = canRecipientAccessMemory(memChar, '角色A', null, { requireInScene: true });
         assert.strictEqual(resCharNull.allowed, true, '未知现场 (null) 时跳过物理在场校验');
 
-        // 场景 3: sceneChars 包含角色A (正常在场)
+        // 单元断言 4: 角色A正常在场
         const resCharInScene = canRecipientAccessMemory(memChar, '角色A', ['角色A', '玩家'], { requireInScene: true });
         assert.strictEqual(resCharInScene.allowed, true, '角色在场时正常注入');
+
+        // 端到端断言 5: buildAndInjectMemoryPrompt 完整流水线在空现场 [] 时的实战注入压制
+        const state = getState();
+        state.scene = {
+            location: '空无一人的神秘神庙',
+            in_scene_characters: [] // 明确记录现场无人
+        };
+        state.memories = [memChar, memShared, memWorld];
+        mockContext.characters = [{ name: '角色A' }];
+        mockContext.this_chid = 0;
+        let injected = '';
+        mockContext.setExtensionPrompt = (key, prompt) => {
+            if (key === 'PERSISTENT_MEMORY_INJECT') {
+                injected = prompt;
+            }
+        };
+
+        const resPrompt = buildAndInjectMemoryPrompt();
+        const finalInjected = injected || resPrompt || '';
+
+        assert.ok(finalInjected.includes('公开常识'), '全域世界常识必须正常进入提示词');
+        assert.ok(!finalInjected.includes('角色A独有私密记忆'), '空现场 [] 时私密记忆绝不能注入提示词');
+        assert.ok(!finalInjected.includes('双人机密'), '空现场 [] 时共享记忆绝不能注入提示词');
     });
 
     // ─────────────────────────────────────────────────────────────
@@ -5243,7 +5305,19 @@ Intermediate analysis details...
             mockContext = origCtx;
         }
 
-        // 3. normalizeAndValidateMemory 对显式非法 lifecycle 与 status 的拒绝性验证
+        // 3. validateMemoryAcl 底层网关在完全缺失参与者时对受限范围的 Fail-Closed 拦截
+        const aclNoPartPriv = validateMemoryAcl({ scope: 'character', character: '角色A' }, null, { context: null });
+        assert.strictEqual(aclNoPartPriv.allowed, false, '缺失参与者名单时私密记忆必须被 ACL 坚决拦截');
+        assert.strictEqual(aclNoPartPriv.code, 'MISSING_PARTICIPANTS');
+
+        const aclNoPartShared = validateMemoryAcl({ scope: 'shared', known_by: ['角色A'] }, null, { context: null });
+        assert.strictEqual(aclNoPartShared.allowed, false, '缺失参与者名单时共享记忆必须被 ACL 坚决拦截');
+        assert.strictEqual(aclNoPartShared.code, 'MISSING_PARTICIPANTS');
+
+        const aclNoPartWorld = validateMemoryAcl({ scope: 'world' }, null, { context: null });
+        assert.strictEqual(aclNoPartWorld.allowed, true, '全域世界常识即便缺失参与者名单也允许准入');
+
+        // 4. normalizeAndValidateMemory 对显式非法 lifecycle 与 status 的拒绝性验证
         const badLifecycleRes = normalizeAndValidateMemory({
             content: '测试非法生命周期',
             type: 'fact',
@@ -5261,6 +5335,16 @@ Intermediate analysis details...
         });
         assert.strictEqual(badStatusRes.valid, false, '显式提供非法 status 必须拒绝入库');
         assert.ok(badStatusRes.reason.includes('状态') && badStatusRes.reason.includes('非法'));
+
+        // 5. 缺省字段时正确赋予规范化默认值
+        const defaultNormRes = normalizeAndValidateMemory({
+            content: '测试缺省字段规范化',
+            type: 'fact',
+            scope: 'world'
+        });
+        assert.strictEqual(defaultNormRes.valid, true, '缺省字段时应成功准入');
+        assert.strictEqual(defaultNormRes.memory.lifecycle, MEMORY_LIFECYCLE.ACTIVE, '缺省 lifecycle 应默认赋值为 active');
+        assert.strictEqual(defaultNormRes.memory.status, MEMORY_STATUS.TRIGGERED, '缺省 status 应默认赋值为 triggered');
     });
 
     console.log(`\n======================================================`);
