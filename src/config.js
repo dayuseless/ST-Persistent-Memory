@@ -80,6 +80,7 @@ export const DEFAULT_SETTINGS = {
     embeddingModel: 'text-embedding-3-small', // 向量模型 (如 text-embedding-3-small, bge-m3, nomic-embed-text)
     semanticThreshold: 0.25,              // 语义余弦相似度下限激活门槛 (0.1 ~ 0.9)
     semanticWeight: 0.60,                 // 混合打分权重: 语义权重占比 (0.0~1.0, 默认 0.60 语义 + 0.40 词法)
+    embeddingBatchThrottleMs: 50,         // 外部 Embedding 批量请求批次间节流延迟 (毫秒，防 429 速率击穿)
 
     // 世界书关联与协同 (World Info Integration) - 当前会话作用域
     worldBookIntegrationEnabled: true,    // 是否启用世界书条目关联与动态注入

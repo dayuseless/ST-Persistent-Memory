@@ -254,7 +254,11 @@ import {
     computeMemoryEmbeddingHash,
     isEmbeddingDirty,
     buildQueryContext,
-    calculateHybridMemoryScore
+    calculateHybridMemoryScore,
+    fetchApiEmbedding,
+    reindexMemories,
+    DEFAULT_EMBEDDING_MAX_RETRIES,
+    DEFAULT_BATCH_THROTTLE_MS
 } from '../src/semantic.js';
 
 let passed = 0;
@@ -5571,6 +5575,148 @@ Intermediate analysis details...
             Object.assign(mockContext, origCtx);
             clearStateCache();
             loadCurrentState();
+        }
+    });
+
+    // ─────────────────────────────────────────────────────────────
+    // T111: 外部 Embedding 批量计算与速率控制 (Rate Limit) 契约测试 (I-04)
+    // ─────────────────────────────────────────────────────────────
+    await testAsync('T111: 外部 Embedding 批量计算与速率控制契约测试 (429 指数退避重试、Retry-After 遵循、分批节流与优雅降级)', async () => {
+        const origFetch = global.fetch;
+
+        try {
+            // 0. 验证配置默认值
+            assert.strictEqual(DEFAULT_SETTINGS.embeddingBatchThrottleMs, 50, '默认分批节流延迟必须为 50ms');
+            assert.strictEqual(DEFAULT_EMBEDDING_MAX_RETRIES, 2, '默认最大重试次数应为 2');
+            assert.strictEqual(DEFAULT_BATCH_THROTTLE_MS, 50);
+
+            // 1. 验证 429 速率限制遭遇时的指数退避与 Retry-After 自愈恢复
+            let callCount429 = 0;
+            global.fetch = async (url, opts) => {
+                callCount429++;
+                if (callCount429 === 1) {
+                    return {
+                        ok: false,
+                        status: 429,
+                        headers: new Map([['retry-after', '0.02']]),
+                        text: async () => 'Rate limit exceeded: please slow down'
+                    };
+                }
+                return {
+                    ok: true,
+                    status: 200,
+                    headers: new Map(),
+                    json: async () => ({
+                        data: [
+                            { index: 0, embedding: [0.12, 0.34, 0.56] }
+                        ]
+                    })
+                };
+            };
+
+            const recoveredVectors = await fetchApiEmbedding(['测试文本 A'], {
+                apiUrl: 'https://api.mock.test/v1',
+                apiKey: 'test_key',
+                model: 'text-embedding-3-small',
+                maxRetries: 2,
+                initialDelayMs: 10
+            });
+
+            assert.strictEqual(callCount429, 2, '遇到 429 且未超上限时必须自动触发第 2 次重试');
+            assert.strictEqual(recoveredVectors.length, 1);
+            assert.deepStrictEqual(recoveredVectors[0], [0.12, 0.34, 0.56], '重试成功后应完整返回解析的向量');
+
+            // 2. 验证持续 429 达到重试上限后的安全熔断抛错 (Fail-Closed)
+            let callCountExhaust = 0;
+            global.fetch = async () => {
+                callCountExhaust++;
+                return {
+                    ok: false,
+                    status: 429,
+                    headers: new Map(),
+                    text: async () => 'Rate limit exceeded'
+                };
+            };
+
+            await assert.rejects(
+                fetchApiEmbedding(['测试文本 B'], {
+                    apiUrl: 'https://api.mock.test/v1',
+                    maxRetries: 2,
+                    initialDelayMs: 10
+                }),
+                /HTTP 429/
+            );
+            assert.strictEqual(callCountExhaust, 3, '重试次数用尽时必须总共执行 3 次 (1 初始 + 2 重试)');
+
+            // 3. 验证 reindexMemories 批量分块 (BATCH_SIZE=16) 与批次间节流保护
+            const mockMemories = [];
+            for (let i = 0; i < 35; i++) {
+                mockMemories.push({
+                    id: `mem_rate_${i}`,
+                    content: `测试记忆条目内容 ${i}`,
+                    type: 'fact',
+                    status: 'active',
+                    lifecycle: 'active',
+                    trigger_keys: [`key_${i}`]
+                });
+            }
+
+            let batchCallCount = 0;
+            const batchSizes = [];
+            global.fetch = async (url, opts) => {
+                batchCallCount++;
+                const body = JSON.parse(opts.body);
+                batchSizes.push(body.input.length);
+                return {
+                    ok: true,
+                    status: 200,
+                    headers: new Map(),
+                    json: async () => ({
+                        data: body.input.map((t, idx) => ({
+                            index: idx,
+                            embedding: [0.1, 0.2, idx * 0.01]
+                        }))
+                    })
+                };
+            };
+
+            const reindexRes = await reindexMemories(mockMemories, {
+                embeddingProvider: 'custom_api',
+                embeddingApiUrl: 'https://api.mock.test/v1',
+                embeddingApiKey: 'key_batch',
+                embeddingBatchThrottleMs: 15,
+                embeddingMaxRetries: 1,
+                embeddingInitialDelayMs: 5
+            });
+
+            assert.strictEqual(batchCallCount, 3, '35 条记忆按 16 条分批应触发 3 次批次请求 (16 + 16 + 3)');
+            assert.deepStrictEqual(batchSizes, [16, 16, 3], '各分批尺寸必须精准吻合分块逻辑');
+            assert.strictEqual(reindexRes.updated, 35, '所有 35 条记忆均应成功建立向量索引');
+            assert.strictEqual(mockMemories[0].embedding_provider, 'custom_api');
+            assert.ok(Array.isArray(mockMemories[34].embedding));
+
+            // 4. 验证当外部 API 无法连接/完全宕机时，批量构建平滑自动降级为本地向量 (Graceful Fallback)
+            const fallbackMemories = [
+                { id: 'mem_fail_1', content: '宕机降级条目 1', type: 'fact', status: 'active', lifecycle: 'active' },
+                { id: 'mem_fail_2', content: '宕机降级条目 2', type: 'fact', status: 'active', lifecycle: 'active' }
+            ];
+
+            global.fetch = async () => {
+                const err = new TypeError('fetch failed: connection refused');
+                throw err;
+            };
+
+            const fallbackRes = await reindexMemories(fallbackMemories, {
+                embeddingProvider: 'custom_api',
+                embeddingApiUrl: 'https://api.mock.test/v1',
+                embeddingMaxRetries: 0
+            });
+
+            assert.strictEqual(fallbackRes.updated, 2, '外部宕机时必须降级完成 2 条本地向量');
+            assert.strictEqual(fallbackMemories[0].embedding_provider, 'local', '应平滑降级为 local');
+            assert.strictEqual(fallbackMemories[0].embedding.length, LOCAL_VECTOR_DIM, '降级向量维度应为本地标准 256 维');
+        } finally {
+            global.fetch = origFetch;
         }
     });
 

@@ -357,6 +357,10 @@ export function showAdvancedSettingsModal(options = {}) {
                                         <input type="text" id="pm-adv-embedding-model" class="pm-input" value="${escapeHtml(settings.embeddingModel || 'text-embedding-3-small')}" placeholder="text-embedding-3-small">
                                     </div>
                                 </div>
+                                <div class="pm-input-row pm-mb-8">
+                                    <label class="pm-input-label">批量请求节流延迟 (毫秒，防 429 速率限制):</label>
+                                    <input type="number" id="pm-adv-embedding-throttle" class="pm-input" min="0" max="2000" step="50" value="${settings.embeddingBatchThrottleMs ?? 50}" placeholder="50">
+                                </div>
                                 <div style="display: flex; gap: 8px; align-items: center; flex-wrap: wrap;">
                                     <button type="button" id="pm-adv-test-emb-btn" class="pm-btn-test"><i class="fa-solid fa-plug"></i> 测试向量连接</button>
                                     <button type="button" id="pm-adv-inherit-emb-btn" class="pm-btn-test"><i class="fa-solid fa-copy"></i> 继承提炼 API 配置</button>
@@ -580,6 +584,7 @@ export function showAdvancedSettingsModal(options = {}) {
         setVal('#pm-adv-embedding-provider', DEFAULT_SETTINGS.embeddingProvider);
         setVal('#pm-adv-semantic-threshold', DEFAULT_SETTINGS.semanticThreshold);
         setVal('#pm-adv-semantic-weight', DEFAULT_SETTINGS.semanticWeight);
+        setVal('#pm-adv-embedding-throttle', DEFAULT_SETTINGS.embeddingBatchThrottleMs || 50);
 
         setVal('#pm-adv-auto-consolidate', DEFAULT_SETTINGS.autoConsolidate ? '1' : '0');
         setVal('#pm-adv-consolidate-threshold', DEFAULT_SETTINGS.consolidateThreshold);
@@ -629,6 +634,8 @@ export function showAdvancedSettingsModal(options = {}) {
         const embeddingApiUrl = modalEl.querySelector('#pm-adv-embedding-url')?.value?.trim() || '';
         const embeddingApiKey = modalEl.querySelector('#pm-adv-embedding-key')?.value?.trim() || '';
         const embeddingModel = modalEl.querySelector('#pm-adv-embedding-model')?.value?.trim() || 'text-embedding-3-small';
+        const rawEmbThrottle = parseInt(modalEl.querySelector('#pm-adv-embedding-throttle')?.value);
+        const embeddingBatchThrottleMs = !isNaN(rawEmbThrottle) ? Math.max(0, Math.min(2000, rawEmbThrottle)) : 50;
 
         const autoConsolidate = (modalEl.querySelector('#pm-adv-auto-consolidate')?.value ?? '1') === '1';
         const rawConsolidateThreshold = parseInt(modalEl.querySelector('#pm-adv-consolidate-threshold')?.value);
@@ -666,6 +673,7 @@ export function showAdvancedSettingsModal(options = {}) {
             embeddingApiUrl,
             embeddingApiKey,
             embeddingModel,
+            embeddingBatchThrottleMs,
             autoConsolidate,
             consolidateThreshold,
             autoSleepEnabled,

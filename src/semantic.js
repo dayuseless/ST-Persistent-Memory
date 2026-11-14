@@ -18,6 +18,10 @@ import { MODULE_NAME, MEMORY_TYPES, MEMORY_STATUS, MEMORY_LIFECYCLE } from './co
 
 export const LOCAL_VECTOR_DIM = 256;
 export const EMBEDDING_TIMEOUT_MS = 15000;
+export const DEFAULT_EMBEDDING_MAX_RETRIES = 2;
+export const DEFAULT_EMBEDDING_INITIAL_DELAY_MS = 400;
+export const DEFAULT_EMBEDDING_MAX_DELAY_MS = 5000;
+export const DEFAULT_BATCH_THROTTLE_MS = 50;
 
 const STOPWORDS = new Set([
     '的', '了', '在', '是', '我', '有', '和', '就', '不', '人', '都', '一', '一个', '上', '也', '很', '到', '说', '要', '去', '你', '会', '着', '没有', '看', '好', '自己', '这', '那', '与', '及', '把', '被', '向', '从', '给', '但', '而', '或者', '如果', '因为', '所以', '地点', '玩家', '角色', '动作', '气氛', '焦点'
@@ -179,13 +183,17 @@ export function isEmbeddingDirty(mem, targetProvider = 'local') {
 
 /**
  * 通用 OpenAI 兼容 /embeddings 接口调用
+ * 内置速率限制重试 (429 Backoff)、临时服务异常重试 (5xx) 与网络抖动自愈
  */
 export async function fetchApiEmbedding(texts, options = {}) {
     const {
         apiUrl,
         apiKey,
         model = 'text-embedding-3-small',
-        timeoutMs = EMBEDDING_TIMEOUT_MS
+        timeoutMs = EMBEDDING_TIMEOUT_MS,
+        maxRetries = DEFAULT_EMBEDDING_MAX_RETRIES,
+        initialDelayMs = DEFAULT_EMBEDDING_INITIAL_DELAY_MS,
+        maxDelayMs = DEFAULT_EMBEDDING_MAX_DELAY_MS
     } = options;
 
     if (!apiUrl || typeof apiUrl !== 'string') {
@@ -203,41 +211,72 @@ export async function fetchApiEmbedding(texts, options = {}) {
     }
 
     const inputTexts = Array.isArray(texts) ? texts : [texts];
-    const controller = new AbortController();
-    const timeoutId = setTimeout(() => controller.abort(), timeoutMs);
 
-    try {
-        const res = await fetch(endpoint, {
-            method: 'POST',
-            headers,
-            body: JSON.stringify({
-                model: model.trim() || 'text-embedding-3-small',
-                input: inputTexts
-            }),
-            signal: controller.signal
-        });
+    let lastError = null;
+    for (let attempt = 0; attempt <= maxRetries; attempt++) {
+        const controller = new AbortController();
+        const timeoutId = setTimeout(() => controller.abort(), timeoutMs);
 
-        if (!res.ok) {
-            const errText = await res.text().catch(() => '');
-            throw new Error(`Embedding API 响应错误 HTTP ${res.status}: ${errText.slice(0, 200)}`);
+        try {
+            const res = await fetch(endpoint, {
+                method: 'POST',
+                headers,
+                body: JSON.stringify({
+                    model: model.trim() || 'text-embedding-3-small',
+                    input: inputTexts
+                }),
+                signal: controller.signal
+            });
+
+            if (!res.ok) {
+                const isRetryable = res.status === 429 || (res.status >= 500 && res.status <= 504);
+                if (isRetryable && attempt < maxRetries) {
+                    let waitTime = Math.min(maxDelayMs, initialDelayMs * Math.pow(2, attempt) + Math.floor(Math.random() * 50));
+                    // 检查 Retry-After 标头 (秒数或 HTTP-date)
+                    const retryAfter = res.headers?.get ? (res.headers.get('retry-after') || res.headers.get('Retry-After')) : null;
+                    if (retryAfter) {
+                        const parsedSec = parseFloat(retryAfter);
+                        if (!isNaN(parsedSec) && parsedSec > 0) {
+                            waitTime = Math.min(maxDelayMs, Math.round(parsedSec * 1000));
+                        }
+                    }
+                    console.warn(`[${MODULE_NAME}] [Embedding] 外部 API 触发限流或临时错误 (HTTP ${res.status})，等待 ${waitTime}ms 后重试 (尝试 ${attempt + 1}/${maxRetries})...`);
+                    await new Promise(r => setTimeout(r, waitTime));
+                    continue;
+                }
+
+                const errText = await res.text().catch(() => '');
+                throw new Error(`Embedding API 响应错误 HTTP ${res.status}: ${errText.slice(0, 200)}`);
+            }
+
+            const data = await res.json();
+            if (!data || !Array.isArray(data.data)) {
+                throw new Error('Embedding API 返回数据格式缺失 data 数组');
+            }
+
+            // 按 index 排序确保对应顺序
+            const sorted = [...data.data].sort((a, b) => (a.index || 0) - (b.index || 0));
+            return sorted.map(item => item.embedding);
+        } catch (err) {
+            lastError = err;
+            if (err.name === 'AbortError') {
+                lastError = new Error(`Embedding API 请求超时 (超过 ${timeoutMs / 1000} 秒未响应)`);
+            }
+            // 若为可重试的网络抖动且未达重试上限
+            const isNetworkErr = err.name !== 'AbortError' && (err.name === 'TypeError' || err.message?.includes('fetch failed') || err.message?.includes('network'));
+            if (isNetworkErr && attempt < maxRetries) {
+                const waitTime = Math.min(maxDelayMs, initialDelayMs * Math.pow(2, attempt) + Math.floor(Math.random() * 50));
+                console.warn(`[${MODULE_NAME}] [Embedding] 外部 API 网络异常 (${err.message})，等待 ${waitTime}ms 后重试 (尝试 ${attempt + 1}/${maxRetries})...`);
+                await new Promise(r => setTimeout(r, waitTime));
+                continue;
+            }
+            throw lastError;
+        } finally {
+            clearTimeout(timeoutId);
         }
-
-        const data = await res.json();
-        if (!data || !Array.isArray(data.data)) {
-            throw new Error('Embedding API 返回数据格式缺失 data 数组');
-        }
-
-        // 按 index 排序确保对应顺序
-        const sorted = [...data.data].sort((a, b) => (a.index || 0) - (b.index || 0));
-        return sorted.map(item => item.embedding);
-    } catch (err) {
-        if (err.name === 'AbortError') {
-            throw new Error(`Embedding API 请求超时 (超过 ${timeoutMs / 1000} 秒未响应)`);
-        }
-        throw err;
-    } finally {
-        clearTimeout(timeoutId);
     }
+
+    throw lastError || new Error('Embedding API 重试用尽');
 }
 
 /**
@@ -320,6 +359,9 @@ export async function reindexMemories(memories, settings = {}, onProgress = null
         const apiUrl = settings.embeddingApiUrl || settings.customApiUrl;
         const apiKey = settings.embeddingApiKey || settings.customApiKey;
         const model = settings.embeddingModel || 'text-embedding-3-small';
+        const batchThrottleMs = typeof settings.embeddingBatchThrottleMs === 'number'
+            ? settings.embeddingBatchThrottleMs
+            : DEFAULT_BATCH_THROTTLE_MS;
 
         // 批量分块请求 (每批 16 条)
         const BATCH_SIZE = 16;
@@ -328,7 +370,13 @@ export async function reindexMemories(memories, settings = {}, onProgress = null
             const texts = chunk.map(m => getMemoryEmbeddingText(m));
 
             try {
-                const vectors = await fetchApiEmbedding(texts, { apiUrl, apiKey, model });
+                const vectors = await fetchApiEmbedding(texts, {
+                    apiUrl,
+                    apiKey,
+                    model,
+                    maxRetries: settings.embeddingMaxRetries ?? DEFAULT_EMBEDDING_MAX_RETRIES,
+                    initialDelayMs: settings.embeddingInitialDelayMs ?? DEFAULT_EMBEDDING_INITIAL_DELAY_MS
+                });
                 for (let j = 0; j < chunk.length; j++) {
                     const m = chunk[j];
                     if (Array.isArray(vectors[j])) {
@@ -353,6 +401,11 @@ export async function reindexMemories(memories, settings = {}, onProgress = null
 
             if (typeof onProgress === 'function') {
                 onProgress(Math.min(dirtyList.length, i + BATCH_SIZE), dirtyList.length);
+            }
+
+            // 批次间速率控制节流 (若还有下一批)
+            if (i + BATCH_SIZE < dirtyList.length && batchThrottleMs > 0) {
+                await new Promise(r => setTimeout(r, batchThrottleMs));
             }
         }
         return { total: memories.length, updated: updatedCount };
