@@ -86,7 +86,9 @@ import {
     getSceneHistory,
     pushSceneSnapshot,
     promoteMemoryToWorldInfo,
-    sanitizeLorebookRef
+    sanitizeLorebookRef,
+    clearStateCache,
+    getCurrentChatId
 } from '../src/state.js';
 
 import {
@@ -5407,6 +5409,78 @@ Intermediate analysis details...
             assert.strictEqual(dormantMem.status, 'triggered', '唤醒后记忆状态刷新为 triggered');
         } finally {
             updateSettings(origSettings);
+        }
+    });
+
+    // ─────────────────────────────────────────────────────────────
+    // T109: 多会话 stateCache 字典化与自动感知隔离契约测试 (I-01)
+    // ─────────────────────────────────────────────────────────────
+    test('T109: 多会话 stateCache 字典化与自动感知隔离契约测试 (跨会话切换自动按 chatId 寻址，杜绝陈旧状态污染)', () => {
+        const origChatId = mockContext.chatId;
+        const origMetadata = mockContext.chatMetadata;
+
+        try {
+            // 准备模拟的会话字典
+            const sessionMetadataStore = {
+                'session_alpha_t109': {},
+                'session_beta_t109': {}
+            };
+
+            // 1. 切入 Alpha 会话并写入专属记忆
+            mockContext.chatId = 'session_alpha_t109';
+            mockContext.chatMetadata = sessionMetadataStore['session_alpha_t109'];
+            clearStateCache();
+
+            const stateAlpha = getState();
+            stateAlpha.memories = [];
+            addMemory({ id: 'mem_alpha_01', content: 'Alpha会话的专属约定', type: 'statement', scope: 'world' });
+            saveCurrentState();
+
+            assert.strictEqual(stateAlpha.memories.length, 1, 'Alpha 会话成功录入 1 条记忆');
+            assert.strictEqual(stateAlpha.memories[0].content, 'Alpha会话的专属约定');
+
+            // 2. 模拟用户在前台快速切换至 Beta 会话 (未手动调 loadCurrentState，仅变更 chatId 与 metadata)
+            mockContext.chatId = 'session_beta_t109';
+            mockContext.chatMetadata = sessionMetadataStore['session_beta_t109'];
+
+            // 核心断言：getState() 必须自动感知 chatId 变化，严禁向 Beta 会话返回 Alpha 的残留状态！
+            const stateBeta = getState();
+            assert.notStrictEqual(stateBeta, stateAlpha, 'Beta 会话的状态引用必须独立于 Alpha 会话');
+            assert.strictEqual(stateBeta.memories.length, 0, '新切入的 Beta 会话记忆库必须为空，不得被 Alpha 会话污染');
+
+            // 在 Beta 会话写入其专属记忆
+            addMemory({ id: 'mem_beta_01', content: 'Beta会话的独立秘密', type: 'fact', scope: 'world' });
+            saveCurrentState();
+            assert.strictEqual(stateBeta.memories.length, 1);
+            assert.strictEqual(stateBeta.memories[0].content, 'Beta会话的独立秘密');
+
+            // 3. 再次切回 Alpha 会话：应直接命中 stateCacheMap 缓存并自动恢复 Alpha 状态
+            mockContext.chatId = 'session_alpha_t109';
+            mockContext.chatMetadata = sessionMetadataStore['session_alpha_t109'];
+
+            const reloadedAlpha = getState();
+            assert.strictEqual(reloadedAlpha.memories.length, 1, '切回 Alpha 会话应恢复 1 条记忆');
+            assert.strictEqual(reloadedAlpha.memories[0].content, 'Alpha会话的专属约定');
+            assert.ok(!reloadedAlpha.memories.some(m => m.id === 'mem_beta_01'), 'Alpha 会话严禁包含 Beta 会话的记忆');
+
+            // 4. 再次切回 Beta 会话：应直接命中 stateCacheMap 缓存并自动恢复 Beta 状态
+            mockContext.chatId = 'session_beta_t109';
+            mockContext.chatMetadata = sessionMetadataStore['session_beta_t109'];
+
+            const reloadedBeta = getState();
+            assert.strictEqual(reloadedBeta.memories.length, 1, '切回 Beta 会话应恢复 1 条记忆');
+            assert.strictEqual(reloadedBeta.memories[0].content, 'Beta会话的独立秘密');
+            assert.ok(!reloadedBeta.memories.some(m => m.id === 'mem_alpha_01'), 'Beta 会话严禁包含 Alpha 会话的记忆');
+
+            // 5. 验证 clearStateCache 清除能力
+            clearStateCache();
+            const cleanState = getState();
+            assert.strictEqual(cleanState.memories.length, 1, '清空缓存后从当前 metadata 重新载入');
+        } finally {
+            clearStateCache();
+            mockContext.chatId = origChatId;
+            mockContext.chatMetadata = origMetadata;
+            loadCurrentState();
         }
     });
 

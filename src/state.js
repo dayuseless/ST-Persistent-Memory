@@ -51,11 +51,24 @@ export {
 };
 
 let stateCache = null;
+const stateCacheMap = new Map();
+let currentLoadedChatId = null;
 const stateChangeListeners = new Set();
 let isBatchUpdating = false;
 
 function getContext() {
     return window.SillyTavern?.getContext?.() ?? null;
+}
+
+export function getCurrentChatId(c) {
+    if (!c) return 'default';
+    return String(c.chatId || (c.characterId !== undefined ? `char_${c.characterId}` : 'default'));
+}
+
+export function clearStateCache() {
+    stateCache = null;
+    stateCacheMap.clear();
+    currentLoadedChatId = null;
 }
 
 function notifyChange() {
@@ -78,6 +91,7 @@ export function onStateChange(fn) {
  */
 function persistCurrentStateInternal() {
     const c = getContext();
+    const chatId = getCurrentChatId(c);
     const metadata = c?.chatMetadata ?? c?.chat_metadata;
     if (!stateCache) return false;
 
@@ -96,10 +110,12 @@ function persistCurrentStateInternal() {
     // 双重落盘保险：将会话快照同步备份至本地存储，防止未及时落盘导致编辑丢失
     try {
         if (typeof localStorage !== 'undefined') {
-            const chatId = c?.chatId || c?.characterId || 'default';
             localStorage.setItem('ST_PM_STATE_BACKUP_' + chatId, JSON.stringify(stateCache));
         }
     } catch {}
+
+    stateCacheMap.set(chatId, stateCache);
+    currentLoadedChatId = chatId;
 
     notifyChange();
     return true;
@@ -114,6 +130,8 @@ export function batchUpdate(fn) {
         return fn();
     }
     isBatchUpdating = true;
+    const c = getContext();
+    const activeChatId = getCurrentChatId(c);
     // 事务开始前保留完整内存状态快照 (深拷贝)
     const snapshot = stateCache ? JSON.parse(JSON.stringify(stateCache)) : null;
     try {
@@ -127,6 +145,8 @@ export function batchUpdate(fn) {
         console.error(`[${MODULE_NAME}] [Transaction Rollback] 批量更新发生异常，执行状态完整回滚:`, err);
         if (snapshot) {
             stateCache = snapshot;
+            stateCacheMap.set(activeChatId, stateCache);
+            currentLoadedChatId = activeChatId;
             notifyChange();
         }
         throw err;
@@ -300,10 +320,13 @@ export function saveSettingsImmediately() {
  */
 export function loadCurrentState() {
     const c = getContext();
+    const chatId = getCurrentChatId(c);
     const metadata = c?.chatMetadata ?? c?.chat_metadata;
 
     if (!metadata) {
         stateCache = JSON.parse(JSON.stringify(DEFAULT_STATE));
+        stateCacheMap.set(chatId, stateCache);
+        currentLoadedChatId = chatId;
         return stateCache;
     }
 
@@ -312,6 +335,8 @@ export function loadCurrentState() {
     }
 
     stateCache = migrateLegacyState(metadata[MODULE_NAME], DEFAULT_STATE, c);
+    stateCacheMap.set(chatId, stateCache);
+    currentLoadedChatId = chatId;
     notifyChange();
     return stateCache;
 }
@@ -324,7 +349,14 @@ export function saveCurrentState() {
 }
 
 export function getState() {
-    if (!stateCache) {
+    const c = getContext();
+    const activeChatId = getCurrentChatId(c);
+    if (!stateCache || currentLoadedChatId !== activeChatId) {
+        if (stateCacheMap.has(activeChatId)) {
+            stateCache = stateCacheMap.get(activeChatId);
+            currentLoadedChatId = activeChatId;
+            return stateCache;
+        }
         return loadCurrentState();
     }
     return stateCache;
