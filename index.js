@@ -9,6 +9,7 @@ import { buildAndInjectMemoryPrompt } from './src/injector.js';
 import { extractAndApplySyncTag } from './src/apply.js';
 import { triggerAsyncDigest } from './src/extractor.js';
 import { initUI } from './src/ui.js';
+import { registerSlashCommands } from './src/commands.js';
 
 const CTX_WAIT_MS = 250;
 const CTX_TIMEOUT_MS = 30000;
@@ -73,7 +74,14 @@ async function init() {
         console.error(`[${MODULE_NAME}] UI 初始化异常:`, e);
     }
 
-    // 2. 初始化当前聊天的状态并执行初次注入
+    // 2. 注册原生快捷斜杠指令 (/remember, /scene, /inspect, /digest, /forget)
+    try {
+        await registerSlashCommands();
+    } catch (e) {
+        console.warn(`[${MODULE_NAME}] 斜杠指令注册异常:`, e);
+    }
+
+    // 3. 初始化当前聊天的状态并执行初次注入
     try {
         loadCurrentState();
         if (getSettings().enabled) {

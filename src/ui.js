@@ -14,6 +14,16 @@ import { showSyncLoreModal, showPromoteLoreModal, showAdvancedSettingsModal, sho
 import { getLastInjectionSnapshot } from './injector.js';
 import { createFloatingButton, resetBubblePosition } from './ui/bubble.js';
 import { createNativeExtensionDrawer, registerExtensionsMenuEntry, renderNativeDrawerContent, importSillyTavernApiConfig } from './ui/drawer.js';
+import {
+    registerSlashCommands,
+    executeRememberCommand,
+    executeSceneCommand,
+    executeInspectCommand,
+    executeDigestCommand,
+    executeForgetCommand,
+    parseCommandArgs,
+    SLASH_COMMAND_DEFINITIONS
+} from './commands.js';
 
 let panelEl = null;
 let currentTab = 'memories'; // 'memories' | 'scene' | 'settings'
@@ -1616,5 +1626,13 @@ export {
     showAdvancedSettingsModal,
     showInjectionInspectorModal,
     getLastInjectionSnapshot,
-    restoreRecommendedDefaults
+    restoreRecommendedDefaults,
+    registerSlashCommands,
+    executeRememberCommand,
+    executeSceneCommand,
+    executeInspectCommand,
+    executeDigestCommand,
+    executeForgetCommand,
+    parseCommandArgs,
+    SLASH_COMMAND_DEFINITIONS
 };

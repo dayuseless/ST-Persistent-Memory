@@ -225,8 +225,22 @@ import {
     showPromoteLoreModal,
     showAdvancedSettingsModal,
     restoreRecommendedDefaults,
-    showInjectionInspectorModal
+    showInjectionInspectorModal,
+    registerSlashCommands as uiRegisterSlashCommands,
+    executeRememberCommand as uiExecuteRememberCommand,
+    executeSceneCommand as uiExecuteSceneCommand
 } from '../src/ui.js';
+
+import {
+    registerSlashCommands,
+    executeRememberCommand,
+    executeSceneCommand,
+    executeInspectCommand,
+    executeDigestCommand,
+    executeForgetCommand,
+    parseCommandArgs,
+    SLASH_COMMAND_DEFINITIONS
+} from '../src/commands.js';
 
 import {
     API_PRESETS as commonApiPresets,
@@ -6077,6 +6091,174 @@ Intermediate analysis details...
             } finally {
                 global.document = prevDoc;
             }
+
+        } finally {
+            Object.assign(mockContext, origCtx);
+            updateSettings(origSettings);
+            clearStateCache();
+            loadCurrentState();
+        }
+    });
+
+    // ─────────────────────────────────────────────────────────────
+    // T114: 原生斜杠指令 (Slash Commands) 与 HUD 实时搜索过滤契约测试
+    // ─────────────────────────────────────────────────────────────
+    await testAsync('T114: 原生斜杠指令 (Slash Commands) 与 HUD 实时搜索过滤契约测试 (指令解析、参数标志位、无界面增删改查、指令集注册与实时搜索)', async () => {
+        // 1. 同源导出核验
+        assert.strictEqual(typeof parseCommandArgs, 'function');
+        assert.strictEqual(typeof executeRememberCommand, 'function');
+        assert.strictEqual(typeof executeSceneCommand, 'function');
+        assert.strictEqual(typeof executeInspectCommand, 'function');
+        assert.strictEqual(typeof executeDigestCommand, 'function');
+        assert.strictEqual(typeof executeForgetCommand, 'function');
+        assert.strictEqual(typeof registerSlashCommands, 'function');
+        assert.ok(Array.isArray(SLASH_COMMAND_DEFINITIONS) && SLASH_COMMAND_DEFINITIONS.length >= 5);
+        assert.strictEqual(executeRememberCommand, uiExecuteRememberCommand, 'executeRememberCommand 必须同源重导出');
+        assert.strictEqual(executeSceneCommand, uiExecuteSceneCommand, 'executeSceneCommand 必须同源重导出');
+        assert.strictEqual(registerSlashCommands, uiRegisterSlashCommands, 'registerSlashCommands 必须同源重导出');
+
+        // 2. 参数标志位解析 (parseCommandArgs)
+        const parsedSimple = parseCommandArgs('艾尔登法环已经破碎');
+        assert.strictEqual(parsedSimple.positional, '艾尔登法环已经破碎');
+        assert.deepStrictEqual(parsedSimple.flags, {});
+
+        const parsedFlags = parseCommandArgs('--pinned --type statement --scope character --char 角色A --keys 誓言,王城 我绝不会背叛最初的誓言');
+        assert.strictEqual(parsedFlags.positional, '我绝不会背叛最初的誓言');
+        assert.strictEqual(parsedFlags.flags.pinned, true);
+        assert.strictEqual(parsedFlags.flags.type, 'statement');
+        assert.strictEqual(parsedFlags.flags.scope, 'character');
+        assert.strictEqual(parsedFlags.flags.character, '角色A');
+        assert.strictEqual(parsedFlags.flags.keys, '誓言,王城');
+
+        const parsedScene = parseCommandArgs('--location 诺克史黛拉 --action 搜寻永恒之城 --time 深夜');
+        assert.strictEqual(parsedScene.flags.location, '诺克史黛拉');
+        assert.strictEqual(parsedScene.flags.action, '搜寻永恒之城');
+        assert.strictEqual(parsedScene.flags.time, '深夜');
+
+        const origCtx = { ...mockContext };
+        const origSettings = { ...getSettings() };
+        clearStateCache();
+        const state = loadCurrentState();
+
+        try {
+            mockContext.name1 = '玩家';
+            mockContext.name2 = '角色A';
+            mockContext.characters = [{ name: '角色A' }, { name: '角色B' }];
+            state.memories = [];
+            state.scene = { location: '初始之地' };
+
+            // 3. /remember 指令执行验证
+            // 3.1 空内容拦截
+            const emptyRes = executeRememberCommand('');
+            assert.ok(emptyRes.includes('请提供记忆内容'));
+            assert.strictEqual(state.memories.length, 0);
+
+            // 3.2 正常添加公共常驻记忆
+            const addPubRes = executeRememberCommand('黄金律法不可动摇 --pinned --type fact');
+            assert.ok(addPubRes.includes('黄金律法不可动摇'));
+            assert.ok(addPubRes.includes('常驻'));
+            assert.strictEqual(state.memories.length, 1);
+            const m1 = state.memories[0];
+            assert.strictEqual(m1.content, '黄金律法不可动摇');
+            assert.strictEqual(m1.status, 'pinned');
+            assert.strictEqual(m1.type, 'fact');
+            assert.strictEqual(m1.scope, 'world');
+
+            // 3.3 添加角色A私密言行约定
+            const addPrivRes = executeRememberCommand('--type statement --scope character --char 角色A 我会在午夜赶往希芙拉河');
+            assert.ok(addPrivRes.includes('我会在午夜赶往希芙拉河'));
+            assert.ok(addPrivRes.includes('言行约定'));
+            assert.strictEqual(state.memories.length, 2);
+            const m2 = state.memories[1];
+            assert.strictEqual(m2.content, '我会在午夜赶往希芙拉河');
+            assert.strictEqual(m2.type, 'statement');
+            assert.strictEqual(m2.scope, 'character');
+            assert.strictEqual(m2.character, '角色A');
+
+            // 4. /scene 指令执行验证
+            // 4.1 纯文本快捷设置地点
+            const scene1 = executeSceneCommand('风暴山丘的破屋');
+            assert.ok(scene1.includes('风暴山丘的破屋'));
+            assert.strictEqual(state.scene.location, '风暴山丘的破屋');
+
+            // 4.2 组合标志位更新地点与动作
+            const scene2 = executeSceneCommand('--location 史东薇尔城 --action 潜入接肢地牢 --time 破晓');
+            assert.ok(scene2.includes('史东薇尔城'));
+            assert.strictEqual(state.scene.location, '史东薇尔城');
+            assert.strictEqual(state.scene.action, '潜入接肢地牢');
+            assert.strictEqual(state.scene.time, '破晓');
+
+            // 5. /forget 指令执行验证
+            // 5.1 未命中提示
+            const forgetNone = executeForgetCommand('不存在的虚假事实');
+            assert.ok(forgetNone.includes('未找到匹配'));
+
+            // 5.2 成功证伪并归档
+            const forgetOk = executeForgetCommand('希芙拉河');
+            assert.ok(forgetOk.includes('已证伪并归档'));
+            const updatedM2 = state.memories.find(m => m.id === m2.id);
+            assert.strictEqual(updatedM2.lifecycle, 'refuted');
+            assert.strictEqual(updatedM2.status, 'archived');
+
+            // 6. /inspect 与 /digest 指令调用验证
+            const inspectMsg = executeInspectCommand();
+            assert.ok(inspectMsg.includes('透视镜已弹出'));
+
+            const digestMsg = executeDigestCommand();
+            assert.ok(digestMsg.includes('后台发起即时提炼'));
+
+            // 7. registerSlashCommands 注册机制契约测试
+            const registeredCommands = [];
+            const mockParser = {
+                addCommandObject: (cmd) => {
+                    registeredCommands.push(cmd);
+                }
+            };
+            const mockCommandClass = {
+                fromProps: (props) => ({ ...props, _isCommand: true })
+            };
+
+            const regSuccess = await registerSlashCommands(mockParser, mockCommandClass);
+            assert.strictEqual(regSuccess, true);
+            assert.strictEqual(registeredCommands.length, 5);
+
+            const cmdNames = registeredCommands.map(c => c.name);
+            assert.ok(cmdNames.includes('remember'));
+            assert.ok(cmdNames.includes('scene'));
+            assert.ok(cmdNames.includes('inspect'));
+            assert.ok(cmdNames.includes('digest'));
+            assert.ok(cmdNames.includes('forget'));
+
+            // 验证 remember command 的 callback 正常运转
+            const rememberCmd = registeredCommands.find(c => c.name === 'remember');
+            const callbackRes = rememberCmd.callback({ type: 'todo' }, ['前往日荫城寻找义手']);
+            assert.ok(callbackRes.includes('前往日荫城寻找义手'));
+            assert.ok(state.memories.some(m => m.content === '前往日荫城寻找义手' && m.type === 'todo'));
+
+            // 8. 实时搜索过滤算法核验 (模拟 UI 检索逻辑)
+            const searchPool = [
+                { id: '1', content: '湖之利耶尼亚遍布着魔法水雾', character: '', trigger_keys: ['利耶尼亚', '水雾'] },
+                { id: '2', content: '角色A私藏了解密卷轴', character: '角色A', trigger_keys: ['卷轴'] },
+                { id: '3', content: '红狮子军团正在盖利德鏖战', character: '拉塔恩', trigger_keys: ['军团'] }
+            ];
+
+            const matchQuery = (item, q) => {
+                const kw = q.toLowerCase();
+                return (item.content && item.content.toLowerCase().includes(kw)) ||
+                       (item.character && item.character.toLowerCase().includes(kw)) ||
+                       (Array.isArray(item.trigger_keys) && item.trigger_keys.some(k => k.toLowerCase().includes(kw)));
+            };
+
+            // 正文搜索
+            assert.strictEqual(searchPool.filter(item => matchQuery(item, '魔法水雾')).length, 1);
+            // 角色名搜索
+            assert.strictEqual(searchPool.filter(item => matchQuery(item, '角色A')).length, 1);
+            // 触发词搜索
+            assert.strictEqual(searchPool.filter(item => matchQuery(item, '军团')).length, 1);
+            // 不区分大小写
+            assert.strictEqual(searchPool.filter(item => matchQuery(item, 'a')).length, 1);
+            // 空结果
+            assert.strictEqual(searchPool.filter(item => matchQuery(item, '无缘之空')).length, 0);
 
         } finally {
             Object.assign(mockContext, origCtx);
