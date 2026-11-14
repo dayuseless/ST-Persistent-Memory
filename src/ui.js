@@ -1218,8 +1218,8 @@ function bindPanelEvents(container) {
                 }
 
                 // 2. 弹出确认框 (显示 diff 预览与勾选项)
-                showSyncLoreModal(previewRes.preview, async (markCompleted) => {
-                    const commitRes = await syncMemoryDeltaToWorldInfo(id, { markCompleted });
+                showSyncLoreModal(previewRes.preview, async (markCompleted, compactUpdates) => {
+                    const commitRes = await syncMemoryDeltaToWorldInfo(id, { markCompleted, compactUpdates });
                     if (commitRes.success) {
                         window.toastr?.success?.(`已成功将动态事实写回至世界书【${commitRes.bookName} - ${commitRes.entryName}】！`, '持续记忆');
                         renderPanelContent();

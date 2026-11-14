@@ -10,7 +10,8 @@ import {
     sanitizeLorebookRef,
     getActiveWorldBookInfo,
     syncMemoryDeltaToWorldInfo,
-    promoteMemoryToWorldInfo
+    promoteMemoryToWorldInfo,
+    compactLorebookEntryContent
 } from './lorebook.js';
 import {
     pushSceneSnapshot,
@@ -38,6 +39,7 @@ export {
     getActiveWorldBookInfo,
     syncMemoryDeltaToWorldInfo,
     promoteMemoryToWorldInfo,
+    compactLorebookEntryContent,
     pushSceneSnapshot,
     rollbackScene,
     restoreSceneSnapshot,

@@ -86,6 +86,7 @@ import {
     getSceneHistory,
     pushSceneSnapshot,
     promoteMemoryToWorldInfo,
+    compactLorebookEntryContent,
     sanitizeLorebookRef,
     clearStateCache,
     getCurrentChatId
@@ -195,7 +196,8 @@ import {
     sanitizeLorebookRef as lbSanitizeRef,
     getActiveWorldBookInfo as lbGetActiveInfo,
     syncMemoryDeltaToWorldInfo as lbSyncDelta,
-    promoteMemoryToWorldInfo as lbPromote
+    promoteMemoryToWorldInfo as lbPromote,
+    compactLorebookEntryContent as lbCompactContent
 } from '../src/lorebook.js';
 
 import {
@@ -5717,6 +5719,126 @@ Intermediate analysis details...
             assert.strictEqual(fallbackMemories[0].embedding.length, LOCAL_VECTOR_DIM, '降级向量维度应为本地标准 256 维');
         } finally {
             global.fetch = origFetch;
+        }
+    });
+
+    // ─────────────────────────────────────────────────────────────
+    // T112: 世界书长程事实差量智能压缩与去重归并契约测试 (I-03)
+    // ─────────────────────────────────────────────────────────────
+    await testAsync('T112: 世界书长程事实差量智能压缩与去重归并契约测试 (语句级去重、历史补丁段落聚合、Dry-Run 识别与写回落盘)', async () => {
+        // 1. 同源导出核验
+        assert.strictEqual(typeof compactLorebookEntryContent, 'function');
+        assert.strictEqual(compactLorebookEntryContent, lbCompactContent, 'compactLorebookEntryContent 重导出必须物理同源');
+
+        // 2. 独立算法单元测试：无历史更新标签时的常规格式化追加
+        const emptyBase = '【初始设定】断钢圣剑插在湖中石上。';
+        const emptyRes = compactLorebookEntryContent(emptyBase, '勇者拔出了圣剑。', { stamp: '2026-11-14' });
+        assert.strictEqual(emptyRes.originalUpdateCount, 0);
+        assert.strictEqual(emptyRes.deduplicatedCount, 0);
+        assert.ok(emptyRes.compactedText.includes('[持续事实更新 2026-11-14] 勇者拔出了圣剑。'));
+
+        // 3. 独立算法单元测试：多段历史更新与包含重复语句时的智能去重压缩
+        const bloatedLore = `【圣域背景】艾尔登王城深处的黄金树。
+
+[持续事实更新 2026-11-01]
+- 黄金树是交界地生灵的信仰核心。
+- 玛莉卡女王在黄金树内部被囚禁。
+
+[持续事实更新 2026-11-05]
+- 黄金树是交界地生灵的信仰核心。
+- 黄金树被刺木封锁无法进入。
+- 玛莉卡女王在黄金树内部被囚禁。`;
+
+        const newDelta = `黄金树被刺木封锁无法进入。\n必须前往巨人雪山收集灰灭余火。`;
+
+        const compactRes = compactLorebookEntryContent(bloatedLore, newDelta, { stamp: '2026-11-14' });
+
+        // 断言：
+        // A. 准确识别出历史补丁总次数为 2，合并后总版本为 3
+        assert.strictEqual(compactRes.originalUpdateCount, 2);
+        // B. 准确识别并消除重复事实 (黄金树是信仰核心重复、玛莉卡被囚禁重复、黄金树被刺木封锁重复)
+        assert.ok(compactRes.deduplicatedCount >= 2, `重复语句必须被消除 (实际去重 ${compactRes.deduplicatedCount} 条)`);
+        // C. 结果必须包含合并统一标签
+        assert.ok(compactRes.compactedText.includes('[持续事实更新 2026-11-14 (已合并 3 次历史演进)]'));
+        // D. 基础背景必须完整保留在顶部
+        assert.ok(compactRes.compactedText.startsWith('【圣域背景】艾尔登王城深处的黄金树。'));
+        // E. 所有独一无二的事实语句均被有序保留
+        assert.ok(compactRes.compactedText.includes('黄金树是交界地生灵的信仰核心。'));
+        assert.ok(compactRes.compactedText.includes('玛莉卡女王在黄金树内部被囚禁。'));
+        assert.ok(compactRes.compactedText.includes('黄金树被刺木封锁无法进入。'));
+        assert.ok(compactRes.compactedText.includes('必须前往巨人雪山收集灰灭余火。'));
+
+        // 4. 端到端 syncMemoryDeltaToWorldInfo 集成验证
+        const origCtx = { ...mockContext };
+        try {
+            const mockBookData = {
+                entries: {
+                    201: {
+                        uid: 201,
+                        comment: '王城黄金树',
+                        key: ['黄金树'],
+                        content: bloatedLore
+                    }
+                }
+            };
+
+            let savedBookName = null;
+            let savedBookData = null;
+
+            mockContext.loadWorldInfo = async (name) => {
+                if (name === '王城秘典') return mockBookData;
+                return null;
+            };
+            mockContext.saveWorldInfo = async (name, data) => {
+                savedBookName = name;
+                savedBookData = data;
+            };
+
+            const state = getState();
+            const memLore = {
+                id: 'mem_lore_compact_01',
+                type: 'fact',
+                scope: 'world',
+                content: newDelta,
+                status: 'active',
+                lifecycle: 'active',
+                lorebook_ref: {
+                    book: '王城秘典',
+                    file_name: '王城秘典',
+                    entry_uid: 201,
+                    entry_name: '王城黄金树'
+                }
+            };
+            state.memories = [memLore];
+
+            // A. 验证 Dry-Run 模式下正确感知历史更新段落并输出预览
+            const previewRes = await syncMemoryDeltaToWorldInfo(memLore.id, { dryRun: true });
+            assert.strictEqual(previewRes.success, true);
+            assert.strictEqual(previewRes.preview.canCompact, true);
+            assert.strictEqual(previewRes.preview.existingUpdateCount, 2);
+            assert.ok(previewRes.preview.deduplicatedCount >= 2);
+            assert.ok(previewRes.preview.compactedContent.includes('已合并 3 次历史演进'));
+
+            // B. 验证正式写回 (启用 compactUpdates: true 并履约 markCompleted: true)
+            const commitRes = await syncMemoryDeltaToWorldInfo(memLore.id, {
+                compactUpdates: true,
+                markCompleted: true
+            });
+
+            assert.strictEqual(commitRes.success, true);
+            assert.strictEqual(commitRes.compacted, true);
+            assert.strictEqual(savedBookName, '王城秘典');
+            assert.ok(savedBookData.entries[201].content.includes('已合并 3 次历史演进'));
+            assert.ok(savedBookData.entries[201].content.includes('必须前往巨人雪山收集灰灭余火。'));
+
+            // C. 验证记忆状态履约为 completed
+            const updatedMem = state.memories.find(m => m.id === memLore.id);
+            assert.strictEqual(updatedMem.lifecycle, 'completed', '写回并履约后记忆生命周期应为 completed');
+            assert.strictEqual(updatedMem.synced_to_world_info, true);
+        } finally {
+            Object.assign(mockContext, origCtx);
+            clearStateCache();
+            loadCurrentState();
         }
     });
 

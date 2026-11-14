@@ -130,13 +130,93 @@ export async function getActiveWorldBookInfo() {
 }
 
 /**
+ * 智能解析并压缩世界书词条正文中的历史差量补丁 (Compaction & Deduplication, I-03)
+ * 将零散重复的 [持续事实更新 YYYY-MM-DD] 补丁段落进行语句级去重与归并聚合，防止极长跑团中词条尾部过度膨胀
+ * 
+ * @param {string} currentContent - 既有条目完整正文
+ * @param {string} [newDeltaText=''] - 本次拟写回的新事实文本
+ * @param {object} [options={}]
+ * @param {string} [options.stamp] - 新事实日期戳 (YYYY-MM-DD)
+ * @returns {{ compactedText: string, deduplicatedCount: number, originalUpdateCount: number }}
+ */
+export function compactLorebookEntryContent(currentContent, newDeltaText = '', options = {}) {
+    const rawContent = typeof currentContent === 'string' ? currentContent : '';
+    const cleanDelta = typeof newDeltaText === 'string' ? newDeltaText.trim() : '';
+    const stamp = options.stamp || new Date().toISOString().split('T')[0];
+
+    const UPDATE_HEADER_REGEX = /\[(?:持续事实更新|事实更新|动态更新)\s*([^\]]*)\]/g;
+    const matches = [...rawContent.matchAll(UPDATE_HEADER_REGEX)];
+
+    if (matches.length === 0) {
+        const appended = cleanDelta ? `\n\n[持续事实更新 ${stamp}] ${cleanDelta}` : '';
+        return {
+            compactedText: rawContent ? (rawContent + appended) : appended.trim(),
+            deduplicatedCount: 0,
+            originalUpdateCount: 0
+        };
+    }
+
+    const firstUpdateIndex = matches[0].index;
+    const baseContent = rawContent.slice(0, firstUpdateIndex).trim();
+    const updatesSlice = rawContent.slice(firstUpdateIndex);
+
+    const parts = updatesSlice.split(/\[(?:持续事实更新|事实更新|动态更新)\s*[^\]]*\]/);
+    const historicalTexts = parts.slice(1).map(p => p.trim()).filter(Boolean);
+
+    const allStatements = [];
+    const seenNormalized = new Set();
+    let deduplicatedCount = 0;
+
+    function addStatement(text) {
+        if (!text) return;
+        const lines = text.split(/\r?\n/).map(l => l.trim()).filter(Boolean);
+        for (const line of lines) {
+            const cleanLine = line.replace(/^[-*•\d+.\s]+/, '').trim();
+            if (!cleanLine) continue;
+            const normKey = cleanLine.toLowerCase().replace(/[\s,，.。!！?？;；:：'"`“”‘’()（）[\]【】{}《》\/\\|#*~_\-+]/g, '');
+            if (!normKey) continue;
+
+            if (seenNormalized.has(normKey)) {
+                deduplicatedCount++;
+            } else {
+                seenNormalized.add(normKey);
+                allStatements.push(cleanLine);
+            }
+        }
+    }
+
+    for (const hText of historicalTexts) {
+        addStatement(hText);
+    }
+    if (cleanDelta) {
+        addStatement(cleanDelta);
+    }
+
+    const totalPatchesCount = matches.length + (cleanDelta ? 1 : 0);
+    const consolidatedHeader = `\n\n[持续事实更新 ${stamp} (已合并 ${totalPatchesCount} 次历史演进)]`;
+    const formattedStatements = allStatements.map(s => `- ${s}`).join('\n');
+    const consolidatedBlock = allStatements.length > 0 ? `${consolidatedHeader}\n${formattedStatements}` : '';
+
+    const compactedText = baseContent
+        ? (consolidatedBlock ? `${baseContent}${consolidatedBlock}` : baseContent)
+        : (consolidatedBlock ? consolidatedBlock.trim() : '');
+
+    return {
+        compactedText,
+        deduplicatedCount,
+        originalUpdateCount: matches.length
+    };
+}
+
+/**
  * 将某条动态记忆的事实差量安全同步写回至关联的世界书条目中 (Write-Back Hook)
  * @param {string} memId - 记忆 ID
  * @param {object} [options]
  * @param {boolean} [options.dryRun=false] - 是否仅计算差量预览而不实际写入
  * @param {boolean} [options.markCompleted=false] - 成功写回后是否自动将该记忆置为 completed 履约
+ * @param {boolean} [options.compactUpdates=false] - 是否智能压缩并去重合并历史更新补丁 (防膨胀)
  * @param {string} [options.customDelta] - 自定义追加正文 (默认使用 mem.content)
- * @returns {Promise<{success: boolean, reason?: string, alreadySynced?: boolean, dryRun?: boolean, preview?: object, bookName?: string, entryName?: string, entryUid?: number}>}
+ * @returns {Promise<{success: boolean, reason?: string, alreadySynced?: boolean, dryRun?: boolean, preview?: object, bookName?: string, entryName?: string, entryUid?: number, compacted?: boolean, deduplicatedCount?: number}>}
  */
 export async function syncMemoryDeltaToWorldInfo(memId, options = {}) {
     const c = getContext();
@@ -224,8 +304,13 @@ export async function syncMemoryDeltaToWorldInfo(memId, options = {}) {
 
     const currentContent = String(targetEntry.content || '');
 
-    // 幂等防重检查：如果条目中已经包含了这段事实，避免重复追加
-    if (currentContent.includes(deltaContent)) {
+    // 检查是否存在历史更新段落
+    const UPDATE_HEADER_REGEX = /\[(?:持续事实更新|事实更新|动态更新)\s*([^\]]*)\]/g;
+    const existingMatches = [...currentContent.matchAll(UPDATE_HEADER_REGEX)];
+    const hasExistingUpdates = existingMatches.length > 0;
+
+    // 幂等防重检查：如果条目中已经包含了完全相同的事实且未明确要求重构压缩，避免重复追加
+    if (!options.compactUpdates && currentContent.includes(deltaContent)) {
         return {
             success: false,
             alreadySynced: true,
@@ -234,11 +319,26 @@ export async function syncMemoryDeltaToWorldInfo(memId, options = {}) {
     }
 
     const stamp = new Date().toISOString().split('T')[0];
-    const appendedText = `\n\n[持续事实更新 ${stamp}] ${deltaContent}`;
-    const newContent = currentContent ? (currentContent + appendedText) : appendedText.trim();
+    const shouldCompact = Boolean(options.compactUpdates);
+
+    let newContent = '';
+    let deduplicatedCount = 0;
+    const defaultAppendedText = `\n\n[持续事实更新 ${stamp}] ${deltaContent}`;
+
+    if (shouldCompact && hasExistingUpdates) {
+        const compactRes = compactLorebookEntryContent(currentContent, deltaContent, { stamp });
+        newContent = compactRes.compactedText;
+        deduplicatedCount = compactRes.deduplicatedCount;
+    } else {
+        newContent = currentContent ? (currentContent + defaultAppendedText) : defaultAppendedText.trim();
+    }
 
     // 预览模式 (Dry Run)
     if (options.dryRun) {
+        const compactPreview = hasExistingUpdates
+            ? compactLorebookEntryContent(currentContent, deltaContent, { stamp })
+            : null;
+
         return {
             success: true,
             dryRun: true,
@@ -247,8 +347,13 @@ export async function syncMemoryDeltaToWorldInfo(memId, options = {}) {
                 entryUid: targetEntry.uid,
                 entryName: targetEntry.comment || targetEntryName,
                 originalContent: currentContent,
-                appendedText: appendedText.trim(),
-                newContent: newContent
+                appendedText: defaultAppendedText.trim(),
+                newContent: newContent,
+                hasExistingUpdates,
+                existingUpdateCount: existingMatches.length,
+                canCompact: hasExistingUpdates,
+                compactedContent: compactPreview ? compactPreview.compactedText : newContent,
+                deduplicatedCount: compactPreview ? compactPreview.deduplicatedCount : 0
             }
         };
     }
@@ -289,7 +394,10 @@ export async function syncMemoryDeltaToWorldInfo(memId, options = {}) {
             success: true,
             bookName: targetBookName,
             entryUid: targetEntry.uid,
-            entryName: targetEntry.comment || targetEntryName
+            entryName: targetEntry.comment || targetEntryName,
+            compacted: shouldCompact && hasExistingUpdates,
+            deduplicatedCount,
+            newContent
         };
     } catch (e) {
         console.error(`[${MODULE_NAME}] 同步写回世界书失败:`, e);

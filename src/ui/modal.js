@@ -45,6 +45,14 @@ export function showSyncLoreModal(preview, onConfirm) {
                             <span>同步后将本记忆标记为<b>【履约/办结】</b>(不再重复作为动态记忆注入)</span>
                         </label>
                     </div>
+                    ${preview && preview.canCompact ? `
+                    <div style="margin-top: 8px; background: #f0fdf4; border: 1px solid #bbf7d0; border-radius: 4px; padding: 6px 10px;">
+                        <label style="display: flex; align-items: center; gap: 6px; font-size: 11px; color: #166534; cursor: pointer;">
+                            <input type="checkbox" id="pm-sync-compact-updates" ${preview.existingUpdateCount >= 2 ? 'checked' : ''}>
+                            <span><b>智能合并历史更新</b> (检测到既有 ${preview.existingUpdateCount} 处历史更新段落，勾选后精简归并去重，杜绝设定膨胀)</span>
+                        </label>
+                    </div>
+                    ` : ''}
                 </div>
                 <div class="pm-modal-footer" style="display: flex; justify-content: flex-end; gap: 8px; margin-top: 8px;">
                     <button class="pm-btn-secondary" id="pm-lore-modal-cancel" style="padding: 4px 12px; font-size: 12px;">取消</button>
@@ -64,9 +72,10 @@ export function showSyncLoreModal(preview, onConfirm) {
 
     modalEl.querySelector('#pm-lore-modal-confirm')?.addEventListener('click', () => {
         const markCompleted = Boolean(modalEl.querySelector('#pm-sync-mark-completed')?.checked);
+        const compactUpdates = Boolean(modalEl.querySelector('#pm-sync-compact-updates')?.checked);
         closeModal();
         if (typeof onConfirm === 'function') {
-            onConfirm(markCompleted);
+            onConfirm(markCompleted, compactUpdates);
         }
     });
 }
