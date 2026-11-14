@@ -88,6 +88,7 @@ import {
     promoteMemoryToWorldInfo,
     compactLorebookEntryContent,
     sanitizeLorebookRef,
+    getMemoryLineage,
     clearStateCache,
     getCurrentChatId
 } from '../src/state.js';
@@ -231,6 +232,9 @@ import {
     showAdvancedSettingsModal,
     restoreRecommendedDefaults,
     showInjectionInspectorModal,
+    showMemoryLineageModal,
+    showHistoricalSliceModal,
+    getMemoryLineage as uiGetMemoryLineage,
     registerSlashCommands as uiRegisterSlashCommands,
     executeRememberCommand as uiExecuteRememberCommand,
     executeSceneCommand as uiExecuteSceneCommand
@@ -264,7 +268,9 @@ import {
     showSyncLoreModal as modalShowSyncLoreModal,
     showPromoteLoreModal as modalShowPromoteLoreModal,
     showAdvancedSettingsModal as modalShowAdvancedModal,
-    showInjectionInspectorModal as modalShowInjectionInspectorModal
+    showInjectionInspectorModal as modalShowInjectionInspectorModal,
+    showMemoryLineageModal as modalShowMemoryLineageModal,
+    showHistoricalSliceModal as modalShowHistoricalSliceModal
 } from '../src/ui/modal.js';
 import {
     createFloatingButton as bubbleCreateFloatingButton,
@@ -6596,6 +6602,203 @@ Intermediate analysis details...
             assert.strictEqual(testPool.filter(isDormant).length, 1, '沉睡项应为 1 (p3)');
             assert.strictEqual(testPool.filter(isTerminal).length, 2, '结项历史应为 2 (p4, p5)');
             assert.strictEqual(testPool.length, 5, '全部项应为 5');
+
+        } finally {
+            Object.assign(mockContext, origCtx);
+            updateSettings(origSettings);
+            clearStateCache();
+            loadCurrentState();
+        }
+    });
+
+    // ─────────────────────────────────────────────────────────────
+    // T117: 记忆演化血缘追溯 (Evolution Lineage) 与历史切片重放 (Historical Slice) 契约测试 (Phase 4)
+    // ─────────────────────────────────────────────────────────────
+    test('T117: 记忆演化血缘追溯 (Evolution Lineage) 与历史切片重放 (Historical Slice) 契约测试 (Phase 4)', async () => {
+        // 1. 同源导出核验
+        assert.strictEqual(getMemoryLineage, uiGetMemoryLineage, 'src/ui.js 必须同源重导出 state.js 的 getMemoryLineage');
+        assert.strictEqual(showMemoryLineageModal, modalShowMemoryLineageModal, 'src/ui.js 必须同源重导出 modal.js 的 showMemoryLineageModal');
+        assert.strictEqual(showHistoricalSliceModal, modalShowHistoricalSliceModal, 'src/ui.js 必须同源重导出 modal.js 的 showHistoricalSliceModal');
+
+        const origCtx = JSON.parse(JSON.stringify(mockContext));
+        const origSettings = JSON.parse(JSON.stringify(getSettings()));
+        clearStateCache();
+        const state = loadCurrentState();
+
+        try {
+            // 2. 长程归并双向演化血缘契约测试
+            // 创建 2 条待归并的原始事实
+            const old1 = addMemory({
+                content: '主角在市集以十枚银币购买了一柄生锈的断剑',
+                type: 'fact',
+                scope: 'world',
+                status: 'triggered',
+                lifecycle: 'active',
+                floor: 2
+            });
+            const old2 = addMemory({
+                content: '主角在矮人铁匠铺使用圣泉与秘银将断剑重新锻造',
+                type: 'fact',
+                scope: 'world',
+                status: 'triggered',
+                lifecycle: 'active',
+                floor: 5
+            });
+
+            assert.ok(old1 && old1.id);
+            assert.ok(old2 && old2.id);
+
+            // 模拟长程归并事务
+            let macroItem = null;
+            batchUpdate(() => {
+                // 1) 标记旧条目为 superseded
+                setMemoryLifecycle(old1.id, 'superseded');
+                setMemoryLifecycle(old2.id, 'superseded');
+
+                // 2) 创建宏观概括记忆并携带 consolidated_from
+                macroItem = addMemory({
+                    content: '主角在市集购得断剑并经矮人铁匠重铸为圣剑',
+                    type: 'fact',
+                    scope: 'world',
+                    status: 'triggered',
+                    floor: 8,
+                    last_activated_floor: 8,
+                    consolidated_from: [old1.id, old2.id]
+                });
+
+                assert.ok(macroItem);
+
+                // 3) 将旧条目的 superseded_by 指向新建宏观条目
+                updateMemory(old1.id, { superseded_by: macroItem.id });
+                updateMemory(old2.id, { superseded_by: macroItem.id });
+            });
+
+            // 验证落盘状态
+            const freshOld1 = state.memories.find(m => m.id === old1.id);
+            const freshOld2 = state.memories.find(m => m.id === old2.id);
+            const freshMacro = state.memories.find(m => m.id === macroItem.id);
+
+            assert.strictEqual(freshOld1.lifecycle, 'superseded');
+            assert.strictEqual(freshOld1.superseded_by, freshMacro.id);
+            assert.strictEqual(freshOld2.lifecycle, 'superseded');
+            assert.strictEqual(freshOld2.superseded_by, freshMacro.id);
+            assert.deepStrictEqual(freshMacro.consolidated_from, [old1.id, old2.id]);
+
+            // 3. getMemoryLineage 演化血缘追溯引擎契约验证
+            // 3.1 宏观记忆的血缘：拥有 2 条 ancestors，无 supersededBy
+            const lineageMacro = getMemoryLineage(freshMacro.id);
+            assert.ok(lineageMacro && lineageMacro.memory);
+            assert.strictEqual(lineageMacro.memory.id, freshMacro.id);
+            assert.strictEqual(lineageMacro.ancestors.length, 2);
+            assert.strictEqual(lineageMacro.ancestors[0].id, old1.id);
+            assert.strictEqual(lineageMacro.ancestors[1].id, old2.id);
+            assert.strictEqual(lineageMacro.supersededBy, null);
+
+            // 3.2 原始前身记忆的血缘：拥有 0 条 ancestors，supersededBy 指向 macroItem，successors 包含 macroItem
+            const lineageOld1 = getMemoryLineage(old1.id);
+            assert.ok(lineageOld1 && lineageOld1.memory);
+            assert.strictEqual(lineageOld1.memory.id, old1.id);
+            assert.strictEqual(lineageOld1.ancestors.length, 0);
+            assert.strictEqual(lineageOld1.supersededBy.id, freshMacro.id);
+            assert.ok(lineageOld1.successors.some(s => s.id === freshMacro.id));
+
+            // 3.3 无效 ID 返回 null
+            assert.strictEqual(getMemoryLineage('invalid_id_not_exist'), null);
+            assert.strictEqual(getMemoryLineage(null), null);
+
+            // 4. 视觉卡片血缘按钮渲染契约验证 (renderMemoryCard)
+            // 4.1 宏观事实卡片渲染：必须包含血缘追溯按钮，标明 (2)
+            const macroCardHtml = renderMemoryCard(freshMacro);
+            assert.ok(macroCardHtml.includes('pm-lineage-btn'), '宏观记忆卡片必须包含 pm-lineage-btn');
+            assert.ok(macroCardHtml.includes('data-action="view-lineage"'));
+            assert.ok(macroCardHtml.includes(`data-id="${freshMacro.id}"`));
+            assert.ok(macroCardHtml.includes('血缘追溯 (2)'));
+
+            // 4.2 原始被取代卡片渲染：必须包含血缘追溯按钮
+            const oldCardHtml = renderMemoryCard(freshOld1);
+            assert.ok(oldCardHtml.includes('pm-lineage-btn'), '已被取代的前身卡片必须包含 pm-lineage-btn');
+            assert.ok(oldCardHtml.includes('data-action="view-lineage"'));
+
+            // 4.3 无血缘关系的普通卡片：绝对不显示血缘追溯按钮
+            const normalMem = addMemory({
+                content: '普通的独立背景事实',
+                type: 'fact',
+                scope: 'world'
+            });
+            const normalCardHtml = renderMemoryCard(normalMem);
+            assert.ok(!normalCardHtml.includes('pm-lineage-btn'), '无血缘关系的普通记忆不可渲染 pm-lineage-btn');
+
+            // 5. 历史时光切片重放与现场快照契约验证 (Historical Slice Replay)
+            state.scene_history = [
+                {
+                    timestamp: '2026-11-14T10:00:00.000Z',
+                    floor: 3,
+                    reason: '初入城镇',
+                    scene: {
+                        location: '初见小镇 - 橡木旅馆',
+                        time: '黄昏',
+                        action: '在炉火旁整顿行装',
+                        tension: '安详平静',
+                        unresolved: '如何寻找矮人铁匠',
+                        in_scene_characters: ['玩家', '角色A']
+                    }
+                },
+                {
+                    timestamp: '2026-11-14T11:00:00.000Z',
+                    floor: 7,
+                    reason: '探索黑岩矿洞',
+                    scene: {
+                        location: '黑岩矿洞深处',
+                        time: '深夜',
+                        action: '正在破除地宫封印',
+                        tension: '高度紧张',
+                        unresolved: '暗处传来的沉重呼吸声',
+                        in_scene_characters: ['玩家', '角色A', '矮人铁匠']
+                    }
+                }
+            ];
+
+            // 当前现场状态 (第 12 轮)
+            state.scene = {
+                location: '熔岩巨龙巢穴',
+                time: '正午',
+                action: '拔出圣剑与巨龙对峙',
+                tension: '生死攸关',
+                unresolved: '巨龙的弱点位于何处',
+                in_scene_characters: ['玩家', '角色A']
+            };
+
+            const historyList = getSceneHistory();
+            assert.strictEqual(historyList.length, 2);
+
+            // 5.1 验证第 3 轮切片数据检索与过滤
+            const slice0 = historyList[0];
+            assert.strictEqual(slice0.floor, 3);
+            assert.strictEqual(slice0.scene.location, '初见小镇 - 橡木旅馆');
+
+            // 过滤在第 3 轮已存在且未证伪的记忆 (应包含 floor 2 的 old1，但不包含 floor 5 的 old2 与 floor 8 的 macro)
+            const slice0Mems = state.memories.filter(m => (m.floor || 0) <= slice0.floor && m.lifecycle !== 'refuted');
+            assert.ok(slice0Mems.some(m => m.id === old1.id));
+            assert.ok(!slice0Mems.some(m => m.id === old2.id));
+            assert.ok(!slice0Mems.some(m => m.id === freshMacro.id));
+
+            // 5.2 验证一键恢复现场快照至指定切片 (restoreSceneSnapshot)
+            const restoreRes = restoreSceneSnapshot(0);
+            assert.strictEqual(restoreRes.success, true);
+            assert.strictEqual(state.scene.location, '初见小镇 - 橡木旅馆');
+            assert.strictEqual(state.scene.action, '在炉火旁整顿行装');
+            assert.strictEqual(state.scene.tension, '安详平静');
+            // 回滚前原现场自动入栈为保护点
+            assert.strictEqual(state.scene_history.length, 3);
+            assert.strictEqual(state.scene_history[state.scene_history.length - 1].reason, '回滚前自动保存');
+
+            // 6. 无 DOM 环境调用模态函数防崩溃契约 (Fail-Safe)
+            assert.doesNotThrow(() => {
+                showMemoryLineageModal(freshMacro.id);
+            });
+            assert.doesNotThrow(() => {
+                showHistoricalSliceModal(0);
+            });
 
         } finally {
             Object.assign(mockContext, origCtx);

@@ -4,13 +4,13 @@
  */
 
 import { MODULE_NAME, MEMORY_STATUS, MEMORY_LIFECYCLE, MEMORY_SCOPE } from './config.js';
-import { getState, getSettings, updateSettings, saveSettingsImmediately, updateScene, addMemory, updateMemory, deleteMemory, purgeArchivedMemories, cycleMemoryStatus, cycleMemoryType, exportMemoryData, importMemoryData, reindexAllMemories, onStateChange, getActiveWorldBookInfo, syncMemoryDeltaToWorldInfo, promoteMemoryToWorldInfo, batchUpdate, rollbackScene, restoreSceneSnapshot, getSceneHistory, getContextParticipants } from './state.js';
+import { getState, getSettings, updateSettings, saveSettingsImmediately, updateScene, addMemory, updateMemory, deleteMemory, purgeArchivedMemories, cycleMemoryStatus, cycleMemoryType, exportMemoryData, importMemoryData, reindexAllMemories, onStateChange, getActiveWorldBookInfo, syncMemoryDeltaToWorldInfo, promoteMemoryToWorldInfo, batchUpdate, rollbackScene, restoreSceneSnapshot, getSceneHistory, getContextParticipants, getMemoryLineage } from './state.js';
 import { triggerAsyncDigest, triggerMemoryConsolidation, testCustomApiConnection, triggerBacklogDigest, abortBacklogDigest, isBacklogDigestRunning } from './extractor.js';
 import { testEmbeddingApiConnection } from './semantic.js';
 
 import { API_PRESETS, GAMEPLAY_PRESETS, applyApiPreset, applyGameplayPreset, getContext, escapeHtml, estimateTokens, restoreRecommendedDefaults } from './ui/common.js';
 import { renderMemoryCard } from './ui/cards.js';
-import { showSyncLoreModal, showPromoteLoreModal, showAdvancedSettingsModal, showInjectionInspectorModal } from './ui/modal.js';
+import { showSyncLoreModal, showPromoteLoreModal, showAdvancedSettingsModal, showInjectionInspectorModal, showMemoryLineageModal, showHistoricalSliceModal } from './ui/modal.js';
 import { getLastInjectionSnapshot } from './injector.js';
 import { createFloatingButton, resetBubblePosition, setBubbleState, getBubbleState } from './ui/bubble.js';
 import { createNativeExtensionDrawer, registerExtensionsMenuEntry, renderNativeDrawerContent, importSillyTavernApiConfig } from './ui/drawer.js';
@@ -457,9 +457,14 @@ function renderPanelContent() {
                                         </div>
                                         <div class="pm-history-desc">${escapeHtml(desc)}</div>
                                     </div>
-                                    <button class="pm-history-revert-btn" data-history-idx="${idx}" title="将当前现场快照恢复为本版本">
-                                        <i class="fa-solid fa-rotate-left"></i> 恢复
-                                    </button>
+                                    <div style="display: flex; gap: 4px; align-items: center;">
+                                        <button class="pm-history-slice-btn" data-history-idx="${idx}" title="查看当时现场切片与生效记忆">
+                                            <i class="fa-solid fa-layer-group"></i> 切片
+                                        </button>
+                                        <button class="pm-history-revert-btn" data-history-idx="${idx}" title="将当前现场快照恢复为本版本">
+                                            <i class="fa-solid fa-rotate-left"></i> 恢复
+                                        </button>
+                                    </div>
                                 </div>
                             `;
                         }).reverse().join('')}
@@ -1124,6 +1129,18 @@ function bindPanelEvents(container) {
         });
     });
 
+    // 现场快照时光机：查看该轮次切片 (Historical Slice Replay)
+    container.querySelectorAll('.pm-history-slice-btn').forEach(btn => {
+        btn.addEventListener('click', (e) => {
+            const idx = parseInt(e.currentTarget.getAttribute('data-history-idx'), 10);
+            if (!isNaN(idx)) {
+                showHistoricalSliceModal(idx, () => {
+                    renderHudContent();
+                });
+            }
+        });
+    });
+
     // 添加记忆
     container.querySelector('#pm-add-mem-btn')?.addEventListener('click', () => {
         const contentInput = container.querySelector('#pm-new-mem-content');
@@ -1318,6 +1335,11 @@ function bindPanelEvents(container) {
             } finally {
                 if (promoteBtn) promoteBtn.disabled = false;
             }
+        });
+
+        // P4: 查看记忆演化血缘追溯 (Evolution Lineage)
+        card.querySelector('[data-action="view-lineage"]')?.addEventListener('click', () => {
+            showMemoryLineageModal(id);
         });
     });
 
@@ -1708,6 +1730,9 @@ export {
     showPromoteLoreModal,
     showAdvancedSettingsModal,
     showInjectionInspectorModal,
+    showMemoryLineageModal,
+    showHistoricalSliceModal,
+    getMemoryLineage,
     getLastInjectionSnapshot,
     restoreRecommendedDefaults,
     registerSlashCommands,

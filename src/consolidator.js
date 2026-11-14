@@ -10,7 +10,7 @@
  */
 
 import { MODULE_NAME, MEMORY_TYPES, MEMORY_STATUS, MEMORY_LIFECYCLE, MEMORY_SCOPE } from './config.js';
-import { getState, getSettings, addMemory, setMemoryLifecycle, batchUpdate } from './state.js';
+import { getState, getSettings, addMemory, updateMemory, setMemoryLifecycle, batchUpdate } from './state.js';
 import { getContextParticipants, validateMemoryAcl, normalizeAndValidateMemory } from './acl.js';
 import { executeDigestRequest } from './api.js';
 import { cleanAndParseJson, unwrapJsonPayload } from './parser.js';
@@ -155,7 +155,8 @@ export async function triggerMemoryConsolidation(force = false) {
                     character: item.character,
                     known_by: item.known_by,
                     trigger_keys: item.trigger_keys,
-                    status: MEMORY_STATUS.TRIGGERED
+                    status: MEMORY_STATUS.TRIGGERED,
+                    consolidated_from: item.supersedes
                 }, { participants, context: c });
 
                 if (!preNorm.valid) {
@@ -178,7 +179,7 @@ export async function triggerMemoryConsolidation(force = false) {
                 }
 
                 // 3. 随后入库全新的宏观概括记忆 (此时旧条目已脱离 active，绝不会与新条目发生错误的同库相似冲突融合)
-                // 必须显式携带当前轮次，防止新归并条目被误判为 0 楼层而立即沉睡
+                // 必须显式携带当前轮次与 consolidated_from 演化源血缘
                 const added = addMemory({
                     type: item.type,
                     content: item.content,
@@ -188,13 +189,19 @@ export async function triggerMemoryConsolidation(force = false) {
                     trigger_keys: item.trigger_keys,
                     status: MEMORY_STATUS.TRIGGERED,
                     floor: currentTurn,
-                    last_activated_floor: currentTurn
+                    last_activated_floor: currentTurn,
+                    consolidated_from: [...item.supersedes]
                 }, { participants, context: c });
 
                 // P1 核心原子性修复：若新记忆创建失败，必须主动抛出异常触发 batchUpdate 完整回滚！
                 // 严禁在 addMemory 返回 null 时静默成功，导致旧记忆被置为 superseded 而新记忆丢失！
                 if (!added) {
                     throw new Error(`归并宏观记忆入库失败 (可能未通过数据准入校验)，已触发事务原子回滚，保护 ${item.supersedes.length} 条原始记忆`);
+                }
+
+                // 4. 双向血缘建立：将所有被替代旧记忆的 superseded_by 指向新建的宏观记忆 ID
+                for (const oldId of item.supersedes) {
+                    updateMemory(oldId, { superseded_by: added.id });
                 }
 
                 newCount++;

@@ -10,7 +10,8 @@
  */
 
 import { MEMORY_SCOPE, DEFAULT_SETTINGS } from '../config.js';
-import { getSettings, updateSettings, saveSettingsImmediately, reindexAllMemories } from '../state.js';
+import { getSettings, updateSettings, saveSettingsImmediately, reindexAllMemories, getState, getMemoryLineage } from '../state.js';
+import { getSceneHistory, restoreSceneSnapshot } from '../scene.js';
 import { testEmbeddingApiConnection } from '../semantic.js';
 import { getLastInjectionSnapshot } from '../injector.js';
 import { escapeHtml, GAMEPLAY_PRESETS, applyGameplayPreset } from './common.js';
@@ -961,5 +962,283 @@ export function showInjectionInspectorModal(customSnapshot = null) {
         closeModal();
         showInjectionInspectorModal(freshSnapshot);
         window.toastr?.info?.('已按最新会话状态重新执行注入测算', '持续记忆');
+    });
+}
+
+/**
+ * 弹出指定记忆的演化血缘追溯 (Evolution Lineage) 模态窗口
+ */
+export function showMemoryLineageModal(memoryId) {
+    if (typeof document === 'undefined') return;
+
+    // 清理已有模态框
+    document.querySelectorAll('#pm-lineage-modal').forEach(el => el.remove());
+
+    const lineage = getMemoryLineage(memoryId);
+    if (!lineage || !lineage.memory) {
+        window.toastr?.warning?.('未能检索到该记忆的演化血缘数据', '血缘追溯');
+        return;
+    }
+
+    const mem = lineage.memory;
+    const ancestors = lineage.ancestors || [];
+    const supersededBy = lineage.supersededBy;
+    const successors = lineage.successors || [];
+
+    const formatType = (t) => {
+        if (t === 'statement') return '约定';
+        if (t === 'inference') return '推断';
+        if (t === 'todo') return '待办';
+        return '事实';
+    };
+
+    let ancestorsHtml = '';
+    if (ancestors.length > 0) {
+        ancestorsHtml = `
+            <div class="pm-lineage-section">
+                <div class="pm-lineage-section-title">
+                    <i class="fa-solid fa-seedling" style="color: #10b981;"></i> 
+                    <span>演化前身源细节 (${ancestors.length} 条原始事实已融入当前宏观概括)</span>
+                </div>
+                ${ancestors.map(anc => `
+                    <div class="pm-lineage-card">
+                        <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 3px; font-size: 10px; color: #64748b;">
+                            <span style="font-weight: 600; color: #059669;">[${formatType(anc.type)}] 诞生于第 ${anc.floor || 0} 轮</span>
+                            <span style="background: #e2e8f0; padding: 1px 4px; border-radius: 3px;">已被当前事实取代 (superseded)</span>
+                        </div>
+                        <div style="font-size: 12px; color: #1e293b; line-height: 1.4;">${escapeHtml(anc.content)}</div>
+                        ${Array.isArray(anc.trigger_keys) && anc.trigger_keys.length > 0 ? `
+                            <div style="margin-top: 4px; display: flex; gap: 4px; flex-wrap: wrap;">
+                                ${anc.trigger_keys.map(k => `<span class="pm-key-pill" style="font-size: 10px; padding: 1px 4px;">${escapeHtml(k)}</span>`).join('')}
+                            </div>
+                        ` : ''}
+                    </div>
+                `).join('')}
+            </div>
+            <div class="pm-lineage-arrow">
+                <i class="fa-solid fa-arrow-down"></i> 经长程归并引擎提炼浓缩 (Consolidation) <i class="fa-solid fa-arrow-down"></i>
+            </div>
+        `;
+    }
+
+    let targetCardHtml = `
+        <div class="pm-lineage-section pm-lineage-target">
+            <div class="pm-lineage-section-title">
+                <i class="fa-solid fa-bullseye" style="color: #2563eb;"></i>
+                <span style="font-weight: 700; color: #1e40af;">当前记忆实体 (Target Memory)</span>
+                <span style="font-size: 10px; color: #64748b; margin-left: auto;">ID: ${escapeHtml(mem.id)}</span>
+            </div>
+            <div style="font-size: 13px; font-weight: 500; color: #0f172a; line-height: 1.5; margin-bottom: 6px;">
+                ${escapeHtml(mem.content)}
+            </div>
+            <div style="display: flex; gap: 6px; align-items: center; flex-wrap: wrap; font-size: 11px;">
+                <span class="pm-type-badge pm-type-${mem.type || 'fact'}"><i class="fa-solid fa-file-lines"></i> ${formatType(mem.type)}</span>
+                <span style="background: #e0f2fe; color: #0369a1; padding: 2px 6px; border-radius: 4px; font-size: 10px; font-weight: 500;">
+                    第 ${mem.floor || 0} 轮建立
+                </span>
+                <span style="background: #f1f5f9; color: #475569; padding: 2px 6px; border-radius: 4px; font-size: 10px;">
+                    状态: ${mem.status || 'triggered'} (${mem.lifecycle || 'active'})
+                </span>
+                ${mem.lorebook_ref?.entry_name ? `
+                    <span class="pm-lorebook-tag" style="font-size: 10px;"><i class="fa-solid fa-book-atlas"></i> ${escapeHtml(mem.lorebook_ref.entry_name)}</span>
+                ` : ''}
+            </div>
+        </div>
+    `;
+
+    let successorsHtml = '';
+    if (supersededBy) {
+        successorsHtml = `
+            <div class="pm-lineage-arrow" style="color: #d97706;">
+                <i class="fa-solid fa-arrow-down"></i> 该记忆已被更高层级的宏观事实迭代取代 <i class="fa-solid fa-arrow-down"></i>
+            </div>
+            <div class="pm-lineage-section" style="background: #fffbeb; border-color: #fde68a;">
+                <div class="pm-lineage-section-title">
+                    <i class="fa-solid fa-rotate" style="color: #d97706;"></i>
+                    <span style="font-weight: 700; color: #92400e;">替代此条事实的宏观记忆 (Successor Macro Memory)</span>
+                </div>
+                <div class="pm-lineage-card" style="border-color: #fef08a;">
+                    <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 3px; font-size: 10px; color: #64748b;">
+                        <span style="font-weight: 600; color: #b45309;">[${formatType(supersededBy.type)}] 第 ${supersededBy.floor || 0} 轮归并入库</span>
+                        <span style="color: #92400e; font-weight: 600;">当前活跃事实</span>
+                    </div>
+                    <div style="font-size: 12px; color: #1e293b; line-height: 1.4;">${escapeHtml(supersededBy.content)}</div>
+                </div>
+            </div>
+        `;
+    } else if (successors.length > 0) {
+        successorsHtml = `
+            <div class="pm-lineage-arrow" style="color: #0284c7;">
+                <i class="fa-solid fa-arrow-down"></i> 该记忆被下游宏观概括引用 <i class="fa-solid fa-arrow-down"></i>
+            </div>
+            <div class="pm-lineage-section">
+                <div class="pm-lineage-section-title">
+                    <i class="fa-solid fa-code-merge" style="color: #0284c7;"></i>
+                    <span>下游宏观提炼事实 (${successors.length} 条)</span>
+                </div>
+                ${successors.map(sc => `
+                    <div class="pm-lineage-card">
+                        <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 3px; font-size: 10px; color: #64748b;">
+                            <span style="font-weight: 600; color: #0369a1;">[${formatType(sc.type)}] 第 ${sc.floor || 0} 轮</span>
+                        </div>
+                        <div style="font-size: 12px; color: #1e293b; line-height: 1.4;">${escapeHtml(sc.content)}</div>
+                    </div>
+                `).join('')}
+            </div>
+        `;
+    }
+
+    const modalHtml = `
+        <div class="pm-modal-backdrop" id="pm-lineage-modal">
+            <div class="pm-modal-card" style="max-width: 580px; width: 92vw; max-height: 85vh; display: flex; flex-direction: column;">
+                <div class="pm-modal-header">
+                    <span style="font-weight: 700; color: #4338ca; font-size: 13px; display: flex; align-items: center; gap: 6px;">
+                        <i class="fa-solid fa-code-branch"></i> 记忆演化血缘追溯 (Evolution Lineage)
+                    </span>
+                    <button class="pm-modal-close" id="pm-lineage-modal-close" style="background: none; border: none; font-size: 18px; cursor: pointer; color: #94a3b8; line-height: 1;">&times;</button>
+                </div>
+                <div class="pm-modal-body" style="padding: 12px 0; overflow-y: auto; flex: 1;">
+                    <div style="font-size: 11px; color: #64748b; margin-bottom: 10px; line-height: 1.4;">
+                        本视图展示该记忆的前身源起与演化关系。长程归并引擎提炼宏观事实时，将自动记录双向演化血缘，确保任何宏观总结都可查证原始细节出处。
+                    </div>
+                    ${ancestorsHtml}
+                    ${targetCardHtml}
+                    ${successorsHtml}
+                </div>
+                <div class="pm-modal-footer" style="display: flex; justify-content: flex-end; gap: 8px; margin-top: 10px; padding-top: 8px; border-top: 1px solid #e2e8f0;">
+                    <button class="pm-btn-secondary" id="pm-lineage-modal-done" style="padding: 5px 16px; font-size: 12px;">关闭</button>
+                </div>
+            </div>
+        </div>
+    `;
+
+    document.body.insertAdjacentHTML('beforeend', modalHtml);
+    const modalEl = document.getElementById('pm-lineage-modal');
+    const closeModal = () => modalEl?.remove();
+
+    modalEl.querySelector('#pm-lineage-modal-close')?.addEventListener('click', closeModal);
+    modalEl.querySelector('#pm-lineage-modal-done')?.addEventListener('click', closeModal);
+}
+
+/**
+ * 弹出指定历史轮次的现场切片与生效记忆重放 (Historical Slice Replay) 模态窗口
+ */
+export function showHistoricalSliceModal(historyIndex, onRestored) {
+    if (typeof document === 'undefined') return;
+
+    // 清理已有模态框
+    document.querySelectorAll('#pm-history-slice-modal').forEach(el => el.remove());
+
+    const sceneHistory = getSceneHistory();
+    const item = sceneHistory[historyIndex];
+    if (!item) {
+        window.toastr?.warning?.('指定的快照记录已不存在', '切片重放');
+        return;
+    }
+
+    const sc = item.scene || {};
+    const sliceFloor = item.floor || 0;
+    const timeStr = item.timestamp ? new Date(item.timestamp).toLocaleString() : '未知时间';
+
+    // 筛选在该切片楼层时已存在且未被证伪的记忆
+    const s = getState();
+    const sliceMemories = (s.memories || []).filter(m => {
+        const memFloor = Number.isInteger(m.floor) ? m.floor : 0;
+        return memFloor <= sliceFloor && m.lifecycle !== 'refuted';
+    });
+
+    const charsStr = Array.isArray(sc.in_scene_characters)
+        ? (sc.in_scene_characters.length === 0 ? '无 (无人/空镜)' : sc.in_scene_characters.join(', '))
+        : '未限定 (自动)';
+
+    const modalHtml = `
+        <div class="pm-modal-backdrop" id="pm-history-slice-modal">
+            <div class="pm-modal-card" style="max-width: 600px; width: 92vw; max-height: 85vh; display: flex; flex-direction: column;">
+                <div class="pm-modal-header">
+                    <span style="font-weight: 700; color: #0284c7; font-size: 13px; display: flex; align-items: center; gap: 6px;">
+                        <i class="fa-solid fa-layer-group"></i> 历史时光切片重放 (第 ${sliceFloor} 轮)
+                    </span>
+                    <button class="pm-modal-close" id="pm-slice-modal-close" style="background: none; border: none; font-size: 18px; cursor: pointer; color: #94a3b8; line-height: 1;">&times;</button>
+                </div>
+                <div class="pm-modal-body" style="padding: 12px 0; overflow-y: auto; flex: 1;">
+                    <div style="font-size: 11px; color: #64748b; margin-bottom: 10px; display: flex; justify-content: space-between; align-items: center;">
+                        <span>快照保存原因: <b style="color: #334155;">${escapeHtml(item.reason || '自动保存')}</b></span>
+                        <span>时间: ${escapeHtml(timeStr)}</span>
+                    </div>
+
+                    <!-- 现场状态切片 (Scene Snapshot) -->
+                    <div style="background: #f0fdf4; border: 1px solid #bbf7d0; border-radius: 6px; padding: 10px; margin-bottom: 12px;">
+                        <div style="font-size: 12px; font-weight: 700; color: #166534; margin-bottom: 6px; display: flex; align-items: center; gap: 6px;">
+                            <i class="fa-solid fa-map-location-dot"></i> 当时 L0 实时现场状态 (Scene State)
+                        </div>
+                        <div style="display: grid; grid-template-columns: 1fr 1fr; gap: 6px; font-size: 11px; color: #1e293b;">
+                            <div><b>📍 地点:</b> ${escapeHtml(sc.location || '未记录')}</div>
+                            <div><b>🕒 时间:</b> ${escapeHtml(sc.time || '未记录')}</div>
+                            <div><b>👥 在场角色:</b> ${escapeHtml(charsStr)}</div>
+                            <div><b>⚡ 局势张力:</b> ${escapeHtml(sc.tension || '正常')}</div>
+                        </div>
+                        ${sc.action ? `
+                            <div style="margin-top: 6px; font-size: 11px; color: #1e293b;">
+                                <b>🏃 正在进行的动作:</b> ${escapeHtml(sc.action)}
+                            </div>
+                        ` : ''}
+                        ${sc.unresolved ? `
+                            <div style="margin-top: 4px; font-size: 11px; color: #854d0e; background: #fef9c3; padding: 4px 6px; border-radius: 4px;">
+                                <b>❓ 未决悬念:</b> ${escapeHtml(sc.unresolved)}
+                            </div>
+                        ` : ''}
+                    </div>
+
+                    <!-- 该轮次历史记忆池 (Active Memories at that Floor) -->
+                    <div style="background: #f8fafc; border: 1px solid #e2e8f0; border-radius: 6px; padding: 10px;">
+                        <div style="font-size: 12px; font-weight: 700; color: #334155; margin-bottom: 6px; display: flex; justify-content: space-between; align-items: center;">
+                            <span><i class="fa-solid fa-clock-rotate-left"></i> 当时记忆状态库 (截至第 ${sliceFloor} 轮共 ${sliceMemories.length} 条)</span>
+                            <span style="font-size: 10px; color: #64748b; font-weight: normal;">按当时轮次过滤</span>
+                        </div>
+                        ${sliceMemories.length === 0 ? `
+                            <div style="font-size: 11px; color: #94a3b8; text-align: center; padding: 8px;">该轮次前暂无记录记忆</div>
+                        ` : `
+                            <div style="max-height: 180px; overflow-y: auto; display: flex; flex-direction: column; gap: 4px;">
+                                ${sliceMemories.map(m => `
+                                    <div style="background: #ffffff; border: 1px solid #e2e8f0; border-radius: 4px; padding: 5px 8px; font-size: 11px;">
+                                        <div style="display: flex; justify-content: space-between; margin-bottom: 2px;">
+                                            <span class="pm-type-badge pm-type-${m.type || 'fact'}" style="font-size: 9px; padding: 1px 4px;">${escapeHtml(m.type || 'fact')}</span>
+                                            <span style="font-size: 9px; color: #64748b;">楼层 ${m.floor || 0}</span>
+                                        </div>
+                                        <div style="color: #1e293b; line-height: 1.3;">${escapeHtml(m.content)}</div>
+                                    </div>
+                                `).join('')}
+                            </div>
+                        `}
+                    </div>
+                </div>
+                <div class="pm-modal-footer" style="display: flex; justify-content: space-between; align-items: center; margin-top: 10px; padding-top: 8px; border-top: 1px solid #e2e8f0;">
+                    <button class="pm-btn-primary" id="pm-slice-restore-btn" style="padding: 5px 14px; font-size: 12px; background: #0284c7; border-color: #0369a1;">
+                        <i class="fa-solid fa-rotate-left"></i> 一键恢复现场快照至此切片
+                    </button>
+                    <button class="pm-btn-secondary" id="pm-slice-modal-close-btn" style="padding: 5px 14px; font-size: 12px;">关闭</button>
+                </div>
+            </div>
+        </div>
+    `;
+
+    document.body.insertAdjacentHTML('beforeend', modalHtml);
+    const modalEl = document.getElementById('pm-history-slice-modal');
+    const closeModal = () => modalEl?.remove();
+
+    modalEl.querySelector('#pm-slice-modal-close')?.addEventListener('click', closeModal);
+    modalEl.querySelector('#pm-slice-modal-close-btn')?.addEventListener('click', closeModal);
+
+    modalEl.querySelector('#pm-slice-restore-btn')?.addEventListener('click', () => {
+        const res = restoreSceneSnapshot(historyIndex);
+        if (res.success) {
+            window.toastr?.success?.(`已成功恢复至第 ${sliceFloor} 轮现场快照！`, '快照时光机');
+            closeModal();
+            if (typeof onRestored === 'function') {
+                onRestored(res);
+            }
+        } else {
+            window.toastr?.warning?.(res.message || '恢复快照失败', '快照时光机');
+        }
     });
 }

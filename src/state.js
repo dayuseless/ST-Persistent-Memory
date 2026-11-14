@@ -551,6 +551,9 @@ export function addMemory(item, options = {}) {
         lorebook_ref: sanitizeLorebookRef(item.lorebook_ref),
         floor: item.floor || 0,
         last_activated_floor: item.floor || 0,
+        consolidated_from: Array.isArray(item.consolidated_from) ? item.consolidated_from.filter(k => typeof k === 'string' && k.trim()).map(k => k.trim()) : undefined,
+        superseded_by: (typeof item.superseded_by === 'string' && item.superseded_by.trim()) ? item.superseded_by.trim() : undefined,
+        last_woken_floor: Number.isInteger(item.last_woken_floor) ? item.last_woken_floor : undefined,
         created_at: new Date().toISOString(),
         updated_at: new Date().toISOString()
     };
@@ -617,6 +620,22 @@ export function updateMemory(id, patch) {
 
     if (patch.synced_at !== undefined) {
         updated.synced_at = typeof patch.synced_at === 'string' ? patch.synced_at : null;
+    }
+
+    if (patch.consolidated_from !== undefined) {
+        updated.consolidated_from = Array.isArray(patch.consolidated_from)
+            ? patch.consolidated_from.filter(k => typeof k === 'string' && k.trim()).map(k => k.trim())
+            : null;
+    }
+
+    if (patch.superseded_by !== undefined) {
+        updated.superseded_by = (typeof patch.superseded_by === 'string' && patch.superseded_by.trim())
+            ? patch.superseded_by.trim()
+            : null;
+    }
+
+    if (patch.last_woken_floor !== undefined) {
+        updated.last_woken_floor = Number.isInteger(patch.last_woken_floor) ? patch.last_woken_floor : null;
     }
 
     if (patch.content !== undefined || patch.trigger_keys !== undefined || patch.type !== undefined || patch.lorebook_ref !== undefined) {
@@ -721,6 +740,41 @@ export function setMemoryLifecycle(id, newLifecycle) {
         lifecycle: newLifecycle,
         status: newLifecycle === MEMORY_LIFECYCLE.ACTIVE ? MEMORY_STATUS.TRIGGERED : MEMORY_STATUS.ARCHIVED
     });
+}
+
+/**
+ * 获取指定记忆的演化血缘追溯 (Memory Evolution Lineage)
+ * 包括：
+ * 1. memory: 目标记忆本体
+ * 2. ancestors: 该记忆由哪些历史原始条目归并提炼而来 (consolidated_from)
+ * 3. supersededBy: 该记忆被哪条后续宏观事实所取代 (superseded_by)
+ * 4. successors: 下游将当前记忆列为归并源的宏观条目
+ */
+export function getMemoryLineage(id) {
+    if (!id || typeof id !== 'string') return null;
+    const s = getState();
+    const target = (s.memories || []).find(m => m.id === id);
+    if (!target) return null;
+
+    const ancestors = (Array.isArray(target.consolidated_from) ? target.consolidated_from : [])
+        .map(aid => (s.memories || []).find(m => m.id === aid))
+        .filter(Boolean);
+
+    let supersededBy = null;
+    if (target.superseded_by) {
+        supersededBy = (s.memories || []).find(m => m.id === target.superseded_by) || null;
+    }
+
+    const successors = (s.memories || []).filter(m =>
+        Array.isArray(m.consolidated_from) && m.consolidated_from.includes(id)
+    );
+
+    return {
+        memory: target,
+        ancestors,
+        supersededBy,
+        successors
+    };
 }
 
 export function cycleMemoryStatus(id) {

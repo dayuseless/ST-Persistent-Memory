@@ -65,6 +65,21 @@ export function renderMemoryCard(mem, selectedMemoryIds = new Set(), currentFloo
         wakeBadge = `<span class="pm-wake-badge" title="刚刚由剧情高匹配度自动从休眠中唤醒 (第 ${mem.last_woken_floor} 轮)"><i class="fa-solid fa-sun"></i> 刚唤醒</span>`;
     }
 
+    let lineageBtn = '';
+    const hasAncestors = Array.isArray(mem.consolidated_from) && mem.consolidated_from.length > 0;
+    const isSuperseded = Boolean(mem.superseded_by);
+    if (hasAncestors || isSuperseded) {
+        const lineageCount = hasAncestors ? mem.consolidated_from.length : 1;
+        const lineageTitle = hasAncestors
+            ? `该记忆由 ${lineageCount} 条历史前身记忆归并演化而来，点击追溯血缘前世今生`
+            : `该记忆已被后续宏观事实迭代取代，点击追溯血缘`;
+        lineageBtn = `
+            <button class="pm-lineage-btn" data-action="view-lineage" data-id="${escapeHtml(mem.id)}" title="${escapeHtml(lineageTitle)}">
+                <i class="fa-solid fa-code-branch"></i> 血缘追溯${hasAncestors ? ` (${lineageCount})` : ''}
+            </button>
+        `;
+    }
+
     const keysHtml = (mem.trigger_keys || []).map(k => `<span class="pm-key-pill">${escapeHtml(k)}</span>`).join('');
 
     let typeIcon = 'fa-file-lines';
@@ -113,6 +128,7 @@ export function renderMemoryCard(mem, selectedMemoryIds = new Set(), currentFloo
             <div class="pm-card-bottom-row" style="display: flex; justify-content: space-between; align-items: center; margin-top: 4px;">
                 ${keysHtml ? `<div class="pm-card-keys" data-role="view-keys">${keysHtml}</div>` : '<div></div>'}
                 <div style="display: flex; align-items: center; gap: 4px; flex-wrap: wrap;">
+                    ${lineageBtn}
                     ${mem.lorebook_ref && mem.lorebook_ref.entry_name ? `
                         <span class="pm-lorebook-tag" title="关联世界书: ${escapeHtml(mem.lorebook_ref.file_name || mem.lorebook_ref.book || '')} [UID: ${escapeHtml(String(mem.lorebook_ref.entry_uid ?? ''))}]">
                             <i class="fa-solid fa-book-atlas"></i> ${escapeHtml(mem.lorebook_ref.entry_name)}

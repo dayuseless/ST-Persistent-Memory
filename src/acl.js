@@ -343,6 +343,16 @@ export function normalizeAndValidateMemory(raw, options = {}) {
         updated_at: new Date().toISOString()
     };
 
+    if (Array.isArray(raw.consolidated_from)) {
+        normalized.consolidated_from = raw.consolidated_from.filter(id => typeof id === 'string' && id.trim()).map(id => id.trim());
+    }
+    if (typeof raw.superseded_by === 'string' && raw.superseded_by.trim()) {
+        normalized.superseded_by = raw.superseded_by.trim();
+    }
+    if (Number.isInteger(raw.last_woken_floor)) {
+        normalized.last_woken_floor = raw.last_woken_floor;
+    }
+
     return {
         valid: true,
         memory: normalized
