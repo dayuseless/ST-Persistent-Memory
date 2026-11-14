@@ -6,7 +6,7 @@
   "js": "index.js",
   "css": "style.css",
   "author": "dayuseless & community",
-  "version": "0.1.37",
+  "version": "0.1.38",
   "auto_update": false,
   "description": "基于现场快照（L0 Resume）、触发式记忆路由与角色在场状态机的持续性记忆系统。"
 }

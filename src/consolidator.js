@@ -6,7 +6,7 @@
  * 3. 严格校验归并结果 Schema 与 ACL 权限边界，防跨组拼凑、越权提权与幽灵替代
  * 4. 原子批量落盘：将旧细节置为 superseded，入库全新宏观事实
  *
- * @version 0.1.37
+ * @version 0.1.38
  */
 
 import { MODULE_NAME, MEMORY_TYPES, MEMORY_STATUS, MEMORY_LIFECYCLE, MEMORY_SCOPE } from './config.js';
@@ -15,9 +15,10 @@ import { getContextParticipants, validateMemoryAcl } from './acl.js';
 import { executeDigestRequest } from './api.js';
 import { cleanAndParseJson, unwrapJsonPayload } from './parser.js';
 import { validateConsolidatedPayload, sanitizeTriggerKeys } from './schema.js';
+import { buildConsolidationPrompt } from './prompt.js';
 import { getChatTurnCount, getChatIdentifier } from './extractor.js';
 
-export { validateConsolidatedPayload };
+export { validateConsolidatedPayload, buildConsolidationPrompt };
 
 function getContext() {
     return window.SillyTavern?.getContext?.() ?? null;
@@ -108,32 +109,7 @@ export async function triggerMemoryConsolidation(force = false) {
             });
         });
 
-        const prompt = `你是一个严谨的角色扮演剧情记忆长程归并专家。
-你的任务是将多条零散、细节性或已被新进展涵盖的历史事件，归纳浓缩为高阶、宏观的概括性长期事实记忆。
-
-### 核心归并守则：
-1. 【严格同组内归并】：只能在同一个【分组】内部归并记忆，绝不可跨越分组组合。新记忆必须保留该分组完全相同的 scope、character 与 known_by。
-2. 【宏观浓缩】：保留剧情关键因果与长期结果（如“双方在黑石林爆发激战并两败俱伤，最终撤回营地休整”），略去动作琐屑。每条归并事实必须在一句话内精炼表达（≤80字）。
-3. 【指明被替代条目 (supersedes)】：每条新归并必须在 supersedes 数组中明确列出被其涵盖替代的旧记忆 ID（至少 2 个旧 ID）。这些旧记忆将被标为 superseded (已被迭代)，从而退出日常提示词注入。
-4. 【无合适浓缩时输出空数组】：若某分组内条目各自独立、互不相关或无法概括，不要强行凑合，consolidated 输出空数组 []。
-
-待归并的记忆分组：
-${groupsPromptText}
-
-请直接输出且只输出一个合法的 JSON 纯文本对象（不要 markdown 标记，不要多余解释），格式如下：
-{
-  "consolidated": [
-    {
-      "content": "归纳后的一句话宏观事实（≤80字）",
-      "type": "fact",
-      "scope": "与原分组一致",
-      "character": "与原分组一致",
-      "known_by": ["与原分组一致"],
-      "trigger_keys": ["核心词1", "核心词2"],
-      "supersedes": ["旧ID1", "旧ID2"]
-    }
-  ]
-}`;
+        const prompt = buildConsolidationPrompt({ groupsPromptText });
 
         const response = await executeDigestRequest(c, prompt, settings);
         if (!response) {

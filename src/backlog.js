@@ -7,7 +7,7 @@
  * 4. 会话隔离检查，防止中途会话切换导致的数据串线落盘
  * 5. 批次消化后自动触发未激活记忆沉睡巡检及链式长程宏观归并
  *
- * @version 0.1.37
+ * @version 0.1.38
  */
 
 import { MODULE_NAME, MEMORY_TYPES, MEMORY_STATUS, MEMORY_LIFECYCLE, MEMORY_SCOPE } from './config.js';
@@ -20,6 +20,7 @@ import {
     isQuietDigestPayload
 } from './parser.js';
 import { validateExtractedPayload } from './schema.js';
+import { buildBacklogDigestPrompt } from './prompt.js';
 import {
     filterMemoriesForDigest,
     applyExtractedData,
@@ -226,65 +227,18 @@ export async function triggerBacklogDigest(options = {}) {
             const maxSceneTok = Math.max(50, Number(settings?.maxSceneTokens) || 150);
             const maxTotalTok = Math.max(100, Number(settings?.maxTotalMemoryTokens) || 450);
 
-            const actionGuidance = maxSceneTok >= 220
-                ? `当前正在进行的具体可观察动作与细节（当前现场快照预算充裕约 ${maxSceneTok} Tok，请详尽生动描写现场动态与人物动作细节，约 ${Math.min(250, Math.floor(maxSceneTok * 1.2))} 字；如交谈已结束请填空串 \"\"）`
-                : `当前正在进行的具体可观察动作`;
-
-            const memContentGuidance = maxTotalTok >= 800
-                ? `完整准确的一句话事实、承诺或推断（当前总预算充裕约 ${maxTotalTok} Tok，允许较详尽记录，≤80字）`
-                : `精炼的一句话事实或约定（≤40字）`;
-
-            const digestPrompt = `你是一个严格遵循“事实分级与防幻觉纪律”的持续性记忆系统提炼专家。
-你的任务是基于角色扮演长程历史中的阶段片段（第 ${i + 1}/${batches.length} 阶段），递进更新【现场快照 (Scene State)】，并提炼出值得沉淀为长期记忆的【关键信息】。
-
-### 核心底线：
-1. 【事实与推测严格解耦】：亲口承诺记为 statement，当下推测心境记为 inference，即时待办记为 todo，物理经历记为 fact。
-2. 【严禁脑补】：仅提炼文本明确表达的事实；平稳无新进展时 new_memories 输出空数组 []。
-3. 【生命周期精准流转】：发现此前已履约、迭代或被证伪的记忆，在 lifecycle_updates 中流转为 completed / superseded / refuted。
-4. 【知情范围隔离】：明确区分 character 私知、shared 共享 (列全 known_by) 与 world 公共。
-5. 【世界书动态关联】：若推进或改变了已知世界书条目设定，添加 lorebook_ref。
-6. 【严格标准 JSON 与双引号防破坏】：输出必须是严格合法的标准 JSON，不得有末尾多余逗号。content、action 等字符串内部如果出现角色台词或对话引用，务必使用中文全角引号（“...”）或反斜杠转义（\"），严禁输出未转义的双引号破坏 JSON 语法结构。
-
-【上一阶段现场状态】：
-${currentScene}
-${activeWbSection}
-【已有活跃记忆库】：
-${activeMemList}
-
-【本阶段对话记录 (第 ${batch.start + 1}~${batch.end} 条消息)】：
-=== BEGIN UNTRUSTED DIALOGUE TRACE ===
-${conversationText}
-=== END UNTRUSTED DIALOGUE TRACE ===
-
-请直接输出且只输出一个合法的 JSON 纯文本对象（不要 markdown 标记，不要多余解释），格式如下：
-{
-  "scene": {
-    "location": "当前地点",
-    "time": "时间/天气",
-    "action": "${actionGuidance}",
-    "tension": "当下的心理张力或气氛",
-    "unresolved": "当下悬而未决的冲突",
-    "in_scene_characters": ["在场角色A", "在场角色B"]
-  },
-  "new_memories": [
-    {
-      "type": "fact 或 statement 或 inference 或 todo",
-      "content": "${memContentGuidance}",
-      "trigger_keys": ["实体词1", "实体词2"],
-      "character": "关联角色名或留空",
-      "scope": "character 或 shared 或 world",
-      "known_by": ["知情角色A", "知情角色B"],
-      "lorebook_ref": null,
-      "status": "triggered"
-    }
-  ],
-  "lifecycle_updates": [
-    {
-      "id": "已有记忆ID",
-      "lifecycle": "completed 或 superseded 或 refuted"
-    }
-  ]
-}`;
+            const digestPrompt = buildBacklogDigestPrompt({
+                currentScene,
+                activeWbSection,
+                activeMemList,
+                conversationText,
+                maxSceneTokens: maxSceneTok,
+                maxTotalMemoryTokens: maxTotalTok,
+                batchIndex: i,
+                totalBatches: batches.length,
+                batchStart: batch.start,
+                batchEnd: batch.end
+            });
 
             let response = null;
             try {

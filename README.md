@@ -1,6 +1,6 @@
 # SillyTavern 持续记忆插件 (ST-Persistent-Memory)
 
-[![Version](https://img.shields.io/badge/version-v0.1.37-blue.svg)](https://github.com/dayuseless/ST-Persistent-Memory)
+[![Version](https://img.shields.io/badge/version-v0.1.38-blue.svg)](https://github.com/dayuseless/ST-Persistent-Memory)
 [![SillyTavern](https://img.shields.io/badge/SillyTavern-1.12.0+-purple.svg)](https://github.com/SillyTavern/SillyTavern)
 [![License](https://img.shields.io/badge/license-MIT-green.svg)](LICENSE)
 
@@ -77,7 +77,7 @@
 
 ### 方式二：手动离线包安装
 
-1. 从 [Releases 页面](https://github.com/dayuseless/ST-Persistent-Memory/releases) 下载 `ST-Persistent-Memory-v0.1.37.zip`。
+1. 从 [Releases 页面](https://github.com/dayuseless/ST-Persistent-Memory/releases) 下载 `ST-Persistent-Memory-v0.1.38.zip`。
 2. 解压到 SillyTavern 的扩展目录中：
    ```text
    SillyTavern/public/scripts/extensions/third-party/ST-Persistent-Memory/
@@ -158,6 +158,22 @@ window.__persistentMemory.digestNow();
 ---
 
 ## 📝 版本历史
+
+### v0.1.38 (提示词模板与元指令编排解耦：构建独立 prompt.js 模块)
+
+- **提示词模板与元指令编排模块解耦 (`src/prompt.js`)**：
+  - 将近 200 行分散在 `src/extractor.js`、`src/backlog.js` 与 `src/consolidator.js` 中的大模型提示词模板、对话安全隔离边界与引导词函数彻底抽离，独立封装为 `src/prompt.js` 模块；
+  - 模块统一收敛五大核心能力：
+    1. `buildDigestPrompt`：近景增量异步提炼提示词模板组装（自包含事实分级、防幻觉纪律、终态约束与格式指引）；
+    2. `buildBacklogDigestPrompt`：长程历史全量回溯分批提炼提示词组装（动态感知当前批次进度与切片范围）；
+    3. `buildConsolidationPrompt`：高阶记忆宏观归并提示词模板组装（跨条目浓缩与同组权限守则）；
+    4. `getActionGuidance` / `getMemoryContentGuidance`：根据当前现场快照与总预算 Token 上限动态自适应生成生动动作与记忆长度的详略引导词；
+    5. `SYNC_TAG_REGEX`、`UNTRUSTED_TRACE_HEADER`、`UNTRUSTED_SECURITY_NOTICE`：统一伴随标签匹配与用户输入不可信文学对话安全隔离区常量；
+  - 核心提炼引擎 `src/extractor.js` 降至 450 行以内，回溯管道 `src/backlog.js` 瘦身 60 行，各业务管道专注于任务生命周期与请求调度。
+- **100% 同源透明向后兼容**：
+  - `src/extractor.js` 完整保留代理重导出（`export { buildDigestPrompt, buildBacklogDigestPrompt, buildConsolidationPrompt, getActionGuidance, getMemoryContentGuidance, SYNC_TAG_REGEX, ... } from './prompt.js'`），确保既有外部扩展与单元测试零破坏无感迁移。
+- **测试矩阵扩充至 98 项 (98/98 全绿通过)**：
+  - 新增 **T98**：全面覆盖 `src/prompt.js` 核心模板组装、Token 预算动态动作与记忆引导词弹性扩展、安全隔离区包裹、伴随标签正则提取与同源重导出一致性测试。
 
 ### v0.1.37 (数据模式校验与防线准入网关解耦：构建独立 schema.js 模块)
 

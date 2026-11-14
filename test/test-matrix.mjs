@@ -133,6 +133,12 @@ import {
     getContextParticipants,
     sanitizeTriggerKeys,
     MODEL_ALLOWED_LIFECYCLES,
+    SYNC_TAG_REGEX,
+    getActionGuidance,
+    getMemoryContentGuidance,
+    buildDigestPrompt,
+    buildBacklogDigestPrompt,
+    buildConsolidationPrompt,
     applyExtractedData
 } from '../src/extractor.js';
 
@@ -150,6 +156,18 @@ import {
     sanitizeTriggerKeys as schemaSanitizeTriggerKeys,
     MODEL_ALLOWED_LIFECYCLES as schemaModelAllowedLifecycles
 } from '../src/schema.js';
+
+import {
+    SYNC_TAG_REGEX as promptSyncTagRegex,
+    UNTRUSTED_TRACE_HEADER as promptUntrustedTraceHeader,
+    UNTRUSTED_TRACE_FOOTER as promptUntrustedTraceFooter,
+    UNTRUSTED_SECURITY_NOTICE as promptUntrustedSecurityNotice,
+    getActionGuidance as promptGetActionGuidance,
+    getMemoryContentGuidance as promptGetMemoryContentGuidance,
+    buildDigestPrompt as promptBuildDigestPrompt,
+    buildBacklogDigestPrompt as promptBuildBacklogDigestPrompt,
+    buildConsolidationPrompt as promptBuildConsolidationPrompt
+} from '../src/prompt.js';
 
 import {
     buildConsolidationCandidateGroups as consolidatorBuildGroups,
@@ -3052,27 +3070,27 @@ Intermediate analysis details...
     });
 
     // ─────────────────────────────────────────────────────────────
-    // T71: 全工程版本标识严格一致性核验 (0.1.37)
+    // T71: 全工程版本标识严格一致性核验 (0.1.38)
     // ─────────────────────────────────────────────────────────────
-    test('T71: 全工程版本标识严格一致性核验 (manifest, config, index 与各模块头部统一为 0.1.37)', () => {
+    test('T71: 全工程版本标识严格一致性核验 (manifest, config, index 与各模块头部统一为 0.1.38)', () => {
         const currentFile = fileURLToPath(import.meta.url);
         const rootDir = path.resolve(path.dirname(currentFile), '../');
 
         // 1. manifest.json
         const manifestPath = path.join(rootDir, 'manifest.json');
         const manifest = JSON.parse(fs.readFileSync(manifestPath, 'utf8'));
-        assert.strictEqual(manifest.version, '0.1.37', 'manifest.json 版本号应为 0.1.37');
+        assert.strictEqual(manifest.version, '0.1.38', 'manifest.json 版本号应为 0.1.38');
 
         // 2. src/config.js
-        assert.strictEqual(EXTENSION_VERSION, '0.1.37', 'config.js EXTENSION_VERSION 应为 0.1.37');
+        assert.strictEqual(EXTENSION_VERSION, '0.1.38', 'config.js EXTENSION_VERSION 应为 0.1.38');
 
         // 3. index.js
         const indexPath = path.join(rootDir, 'index.js');
         const indexContent = fs.readFileSync(indexPath, 'utf8');
-        assert.ok(indexContent.includes('v0.1.37'), 'index.js 头部必须标注 v0.1.37');
-        assert.ok(!indexContent.includes('v0.1.35'), 'index.js 严禁残留旧版本 v0.1.35 版本头');
+        assert.ok(indexContent.includes('v0.1.38'), 'index.js 头部必须标注 v0.1.38');
+        assert.ok(!indexContent.includes('v0.1.36'), 'index.js 严禁残留旧版本 v0.1.36 版本头');
 
-        // 4. 各核心模块头部注释版本检查 (14 个核心模块)
+        // 4. 各核心模块头部注释版本检查 (15 个核心模块)
         const checkModules = [
             'src/acl.js',
             'src/api.js',
@@ -3085,6 +3103,7 @@ Intermediate analysis details...
             'src/extractor.js',
             'src/parser.js',
             'src/schema.js',
+            'src/prompt.js',
             'src/injector.js',
             'src/semantic.js',
             'src/ui.js'
@@ -3095,12 +3114,12 @@ Intermediate analysis details...
             const content = fs.readFileSync(filePath, 'utf8');
             const first10Lines = content.split('\n').slice(0, 10).join('\n');
             assert.ok(
-                first10Lines.includes('v0.1.37') || first10Lines.includes('0.1.37'),
-                `${relPath} 头部注释必须包含 0.1.37 版本标识`
+                first10Lines.includes('v0.1.38') || first10Lines.includes('0.1.38'),
+                `${relPath} 头部注释必须包含 0.1.38 版本标识`
             );
             assert.ok(
-                !first10Lines.includes('0.1.35') && !first10Lines.includes('v0.1.35'),
-                `${relPath} 头部注释严禁残留旧版本 0.1.35`
+                !first10Lines.includes('0.1.36') && !first10Lines.includes('v0.1.36'),
+                `${relPath} 头部注释严禁残留旧版本 0.1.36`
             );
         }
     });
@@ -4261,6 +4280,96 @@ Intermediate analysis details...
         assert.ok(!sanitized.includes('一个词汇太长了超过十五个字符将被丢弃'));
         assert.ok(sanitized.length <= 5, '最多保留 5 个有效触发词');
         assert.strictEqual(sanitized[0], '有效词汇一');
+    });
+
+    // ─────────────────────────────────────────────────────────────
+    // T98: 提示词模板与元指令编排解耦契约与极端边界测试 (src/prompt.js ↔ src/extractor.js ↔ src/backlog.js ↔ src/consolidator.js)
+    // ─────────────────────────────────────────────────────────────
+    test('T98: 提示词模板与元指令编排解耦契约与极端边界测试 (src/prompt.js ↔ src/extractor.js ↔ src/backlog.js ↔ src/consolidator.js)', () => {
+        // 1. 同源引用契约验证 (extractor.js 与 consolidator.js 透明重导出必须严格全等于 prompt.js 对应导出)
+        assert.strictEqual(buildDigestPrompt, promptBuildDigestPrompt, 'buildDigestPrompt 必须同源全等');
+        assert.strictEqual(buildBacklogDigestPrompt, promptBuildBacklogDigestPrompt, 'buildBacklogDigestPrompt 必须同源全等');
+        assert.strictEqual(buildConsolidationPrompt, promptBuildConsolidationPrompt, 'buildConsolidationPrompt 必须同源全等');
+        assert.strictEqual(getActionGuidance, promptGetActionGuidance, 'getActionGuidance 必须同源全等');
+        assert.strictEqual(getMemoryContentGuidance, promptGetMemoryContentGuidance, 'getMemoryContentGuidance 必须同源全等');
+        assert.strictEqual(SYNC_TAG_REGEX.source, promptSyncTagRegex.source, 'SYNC_TAG_REGEX 正则源文本必须同源一致');
+
+        // 2. 动作与记忆详略引导词自适应弹性测试
+        // 2.1 快照预算在 150 Tok 默认值时
+        const actionLow = promptGetActionGuidance(150);
+        assert.ok(actionLow.includes('具体可观察动作'));
+        assert.ok(!actionLow.includes('预算充裕约'));
+
+        // 2.2 快照预算提升到 260 Tok 时
+        const actionHigh = promptGetActionGuidance(260);
+        assert.ok(actionHigh.includes('当前现场快照预算充裕约 260 Tok'));
+        assert.ok(actionHigh.includes('详尽生动描写现场动态与人物动作细节'));
+
+        // 2.3 记忆总预算在 450 Tok 默认值时
+        const memLow = promptGetMemoryContentGuidance(450);
+        assert.ok(memLow.includes('≤40字'));
+        assert.ok(!memLow.includes('允许较详尽记录'));
+
+        // 2.4 记忆总预算提升到 900 Tok 时
+        const memHigh = promptGetMemoryContentGuidance(900);
+        assert.ok(memHigh.includes('≤80字'));
+        assert.ok(memHigh.includes('当前总预算充裕约 900 Tok'));
+
+        // 2.5 异常输入安全兜底 (负数、非数字)
+        assert.ok(promptGetActionGuidance(-10).includes('具体可观察动作'));
+        assert.ok(promptGetMemoryContentGuidance('invalid').includes('≤40字'));
+
+        // 3. buildDigestPrompt 结构完整性与安全隔离测试
+        const prompt1 = promptBuildDigestPrompt({
+            currentScene: '{"location": "长生殿"}',
+            activeWbSection: '【当前会话关联世界书条目】：- [UID: 1] "大内密探"',
+            activeMemList: '- (ID: m1) 两人在殿前密会',
+            conversationText: '[玩家]: 密信何在？\n\n[角色A]: 已藏入梁上。',
+            maxSceneTokens: 240,
+            maxTotalMemoryTokens: 850
+        });
+        assert.ok(prompt1.includes('长生殿'), 'Prompt 必须包含当前现场状态');
+        assert.ok(prompt1.includes('大内密探'), 'Prompt 必须包含世界书设定摘要');
+        assert.ok(prompt1.includes('两人在殿前密会'), 'Prompt 必须包含活跃记忆库');
+        assert.ok(prompt1.includes(promptUntrustedTraceHeader), 'Prompt 必须包含不可信数据安全隔离头');
+        assert.ok(prompt1.includes(promptUntrustedTraceFooter), 'Prompt 必须包含不可信数据安全隔离尾');
+        assert.ok(prompt1.includes(promptUntrustedSecurityNotice), 'Prompt 必须包含安全防御防注入警示');
+        assert.ok(prompt1.includes('当前现场快照预算充裕约 240 Tok'), 'Prompt 必须动态渲染高预算动作指引');
+        assert.ok(prompt1.includes('当前总预算充裕约 850 Tok'), 'Prompt 必须动态渲染高预算记忆指引');
+
+        // 4. buildBacklogDigestPrompt 历史切片分批动态参数测试
+        const backlogPrompt = promptBuildBacklogDigestPrompt({
+            currentScene: '{"location": "宣武门外"}',
+            activeWbSection: '',
+            activeMemList: '（暂无活跃记忆）',
+            conversationText: '[玩家]: 行动开始。',
+            maxSceneTokens: 150,
+            maxTotalMemoryTokens: 450,
+            batchIndex: 2,
+            totalBatches: 6,
+            batchStart: 20,
+            batchEnd: 30
+        });
+        assert.ok(backlogPrompt.includes('第 3/6 阶段'), '回溯提示词必须标注当前批次推进度');
+        assert.ok(backlogPrompt.includes('第 21~30 条消息'), '回溯提示词必须标注当前切片消息范围');
+        assert.ok(backlogPrompt.includes('宣武门外'), '回溯提示词必须包含上一阶段现场状态');
+
+        // 5. buildConsolidationPrompt 宏观归并提示词测试
+        const consolidatePrompt = promptBuildConsolidationPrompt({
+            groupsPromptText: '【分组 1】(知情范围: world)\n- (ID: m1) 城东失火\n- (ID: m2) 救火受阻'
+        });
+        assert.ok(consolidatePrompt.includes('你是一个严谨的角色扮演剧情记忆长程归并专家'), '归并提示词必须包含专业角色定位');
+        assert.ok(consolidatePrompt.includes('城东失火') && consolidatePrompt.includes('救火受阻'), '归并提示词必须包含候选分组条目');
+        assert.ok(consolidatePrompt.includes('supersedes'), '归并提示词必须包含替代字段说明');
+
+        // 6. SYNC_TAG_REGEX 伴生标签正则匹配边界
+        const standardTag = '<!-- PERSISTENT_MEMORY: {"scene":{"location":"后山"}} -->';
+        assert.ok(promptSyncTagRegex.test(standardTag), '标准伴随标签必须成功匹配');
+        const stateTag = '```html\n<!-- STATE: {"scene":{"location":"前厅"}} -->\n```';
+        assert.ok(promptSyncTagRegex.test(stateTag), 'Markdown 代码块包裹的伴随标签必须成功匹配');
+        const updateTag = '<!-- MEMORY_UPDATE: {"scene":{"location":"客栈"}} -->';
+        assert.ok(promptSyncTagRegex.test(updateTag), 'MEMORY_UPDATE 伴随标签必须成功匹配');
+        assert.ok(!promptSyncTagRegex.test('<!-- 这是普通HTML注释，不是记忆伴随标签 -->'), '普通 HTML 注释绝不能被误判为伴随标签');
     });
 
     console.log(`\n======================================================`);
