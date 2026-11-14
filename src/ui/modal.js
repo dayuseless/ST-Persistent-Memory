@@ -397,6 +397,17 @@ export function showAdvancedSettingsModal(options = {}) {
                                 <input type="number" id="pm-adv-auto-sleep-turns" class="pm-input" min="5" max="100" value="${settings.autoSleepTurns || 20}">
                             </div>
                         </div>
+                        <div class="pm-grid-2col" style="margin-top: 6px;">
+                            <div class="pm-input-row" style="margin-bottom: 0;">
+                                <label class="pm-input-label">沉睡唤醒匹配门槛 (Score):</label>
+                                <input type="number" id="pm-adv-auto-sleep-wake-threshold" class="pm-input" min="0.30" max="0.95" step="0.05" value="${settings.autoSleepWakeThreshold !== undefined ? settings.autoSleepWakeThreshold : 0.60}">
+                            </div>
+                            <div class="pm-input-row" style="margin-bottom: 0; display: flex; align-items: flex-end;">
+                                <span style="font-size: 11px; color: #64748b; line-height: 1.4;">
+                                    休眠记忆仅在混合检索得分超过此门槛时被自动唤醒（默认 0.60）
+                                </span>
+                            </div>
+                        </div>
                     </div>
 
                     <!-- 模块 6：世界书会话内协同 -->
@@ -574,6 +585,7 @@ export function showAdvancedSettingsModal(options = {}) {
         setVal('#pm-adv-consolidate-threshold', DEFAULT_SETTINGS.consolidateThreshold);
         setVal('#pm-adv-auto-sleep', DEFAULT_SETTINGS.autoSleepEnabled ? '1' : '0');
         setVal('#pm-adv-auto-sleep-turns', DEFAULT_SETTINGS.autoSleepTurns);
+        setVal('#pm-adv-auto-sleep-wake-threshold', DEFAULT_SETTINGS.autoSleepWakeThreshold || 0.60);
 
         setChecked('#pm-adv-worldbook-enabled', DEFAULT_SETTINGS.worldBookIntegrationEnabled);
         setChecked('#pm-adv-worldbook-context', DEFAULT_SETTINGS.worldBookContextToExtractor);
@@ -624,6 +636,10 @@ export function showAdvancedSettingsModal(options = {}) {
         const autoSleepEnabled = (modalEl.querySelector('#pm-adv-auto-sleep')?.value ?? '1') === '1';
         const rawSleepTurns = parseInt(modalEl.querySelector('#pm-adv-auto-sleep-turns')?.value);
         const autoSleepTurns = !isNaN(rawSleepTurns) ? Math.max(5, Math.min(100, rawSleepTurns)) : 20;
+        const rawWakeThreshold = parseFloat(modalEl.querySelector('#pm-adv-auto-sleep-wake-threshold')?.value);
+        const autoSleepWakeThreshold = (!isNaN(rawWakeThreshold) && rawWakeThreshold >= 0.1 && rawWakeThreshold <= 1.0)
+            ? rawWakeThreshold
+            : 0.60;
 
         const worldBookIntegrationEnabled = modalEl.querySelector('#pm-adv-worldbook-enabled')?.checked ?? true;
         const worldBookContextToExtractor = modalEl.querySelector('#pm-adv-worldbook-context')?.checked ?? true;
@@ -654,6 +670,7 @@ export function showAdvancedSettingsModal(options = {}) {
             consolidateThreshold,
             autoSleepEnabled,
             autoSleepTurns,
+            autoSleepWakeThreshold,
             worldBookIntegrationEnabled,
             worldBookContextToExtractor,
             worldBookBoostScore

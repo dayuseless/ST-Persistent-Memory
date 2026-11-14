@@ -386,8 +386,12 @@ export function buildAndInjectMemoryPrompt() {
         // 条件激活项 (Triggered) 与 沉睡记忆联想唤醒 (Dormant Recall)
         if (mem.status === MEMORY_STATUS.TRIGGERED || allowDormantRecall) {
             const score = calculateHybridMemoryScore(mem, queryContext, settings);
-            // 沉睡记忆需要更高的相关性门槛才被联想唤醒 (防止被低分杂音惊醒)
-            const minScore = isArchived ? 0.60 : 0;
+            // 沉睡记忆需要更高的相关性门槛才被联想唤醒 (防止被低分杂音惊醒，支持自定义微调)
+            const configuredWakeThreshold = Number(settings.autoSleepWakeThreshold);
+            const wakeThreshold = (!isNaN(configuredWakeThreshold) && configuredWakeThreshold > 0)
+                ? configuredWakeThreshold
+                : 0.60;
+            const minScore = isArchived ? wakeThreshold : 0;
             if (score > minScore) {
                 triggeredCandidates.push({ mem, score, line: formattedLine, tokens: itemTokens, wasArchived: isArchived });
             }

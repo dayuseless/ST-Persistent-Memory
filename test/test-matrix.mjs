@@ -4973,6 +4973,7 @@ Intermediate analysis details...
             '#pm-adv-consolidate-threshold': { value: '12' },
             '#pm-adv-auto-sleep': { value: '1' },
             '#pm-adv-auto-sleep-turns': { value: '25' },
+            '#pm-adv-auto-sleep-wake-threshold': { value: '0.55' },
             '#pm-adv-worldbook-enabled': { checked: true },
             '#pm-adv-worldbook-context': { checked: true },
             '#pm-adv-worldbook-boost': { value: '0.40' }
@@ -5037,6 +5038,7 @@ Intermediate analysis details...
                 const s = getSettings();
                 assert.strictEqual(s.maxSceneTokens, 200, '保存后设置应落盘对应数值');
                 assert.strictEqual(s.injectionTemplate, 'xml', '保存后注入模板应落盘对应选项');
+                assert.strictEqual(s.autoSleepWakeThreshold, 0.55, '保存后沉睡唤醒门槛应落盘对应数值');
             }
         } finally {
             global.document = origDoc;
@@ -5345,6 +5347,67 @@ Intermediate analysis details...
         assert.strictEqual(defaultNormRes.valid, true, '缺省字段时应成功准入');
         assert.strictEqual(defaultNormRes.memory.lifecycle, MEMORY_LIFECYCLE.ACTIVE, '缺省 lifecycle 应默认赋值为 active');
         assert.strictEqual(defaultNormRes.memory.status, MEMORY_STATUS.TRIGGERED, '缺省 status 应默认赋值为 triggered');
+    });
+
+    // ─────────────────────────────────────────────────────────────
+    // T108: 沉睡记忆联想唤醒阈值 (autoSleepWakeThreshold) 弹性契约测试
+    // ─────────────────────────────────────────────────────────────
+    test('T108: 沉睡记忆联想唤醒阈值弹性契约测试 (自定义门槛生效、超阈唤醒与低分压制)', () => {
+        const origSettings = { ...getSettings() };
+        try {
+            const state = getState();
+            state.scene = { location: '藏书阁', in_scene_characters: ['角色A', '玩家'] };
+            // 一条处于 archived 状态但 lifecycle 为 active 的世界记忆
+            const dormantMem = {
+                id: 'mem-dormant-01',
+                content: '森林深处有一座废弃的石碑',
+                type: 'fact',
+                scope: 'world',
+                status: 'archived',
+                lifecycle: 'active',
+                trigger_keys: ['石碑']
+            };
+            state.memories = [dormantMem];
+
+            mockContext.characters = [{ name: '角色A' }];
+            mockContext.this_chid = 0;
+            mockContext.chat = [
+                { is_user: true, mes: '树林里有些奇怪的石碑' }
+            ];
+
+            let injected = '';
+            mockContext.setExtensionPrompt = (key, prompt) => {
+                if (key === 'PERSISTENT_MEMORY_INJECT') injected = prompt;
+            };
+
+            const qCtx = buildQueryContext(mockContext, state.scene, getSettings());
+            const score = calculateHybridMemoryScore(dormantMem, qCtx, getSettings());
+            assert.ok(score > 0, '关键词匹配应产生有效激活分');
+
+            // 场景 1: 门槛高于打分时，沉睡记忆绝不被唤醒
+            updateSettings({
+                enabled: true,
+                autoSleepEnabled: true,
+                autoSleepWakeThreshold: score + 0.5 // 高于当前分值
+            });
+            injected = '';
+            buildAndInjectMemoryPrompt();
+            assert.ok(!injected.includes('废弃的石碑'), '高于当前匹配分时沉睡记忆不应被惊醒');
+            assert.strictEqual(dormantMem.status, 'archived', '未超阈值时记忆保持 archived');
+
+            // 场景 2: 门槛低于打分时，沉睡记忆成功被联想唤醒
+            updateSettings({
+                enabled: true,
+                autoSleepEnabled: true,
+                autoSleepWakeThreshold: Math.max(0.05, score - 0.2) // 低于当前分值
+            });
+            injected = '';
+            buildAndInjectMemoryPrompt();
+            assert.ok(injected.includes('废弃的石碑'), '低于当前匹配分时沉睡记忆成功被联想唤醒');
+            assert.strictEqual(dormantMem.status, 'triggered', '唤醒后记忆状态刷新为 triggered');
+        } finally {
+            updateSettings(origSettings);
+        }
     });
 
     console.log(`\n======================================================`);

@@ -70,6 +70,7 @@ export const DEFAULT_SETTINGS = {
     // 记忆长期衰减与沉睡休眠 (Inactivity Dormancy & Wake-Up)
     autoSleepEnabled: true,    // 长期未命中的记忆自动沉睡休眠
     autoSleepTurns: 20,        // 连续未被检索或提及达到多少轮后自动沉睡休眠 (5~50 轮)
+    autoSleepWakeThreshold: 0.60, // 沉睡记忆混合相似度唤醒激活门槛 (0.30~0.95，默认 0.60)
 
     // 语义检索基建配置 (Semantic Retrieval Infrastructure)
     semanticRetrievalEnabled: true,       // 是否启用语义向量与混合检索
