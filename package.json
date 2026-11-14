@@ -1,0 +1,19 @@
+{
+  "name": "st-persistent-memory",
+  "version": "0.1.43",
+  "description": "Continuous persistent memory and context state extension for SillyTavern",
+  "type": "module",
+  "main": "index.js",
+  "scripts": {
+    "test": "node test/test-matrix.mjs"
+  },
+  "keywords": [
+    "sillytavern",
+    "sillytavern-extension",
+    "memory",
+    "persistent-memory",
+    "llm"
+  ],
+  "author": "Antigravity",
+  "license": "MIT"
+}

@@ -1,5 +1,5 @@
 /**
- * 持续记忆数据模式校验与防线准入网关 (Schema Validation & Defense Gate, v0.1.42)
+ * 持续记忆数据模式校验与防线准入网关 (Schema Validation & Defense Gate, v0.1.43)
  * 职责：
  * 1. 结构完整性校验与拒绝型门禁拦截 (validateExtractedPayload)
  * 2. 宏观长程归并产物 Schema 与 ACL 边界守卫 (validateConsolidatedPayload)
@@ -195,9 +195,16 @@ export function validateConsolidatedPayload(raw, currentMemories = [], allowedPa
     const VALID_TYPES = new Set(Object.values(MEMORY_TYPES));
     const VALID_SCOPES = new Set(Object.values(MEMORY_SCOPE));
 
-    const trustedParticipants = allowedParticipants instanceof Set
+    let trustedParticipants = allowedParticipants instanceof Set
         ? allowedParticipants
         : (Array.isArray(allowedParticipants) ? new Set(allowedParticipants) : null);
+
+    if (!trustedParticipants) {
+        const c = typeof getContext === 'function' ? getContext() : (typeof window !== 'undefined' ? window.SillyTavern?.getContext?.() : null);
+        if (c) {
+            trustedParticipants = getContextParticipants(c);
+        }
+    }
 
     const validConsolidated = [];
 
@@ -206,7 +213,12 @@ export function validateConsolidatedPayload(raw, currentMemories = [], allowedPa
         const content = typeof item.content === 'string' ? item.content.trim().slice(0, 100) : '';
         if (!content) continue;
 
-        const type = VALID_TYPES.has(item.type) ? item.type : MEMORY_TYPES.FACT;
+        // P2 规范化：非法类型 Fail-Closed 严禁静默降级为 fact
+        if (item.type && !VALID_TYPES.has(item.type)) {
+            console.warn(`[${MODULE_NAME}] [Consolidate 拦截] 归并记忆类型 "${item.type}" 非法，拒绝入库`);
+            continue;
+        }
+        const type = item.type || MEMORY_TYPES.FACT;
         const supersedes = Array.isArray(item.supersedes)
             ? Array.from(new Set(item.supersedes.filter(id => typeof id === 'string' && id.trim()).map(id => id.trim())))
             : [];
@@ -257,6 +269,12 @@ export function validateConsolidatedPayload(raw, currentMemories = [], allowedPa
         let targetKnown = Array.isArray(sourceMems[0].known_by) ? [...sourceMems[0].known_by] : [];
 
         // 验证参与者可信性 (调用统一 ACL 判定层)
+        // P2 强化：若无法取得可信参与者名单，受限范围记忆 (CHARACTER / SHARED) Fail-Closed 严禁归并入库
+        if (!trustedParticipants && (targetScope === MEMORY_SCOPE.CHARACTER || targetScope === MEMORY_SCOPE.SHARED)) {
+            console.warn(`[${MODULE_NAME}] [Consolidate 拦截] 缺失权威参与者名单，拒绝受限范围 (${targetScope}) 记忆归并`);
+            continue;
+        }
+
         const aclRes = validateMemoryAcl({
             scope: targetScope,
             character: targetChar,

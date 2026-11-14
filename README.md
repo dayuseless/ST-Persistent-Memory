@@ -1,6 +1,6 @@
 # SillyTavern 持续记忆插件 (ST-Persistent-Memory)
 
-[![Version](https://img.shields.io/badge/version-v0.1.42-blue.svg)](https://github.com/dayuseless/ST-Persistent-Memory)
+[![Version](https://img.shields.io/badge/version-v0.1.43-blue.svg)](https://github.com/dayuseless/ST-Persistent-Memory)
 [![SillyTavern](https://img.shields.io/badge/SillyTavern-1.12.0+-purple.svg)](https://github.com/SillyTavern/SillyTavern)
 [![License](https://img.shields.io/badge/license-MIT-green.svg)](LICENSE)
 
@@ -77,7 +77,7 @@
 
 ### 方式二：手动离线包安装
 
-1. 从 [Releases 页面](https://github.com/dayuseless/ST-Persistent-Memory/releases) 下载 `ST-Persistent-Memory-v0.1.42.zip`。
+1. 从 [Releases 页面](https://github.com/dayuseless/ST-Persistent-Memory/releases) 下载 `ST-Persistent-Memory-v0.1.43.zip`。
 2. 解压到 SillyTavern 的扩展目录中：
    ```text
    SillyTavern/public/scripts/extensions/third-party/ST-Persistent-Memory/
@@ -157,7 +157,54 @@ window.__persistentMemory.digestNow();
 
 ---
 
+## 🧪 自动化测试与独立复现
+
+本插件随包提供完整的离线端到端测试工程（包含全部 107 项测试用例与微型运行环境 Mock）。任何审计人员或开发者均可在下载或解压本插件后直接独立运行核验：
+
+```bash
+# 进入插件根目录
+cd ST-Persistent-Memory
+
+# 运行全量 107 项自动化回归测试矩阵
+npm test
+# 或者使用 node 原生直接执行：
+node test/test-matrix.mjs
+```
+
+测试矩阵覆盖范围：
+- **T1 ~ T70**：核心记忆模型、POV 准出权限路由、Fail-Closed 判定、状态机事务与回滚；
+- **T71**：全工程 21 个源文件、manifest、package、config 与 index 版本标识一致性核验；
+- **T72 ~ T95**：统一 ACL 门禁、API 传输层、长程归并、世界书协同、快照时光机与跨版本平滑迁移；
+- **T96 ~ T100**：思维链清洗、模式校验、提示词编排、提炼落盘流水线与端到端解耦总成集成验收；
+- **T101 ~ T102**：UI 组件化解耦契约、XSS 转义防御、傻瓜式默认全托管与详细参数模态框交互；
+- **T103 ~ T107 (v0.1.43 核心加固)**：归并原子性与失败回滚保护、归并并发修订号保护、历史回溯按批次修订号保护、空现场 `[]` 严格物理在场核验防御、Schema 拒绝型策略（非法类型/非法生命周期/非法状态拒绝入库）。
+
+---
+
 ## 📝 版本历史
+
+### v0.1.43 (数据完整性与权限一致性加固：专项安全修复与测试工程化)
+
+根据独立安全审计报告全面加固核心引擎，冻结功能扩张，集中落实数据完整性与权限一致性防线：
+1. **P1 修复归并原子性与源记忆保护 (`src/consolidator.js`)**：
+   - 彻底修复 `addMemory()` 失败时因未抛出异常导致源记忆被置为 `superseded` 而新记忆丢失的风险；
+   - 引入显式检查，一旦新记忆创建失败主动抛出异常触发 `batchUpdate` 完整事务回滚，确保原始记忆 100% 完好恢复为 `active`；
+2. **P1 修复现场空名单权限漏洞 (`src/acl.js`)**：
+   - 修正 `canRecipientAccessMemory()` 中 `sceneChars.length > 0` 导致空名单 `[]` 跳过在场物理校验的问题；
+   - 明确区分未知现场 (`null`，不校验) 与明确空现场 (`[]`，Fail-Closed 坚决拒绝所有受限私密与共享记忆)；
+3. **P1 统一异步任务状态修订号一致性保护 (`src/consolidator.js` & `src/backlog.js`)**：
+   - 归并与全量历史回溯每个批次在发起大模型请求前单独捕获 `state_revision`；
+   - 响应返回后校验状态修订号，若检测到等待期间用户手动编辑了现场或记忆，自动安全丢弃/跳过本批提交，杜绝覆盖用户编辑；
+4. **P2 统一 Schema 拒绝策略 (`src/schema.js` & `src/acl.js`)**：
+   - 归并记忆显式提供非法类型时直接丢弃，严禁静默降级为 `fact`；
+   - 无法取得权威参与者白名单时，Fail-Closed 拒绝受限范围记忆归并；
+   - 数据准入层显式提供非法 `lifecycle` 或 `status` 时拒绝入库，严禁静默默认；
+5. **P2 原生 API 中止强化 (`src/api.js`)**：
+   - 在酒馆原生接口超时或外部 AbortSignal 触发时，主动调用 `c?.stopGeneration?.()` / `c?.abortGeneration?.()` 终止底层生成；
+6. **工程化与独立复现测试套件**：
+   - 根目录补齐标准 `package.json`（支持 `npm test`）；
+   - 测试矩阵扩充至 **107 项**（新增 **T103 ~ T107** 专项覆盖上述所有修复点，达成 **107/107 PASS** 全绿通过）；
+   - 离线发布 ZIP 包含完整测试套件，供独立审计人员开箱即验。
 
 ### v0.1.42 (UX 体验重大升级：引入“傻瓜式默认全托管”与“详细式弹窗微调”双模式)
 

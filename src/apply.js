@@ -5,7 +5,7 @@
  * 2. 提炼候选活跃记忆场景化过滤 (filterMemoriesForDigest)
  * 3. 提炼/伴随结构化数据原子写回与生命周期流转 (applyExtractedData)
  *
- * @version 0.1.42
+ * @version 0.1.43
  */
 
 import { MODULE_NAME, MEMORY_LIFECYCLE, MEMORY_SCOPE } from './config.js';

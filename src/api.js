@@ -1,5 +1,5 @@
 /**
- * 持续记忆 API 通信客户端与网络传输层 (API Client & Transport Layer, v0.1.42)
+ * 持续记忆 API 通信客户端与网络传输层 (API Client & Transport Layer, v0.1.43)
  *
  * 核心职责：
  * 1. 领域职责解耦：将底层 HTTP 请求、酒馆宿主 generateRaw 降级、AbortController 超时管理从提炼业务引擎中彻底剥离。
@@ -37,7 +37,7 @@ export function normalizeChatCompletionsUrl(rawUrl) {
  * @param {AbortSignal|null} [abortSignal] - 外部主动中止信号
  * @returns {Promise<any>}
  */
-export function withTimeout(startRequest, timeoutMs, label, abortSignal = null) {
+export function withTimeout(startRequest, timeoutMs, label, abortSignal = null, c = null) {
     return new Promise((resolve, reject) => {
         let settled = false;
         let onAbort = null;
@@ -53,6 +53,8 @@ export function withTimeout(startRequest, timeoutMs, label, abortSignal = null) 
             if (settled) return;
             settled = true;
             cleanup();
+            try { c?.stopGeneration?.(); } catch {}
+            try { c?.abortGeneration?.(); } catch {}
             reject(new Error(`${label}超时 (超过 ${timeoutMs / 1000} 秒未响应)`));
         }, timeoutMs);
 
@@ -60,12 +62,16 @@ export function withTimeout(startRequest, timeoutMs, label, abortSignal = null) 
             if (abortSignal.aborted) {
                 settled = true;
                 cleanup();
+                try { c?.stopGeneration?.(); } catch {}
+                try { c?.abortGeneration?.(); } catch {}
                 return reject(new Error(`${label}已被中止取消`));
             }
             onAbort = () => {
                 if (settled) return;
                 settled = true;
                 cleanup();
+                try { c?.stopGeneration?.(); } catch {}
+                try { c?.abortGeneration?.(); } catch {}
                 reject(new Error(`${label}已被用户手动中止取消`));
             };
             try {
@@ -173,20 +179,22 @@ export async function executeDigestRequest(c, digestPrompt, settings, abortSigna
     // 方案 B: 优先使用 generateRaw (单轮独立 Prompt，显式指定 responseLength 脱钩前端对话长度限制)
     if (c && typeof c.generateRaw === 'function') {
         return await withTimeout(
-            () => c.generateRaw({ prompt: digestPrompt, responseLength: 2048 }),
+            () => c.generateRaw({ prompt: digestPrompt, responseLength: 2048, signal: abortSignal }),
             DIGEST_REQUEST_TIMEOUT_MS,
             '原生 generateRaw 提炼请求',
-            abortSignal
+            abortSignal,
+            c
         );
     }
 
     // 方案 C: 兜底调用 generateQuietPrompt (显式剥离 reasoning 并指定输出长度)
     if (c && typeof c.generateQuietPrompt === 'function') {
         return await withTimeout(
-            () => c.generateQuietPrompt({ quietPrompt: digestPrompt, responseLength: 2048, removeReasoning: true }),
+            () => c.generateQuietPrompt({ quietPrompt: digestPrompt, responseLength: 2048, removeReasoning: true, signal: abortSignal }),
             DIGEST_REQUEST_TIMEOUT_MS,
             '原生 generateQuietPrompt 提炼请求',
-            abortSignal
+            abortSignal,
+            c
         );
     }
 

@@ -6,7 +6,7 @@
  * 3. 严格校验归并结果 Schema 与 ACL 权限边界，防跨组拼凑、越权提权与幽灵替代
  * 4. 原子批量落盘：将旧细节置为 superseded，入库全新宏观事实
  *
- * @version 0.1.42
+ * @version 0.1.43
  */
 
 import { MODULE_NAME, MEMORY_TYPES, MEMORY_STATUS, MEMORY_LIFECYCLE, MEMORY_SCOPE } from './config.js';
@@ -85,6 +85,7 @@ export async function triggerMemoryConsolidation(force = false) {
     if (!startChatId) return { success: false, reason: '无法获取有效会话标识' };
 
     const state = getState();
+    const startRevision = state.state_revision || 0;
     const candidateGroups = buildConsolidationCandidateGroups(state.memories);
     const totalCandidates = candidateGroups.reduce((acc, g) => acc + g.items.length, 0);
 
@@ -123,8 +124,14 @@ export async function triggerMemoryConsolidation(force = false) {
             return { success: false, reason: '归并期间会话发生切换，已丢弃' };
         }
 
-        const raw = cleanAndParseJson(response);
         const latestState = getState();
+        // P1 状态修订号一致性保护 (并发编辑冲突防线)
+        if ((latestState.state_revision || 0) !== startRevision) {
+            console.warn(`[${MODULE_NAME}] [Consolidate] 归并请求期间检测到状态发生编辑/变更 (rev.${startRevision} -> rev.${latestState.state_revision})，为防冲突安全丢弃本次归并`);
+            return { success: false, reason: '状态在归并期间发生并发编辑，已安全丢弃' };
+        }
+
+        const raw = cleanAndParseJson(response);
         const participants = getContextParticipants(c, latestState);
         const validated = validateConsolidatedPayload(raw, latestState.memories, participants);
 
@@ -140,13 +147,22 @@ export async function triggerMemoryConsolidation(force = false) {
             let supersededCount = 0;
 
             for (const item of validated.consolidated) {
-                // 1. 先将所有被替代的旧记忆置为 superseded，使其脱离 active 状态
+                // 1. 先验证所有待替代源记忆依然处于 active 状态 (双重防线)
+                const currentMemoriesMap = new Map((getState().memories || []).map(m => [m.id, m]));
+                for (const oldId of item.supersedes) {
+                    const existing = currentMemoriesMap.get(oldId);
+                    if (!existing || existing.lifecycle !== MEMORY_LIFECYCLE.ACTIVE) {
+                        throw new Error(`归并源记忆 (ID: ${oldId}) 已不存在或处于非活跃生命周期，中止归并事务`);
+                    }
+                }
+
+                // 2. 将所有被替代的旧记忆置为 superseded
                 for (const oldId of item.supersedes) {
                     setMemoryLifecycle(oldId, MEMORY_LIFECYCLE.SUPERSEDED);
                     supersededCount++;
                 }
 
-                // 2. 随后入库全新的宏观概括记忆 (此时旧条目已脱离 active，绝不会与新条目发生错误的同库相似冲突融合)
+                // 3. 随后入库全新的宏观概括记忆 (此时旧条目已脱离 active，绝不会与新条目发生错误的同库相似冲突融合)
                 // 必须显式携带当前轮次，防止新归并条目被误判为 0 楼层而立即沉睡
                 const added = addMemory({
                     type: item.type,
@@ -160,9 +176,13 @@ export async function triggerMemoryConsolidation(force = false) {
                     last_activated_floor: currentTurn
                 });
 
-                if (added) {
-                    newCount++;
+                // P1 核心原子性修复：若新记忆创建失败，必须主动抛出异常触发 batchUpdate 完整回滚！
+                // 严禁在 addMemory 返回 null 时静默成功，导致旧记忆被置为 superseded 而新记忆丢失！
+                if (!added) {
+                    throw new Error(`归并宏观记忆入库失败 (可能未通过数据准入校验)，已触发事务原子回滚，保护 ${item.supersedes.length} 条原始记忆`);
                 }
+
+                newCount++;
             }
 
             console.log(`[${MODULE_NAME}] [Consolidate] 记忆高阶归并原子提交：新增 ${newCount} 条宏观事实，归档/替代 ${supersededCount} 条历史琐碎条目`);

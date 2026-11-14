@@ -7,7 +7,7 @@
  * 4. 傻瓜式全托管运行状态概览与详细参数设置弹窗入口
  * 5. 原生面板配置双向绑定、即时保存与连通性测试
  *
- * @version 0.1.42
+ * @version 0.1.43
  */
 
 import { MODULE_NAME } from '../config.js';

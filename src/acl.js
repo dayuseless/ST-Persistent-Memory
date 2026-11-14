@@ -1,5 +1,5 @@
 /**
- * 持续记忆访问控制与统一数据准入判定层 (Unified ACL & Ingestion Gate, v0.1.42)
+ * 持续记忆访问控制与统一数据准入判定层 (Unified ACL & Ingestion Gate, v0.1.43)
  *
  * 核心设计纪律：
  * 1. 权责解耦：AI 负责提出记忆变更建议，ACL 负责验证变更合法性，状态引擎负责执行状态落盘。
@@ -243,9 +243,16 @@ export function normalizeAndValidateMemory(raw, options = {}) {
         };
     }
 
-    // 5. 规范化生命周期与状态
-    const lifecycle = VALID_LIFECYCLES.has(raw.lifecycle) ? raw.lifecycle : MEMORY_LIFECYCLE.ACTIVE;
-    const status = raw.status === MEMORY_STATUS.PINNED ? MEMORY_STATUS.PINNED : (VALID_STATUSES.has(raw.status) ? raw.status : MEMORY_STATUS.TRIGGERED);
+    // 5. 规范化生命周期与状态 (P2 强化：若显式指定了非法值，Fail-Closed 直接拒绝，严禁静默降级)
+    if (raw.lifecycle !== undefined && !VALID_LIFECYCLES.has(raw.lifecycle)) {
+        return { valid: false, memory: null, reason: `记忆生命周期 "${raw.lifecycle}" 非法，拒绝入库` };
+    }
+    const lifecycle = raw.lifecycle || MEMORY_LIFECYCLE.ACTIVE;
+
+    if (raw.status !== undefined && !VALID_STATUSES.has(raw.status)) {
+        return { valid: false, memory: null, reason: `记忆状态 "${raw.status}" 非法，拒绝入库` };
+    }
+    const status = raw.status === MEMORY_STATUS.PINNED ? MEMORY_STATUS.PINNED : (raw.status || MEMORY_STATUS.TRIGGERED);
 
     // 6. 规范化触发词
     const triggerKeys = Array.isArray(raw.trigger_keys)
@@ -487,8 +494,8 @@ export function canRecipientAccessMemory(memory, recipient, inSceneCharacters = 
         };
     }
 
-    // 3. 现场在场物理核验：受限记忆要求生成主体当下必须在物理现场名单中
-    if (requireInScene && sceneChars !== null && sceneChars.length > 0) {
+    // 3. 现场在场物理核验：受限记忆要求生成主体当下必须在物理现场名单中 (P1: 空名单 [] 严格拒绝，null 放行)
+    if (requireInScene && sceneChars !== null) {
         if (!sceneChars.includes(trimmedRecipient)) {
             return {
                 allowed: false,

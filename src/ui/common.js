@@ -7,7 +7,7 @@
  * 4. 常用 OpenAI 兼容 API 预设与一键填充 (API_PRESETS & applyApiPreset)
  * 5. 傻瓜式全托管默认参数一键恢复服务 (restoreRecommendedDefaults，保留用户 API 凭据)
  *
- * @version 0.1.42
+ * @version 0.1.43
  */
 
 import { DEFAULT_SETTINGS } from '../config.js';

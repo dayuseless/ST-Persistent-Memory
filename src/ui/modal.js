@@ -6,7 +6,7 @@
  * 3. 私密/共享记忆权限范围变更预警与防越权二次确认 (Escalation Guard)
  * 4. 详细与高级参数设置模态面板 (showAdvancedSettingsModal，支持详细调优与一键恢复默认)
  *
- * @version 0.1.42
+ * @version 0.1.43
  */
 
 import { MEMORY_SCOPE, DEFAULT_SETTINGS } from '../config.js';

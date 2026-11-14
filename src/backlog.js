@@ -7,7 +7,7 @@
  * 4. 会话隔离检查，防止中途会话切换导致的数据串线落盘
  * 5. 批次消化后自动触发未激活记忆沉睡巡检及链式长程宏观归并
  *
- * @version 0.1.42
+ * @version 0.1.43
  */
 
 import { MODULE_NAME, MEMORY_TYPES, MEMORY_STATUS, MEMORY_LIFECYCLE, MEMORY_SCOPE } from './config.js';
@@ -200,6 +200,7 @@ export async function triggerBacklogDigest(options = {}) {
 
             // 获取当前最新状态（前一批次累积演化后的现场与记忆）
             const curState = getState();
+            const batchStartRevision = curState.state_revision || 0;
             const currentScene = JSON.stringify(curState.scene, null, 2);
 
             const activeMemList = filterMemoriesForDigest(curState.memories, {
@@ -268,7 +269,14 @@ export async function triggerBacklogDigest(options = {}) {
                 return { success: false, aborted: true, batchesProcessed, totalMemories: getState().memories.length, reason: '切换会话安全中断' };
             }
 
-            const participants = getContextParticipants(c, curState);
+            // P1 状态修订号一致性保护：检测等待模型期间是否有并发的人工编辑或状态变更
+            const latestState = getState();
+            if ((latestState.state_revision || 0) !== batchStartRevision) {
+                console.warn(`[${MODULE_NAME}] [Backlog] 批次 ${i + 1} 请求期间检测到状态发生编辑/变更 (rev.${batchStartRevision} -> rev.${latestState.state_revision})，为防数据冲突跳过本批提交`);
+                continue;
+            }
+
+            const participants = getContextParticipants(c, latestState);
             const rawPayload = cleanAndParseJson(response);
 
             if (!rawPayload) {
@@ -283,10 +291,10 @@ export async function triggerBacklogDigest(options = {}) {
                 const turnAtBatchEnd = getChatTurnCount(chat.slice(0, batch.end));
                 const quietSummary = unwrapJsonPayload(rawPayload)?.summary || '阶段情境平稳，无新增记忆';
                 batchUpdate(() => {
-                    curState.last_digest_floor = turnAtBatchEnd;
-                    curState.last_digest_time = new Date().toLocaleTimeString();
-                    curState.last_digest_summary = `历史回溯 (${i + 1}/${batches.length}): ${quietSummary}`;
-                    curState.last_digest_error = null;
+                    latestState.last_digest_floor = turnAtBatchEnd;
+                    latestState.last_digest_time = new Date().toLocaleTimeString();
+                    latestState.last_digest_summary = `历史回溯 (${i + 1}/${batches.length}): ${quietSummary}`;
+                    latestState.last_digest_error = null;
                 });
                 batchesProcessed++;
                 const percent = Math.round(((i + 1) / batches.length) * 100);
@@ -294,7 +302,7 @@ export async function triggerBacklogDigest(options = {}) {
                 continue;
             }
 
-            const payload = validateExtractedPayload(rawPayload, curState.memories || [], participants);
+            const payload = validateExtractedPayload(rawPayload, latestState.memories || [], participants);
 
             if (payload) {
                 if (isAborted()) {
@@ -305,10 +313,10 @@ export async function triggerBacklogDigest(options = {}) {
 
                 batchUpdate(() => {
                     batchSummary = applyExtractedData(payload, turnAtBatchEnd);
-                    curState.last_digest_floor = turnAtBatchEnd;
-                    curState.last_digest_time = new Date().toLocaleTimeString();
-                    curState.last_digest_summary = `历史回溯 (${i + 1}/${batches.length}): ${batchSummary}`;
-                    curState.last_digest_error = null;
+                    latestState.last_digest_floor = turnAtBatchEnd;
+                    latestState.last_digest_time = new Date().toLocaleTimeString();
+                    latestState.last_digest_summary = `历史回溯 (${i + 1}/${batches.length}): ${batchSummary}`;
+                    latestState.last_digest_error = null;
                 });
 
                 batchesProcessed++;

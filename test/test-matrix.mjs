@@ -3109,27 +3109,32 @@ Intermediate analysis details...
     });
 
     // ─────────────────────────────────────────────────────────────
-    // T71: 全工程版本标识严格一致性核验 (0.1.42)
+    // T71: 全工程版本标识严格一致性核验 (0.1.43)
     // ─────────────────────────────────────────────────────────────
-    test('T71: 全工程版本标识严格一致性核验 (manifest, config, index 与各模块头部统一为 0.1.42)', () => {
+    test('T71: 全工程版本标识严格一致性核验 (manifest, config, package, index 与各模块头部统一为 0.1.43)', () => {
         const currentFile = fileURLToPath(import.meta.url);
         const rootDir = path.resolve(path.dirname(currentFile), '../');
 
         // 1. manifest.json
         const manifestPath = path.join(rootDir, 'manifest.json');
         const manifest = JSON.parse(fs.readFileSync(manifestPath, 'utf8'));
-        assert.strictEqual(manifest.version, '0.1.42', 'manifest.json 版本号应为 0.1.42');
+        assert.strictEqual(manifest.version, '0.1.43', 'manifest.json 版本号应为 0.1.43');
 
         // 2. src/config.js
-        assert.strictEqual(EXTENSION_VERSION, '0.1.42', 'config.js EXTENSION_VERSION 应为 0.1.42');
+        assert.strictEqual(EXTENSION_VERSION, '0.1.43', 'config.js EXTENSION_VERSION 应为 0.1.43');
 
-        // 3. index.js
+        // 3. package.json
+        const pkgPath = path.join(rootDir, 'package.json');
+        const pkg = JSON.parse(fs.readFileSync(pkgPath, 'utf8'));
+        assert.strictEqual(pkg.version, '0.1.43', 'package.json 版本号应为 0.1.43');
+
+        // 4. index.js
         const indexPath = path.join(rootDir, 'index.js');
         const indexContent = fs.readFileSync(indexPath, 'utf8');
-        assert.ok(indexContent.includes('v0.1.42'), 'index.js 头部必须标注 v0.1.42');
-        assert.ok(!indexContent.includes('v0.1.41'), 'index.js 严禁残留旧版本 v0.1.41 版本头');
+        assert.ok(indexContent.includes('v0.1.43'), 'index.js 头部必须标注 v0.1.43');
+        assert.ok(!indexContent.includes('v0.1.42'), 'index.js 严禁残留旧版本 v0.1.42 版本头');
 
-        // 4. 各核心模块头部注释版本检查 (16 个核心模块 + 5 个 UI 子模块 = 21 个模块)
+        // 5. 各核心模块头部注释版本检查 (16 个核心模块 + 5 个 UI 子模块 = 21 个模块)
         const checkModules = [
             'src/acl.js',
             'src/api.js',
@@ -3159,12 +3164,12 @@ Intermediate analysis details...
             const content = fs.readFileSync(filePath, 'utf8');
             const first10Lines = content.split('\n').slice(0, 10).join('\n');
             assert.ok(
-                first10Lines.includes('v0.1.42') || first10Lines.includes('0.1.42'),
-                `${relPath} 头部注释必须包含 0.1.42 版本标识`
+                first10Lines.includes('v0.1.43') || first10Lines.includes('0.1.43'),
+                `${relPath} 头部注释必须包含 0.1.43 版本标识`
             );
             assert.ok(
-                !first10Lines.includes('0.1.41') && !first10Lines.includes('v0.1.41'),
-                `${relPath} 头部注释严禁残留旧版本 0.1.41`
+                !first10Lines.includes('0.1.42') && !first10Lines.includes('v0.1.42'),
+                `${relPath} 头部注释严禁残留旧版本 0.1.42`
             );
         }
     });
@@ -5036,6 +5041,226 @@ Intermediate analysis details...
         } finally {
             global.document = origDoc;
         }
+    });
+
+    // ─────────────────────────────────────────────────────────────
+    // T103: 归并原子性与失败回滚测试 (P1 修复：新记忆创建失败触发事务完整回滚，保护原始记忆)
+    // ─────────────────────────────────────────────────────────────
+    await testAsync('T103: 归并原子性与失败回滚测试 (addMemory 失败时确保源记忆不被置为 superseded 且状态完整回滚)', async () => {
+        const state = getState();
+        state.memories = [];
+
+        // 创建两条同权限待归并的活跃记忆
+        const m1 = addMemory({ content: '角色A在山洞找到铁剑', type: 'fact', scope: 'character', character: '角色A' });
+        const m2 = addMemory({ content: '角色A在山洞找到盾牌', type: 'fact', scope: 'character', character: '角色A' });
+        assert.ok(m1 && m2, '初始记忆创建成功');
+        assert.strictEqual(m1.lifecycle, MEMORY_LIFECYCLE.ACTIVE);
+        assert.strictEqual(m2.lifecycle, MEMORY_LIFECYCLE.ACTIVE);
+
+        // 模拟归并事务中入库失败回滚场景：
+        // 验证 batchUpdate 在遇到归并入库失败异常时，能够完整将已被置为 superseded 的源记忆回滚为 active
+        let threw = false;
+        try {
+            batchUpdate(() => {
+                // 1. 旧记忆置为 superseded
+                setMemoryLifecycle(m1.id, MEMORY_LIFECYCLE.SUPERSEDED);
+                setMemoryLifecycle(m2.id, MEMORY_LIFECYCLE.SUPERSEDED);
+                assert.strictEqual(state.memories.find(m => m.id === m1.id).lifecycle, MEMORY_LIFECYCLE.SUPERSEDED);
+                assert.strictEqual(state.memories.find(m => m.id === m2.id).lifecycle, MEMORY_LIFECYCLE.SUPERSEDED);
+
+                // 2. 模拟新记忆入库失败 (addMemory 返回 null，触发抛出异常回滚)
+                const added = null;
+                if (!added) {
+                    throw new Error('归并宏观记忆入库失败，已触发事务原子回滚');
+                }
+            });
+        } catch (e) {
+            threw = true;
+            assert.ok(e.message.includes('事务原子回滚'));
+        }
+
+        assert.strictEqual(threw, true, '事务必须抛出异常');
+
+        // 关键断言：事务回滚后，最新状态中的原始记忆 m1 与 m2 必须依然处于 ACTIVE 状态，绝不能被置为 superseded！
+        const currentState = getState();
+        const mem1After = currentState.memories.find(m => m.id === m1.id);
+        const mem2After = currentState.memories.find(m => m.id === m2.id);
+        assert.ok(mem1After && mem2After, '原始记忆依然存在');
+        assert.strictEqual(mem1After.lifecycle, MEMORY_LIFECYCLE.ACTIVE, 'm1 生命周期必须完整恢复为 active');
+        assert.strictEqual(mem2After.lifecycle, MEMORY_LIFECYCLE.ACTIVE, 'm2 生命周期必须完整恢复为 active');
+
+        // 验证 triggerMemoryConsolidation 在异常时的安全防护与无损退出
+        mockContext.characters = [{ name: '角色A' }];
+        mockContext.generateRaw = async () => { throw new Error('API 网络中断'); };
+        const failRes = await triggerMemoryConsolidation(true);
+        assert.strictEqual(failRes.success, false, 'API 失败时必须安全返回失败且不修改状态');
+        assert.strictEqual(mem1After.lifecycle, MEMORY_LIFECYCLE.ACTIVE, 'm1 依然保持 active');
+    });
+
+    // ─────────────────────────────────────────────────────────────
+    // T104: 归并并发状态修订号保护测试 (P1 修复：模型等待期间状态被编辑安全丢弃)
+    // ─────────────────────────────────────────────────────────────
+    await testAsync('T104: 归并并发状态修订号保护测试 (state_revision 变更时安全丢弃归并结果，杜绝覆盖用户编辑)', async () => {
+        const state = getState();
+        state.memories = [];
+        const m1 = addMemory({ content: '角色A获得藏宝图上半张', type: 'fact', scope: 'character', character: '角色A' });
+        const m2 = addMemory({ content: '角色A获得藏宝图下半张', type: 'fact', scope: 'character', character: '角色A' });
+
+        mockContext.characters = [{ name: '角色A' }];
+        // 在模型请求等待期间，模拟用户在前台手动修改了情境或记忆，导致 state_revision 自增
+        mockContext.generateRaw = async () => {
+            // 模拟并发编辑
+            updateScene({ location: '用户在此期间修改了地点' });
+            return JSON.stringify({
+                consolidated: [
+                    {
+                        content: '角色A获得了完整的藏宝图',
+                        type: 'fact',
+                        scope: 'character',
+                        character: '角色A',
+                        supersedes: [m1.id, m2.id]
+                    }
+                ]
+            });
+        };
+
+        const result = await triggerMemoryConsolidation(true);
+        assert.strictEqual(result.success, false, '检测到并发编辑时归并必须安全放弃');
+        assert.ok(result.reason.includes('并发编辑'), '原因应明确提示并发编辑冲突保护');
+
+        // 原始记忆保持不变
+        const mem1 = state.memories.find(m => m.id === m1.id);
+        assert.strictEqual(mem1.lifecycle, MEMORY_LIFECYCLE.ACTIVE, '原始记忆未被错误替代');
+    });
+
+    // ─────────────────────────────────────────────────────────────
+    // T105: 历史回溯按批次 state_revision 保护测试 (P1 修复：批次等待期间状态被修改安全跳过)
+    // ─────────────────────────────────────────────────────────────
+    await testAsync('T105: 历史回溯按批次 state_revision 保护测试 (批次等待期间状态被修改时安全跳过本批提交)', async () => {
+        const state = getState();
+        state.memories = [];
+        state.last_digest_floor = 0;
+
+        mockContext.chat = [
+            { is_user: true, mes: '第一条历史记录' },
+            { is_user: false, name: '角色A', mes: '第二条历史记录回复' },
+            { is_user: true, mes: '第三条历史记录' },
+            { is_user: false, name: '角色A', mes: '第四条历史记录回复' }
+        ];
+
+        let callCount = 0;
+        mockContext.generateRaw = async () => {
+            callCount++;
+            // 模拟用户在等待期间手动新增了一条记忆，导致 state_revision 变更
+            addMemory({ content: '用户在回溯期间录入的独立记忆', type: 'fact', scope: 'world' });
+            return JSON.stringify({
+                scene: { location: '回溯提炼出的地点' },
+                new_memories: [{ content: '回溯记忆A', type: 'fact', scope: 'world' }]
+            });
+        };
+
+        const res = await triggerBacklogDigest({ fromStart: true, chunkSize: 4, overlap: 1 });
+        assert.strictEqual(callCount, 1, '回溯批次发起请求');
+        // 由于检测到并发 revision 冲突，该批次跳过提交，回溯记忆不应入库
+        const backlogMem = state.memories.find(m => m.content === '回溯记忆A');
+        assert.strictEqual(backlogMem, undefined, '并发冲突批次不得提交落盘');
+        const userMem = state.memories.find(m => m.content === '用户在回溯期间录入的独立记忆');
+        assert.ok(userMem, '用户录入的记忆必须完好保留');
+    });
+
+    // ─────────────────────────────────────────────────────────────
+    // T106: 现场明确无人 sceneChars = [] 严格物理在场核验防御测试 (P1 修复)
+    // ─────────────────────────────────────────────────────────────
+    test('T106: 现场明确无人 sceneChars = [] 严格物理在场核验防御测试 (Fail-Closed 杜绝泄露)', () => {
+        const memChar = { scope: MEMORY_SCOPE.CHARACTER, character: '角色A', content: '角色A独有私密记忆' };
+        const memShared = { scope: MEMORY_SCOPE.SHARED, character: '角色A', known_by: ['角色A', '角色B'], content: '双人机密' };
+        const memWorld = { scope: MEMORY_SCOPE.WORLD, content: '公开常识' };
+
+        // 场景 1: sceneChars = [] (明确现场空无一人)
+        const emptyScene = [];
+        const resCharEmpty = canRecipientAccessMemory(memChar, '角色A', emptyScene, { requireInScene: true });
+        assert.strictEqual(resCharEmpty.allowed, false, '现场明确无人时，私密记忆必须被拦截拒绝注入');
+        assert.ok(resCharEmpty.reason.includes('不在物理现场'), '拒绝理由必须指出不在物理现场');
+
+        const resSharedEmpty = canRecipientAccessMemory(memShared, '角色A', emptyScene, { requireInScene: true });
+        assert.strictEqual(resSharedEmpty.allowed, false, '现场明确无人时，共享记忆必须被拦截拒绝注入');
+        assert.ok(resSharedEmpty.reason.includes('不在物理现场'), '拒绝理由必须指出不在物理现场');
+
+        // 世界常识不受物理现场限制
+        const resWorldEmpty = canRecipientAccessMemory(memWorld, '角色A', emptyScene, { requireInScene: true });
+        assert.strictEqual(resWorldEmpty.allowed, true, '全域世界常识在空现场依然可注入');
+
+        // 场景 2: sceneChars = null (未知现场，跳过物理核验)
+        const resCharNull = canRecipientAccessMemory(memChar, '角色A', null, { requireInScene: true });
+        assert.strictEqual(resCharNull.allowed, true, '未知现场 (null) 时跳过物理在场校验');
+
+        // 场景 3: sceneChars 包含角色A (正常在场)
+        const resCharInScene = canRecipientAccessMemory(memChar, '角色A', ['角色A', '玩家'], { requireInScene: true });
+        assert.strictEqual(resCharInScene.allowed, true, '角色在场时正常注入');
+    });
+
+    // ─────────────────────────────────────────────────────────────
+    // T107: 统一 Schema 拒绝策略与数据准入安全测试 (P2 修复：拒绝静默降级)
+    // ─────────────────────────────────────────────────────────────
+    test('T107: 统一 Schema 拒绝策略与数据准入安全测试 (非法归并类型拒绝、缺失参与者受限归并拒绝、非法生命周期/状态拒绝)', () => {
+        // 1. 归并类型非法时直接丢弃，严禁静默降级为 fact
+        const m1 = { id: 'm-01', content: '记忆1', type: 'fact', scope: 'world', lifecycle: 'active', status: 'triggered' };
+        const m2 = { id: 'm-02', content: '记忆2', type: 'fact', scope: 'world', lifecycle: 'active', status: 'triggered' };
+        const badTypePayload = {
+            consolidated: [
+                {
+                    content: '非法类型的归并记忆',
+                    type: 'unrecognized_magic_type', // 非法类型
+                    scope: 'world',
+                    supersedes: ['m-01', 'm-02']
+                }
+            ]
+        };
+        const validatedBadType = validateConsolidatedPayload(badTypePayload, [m1, m2], ['角色A']);
+        assert.strictEqual(validatedBadType, null, '非法类型的归并条目必须被整条拦截丢弃，严禁降级为 fact');
+
+        // 2. 缺失可信参与者名单时，受限范围 (character/shared) 归并必须 Fail-Closed 拒绝
+        const charM1 = { id: 'cm-01', content: '私密1', type: 'fact', scope: 'character', character: '角色A', lifecycle: 'active', status: 'triggered' };
+        const charM2 = { id: 'cm-02', content: '私密2', type: 'fact', scope: 'character', character: '角色A', lifecycle: 'active', status: 'triggered' };
+        const charConsolidatePayload = {
+            consolidated: [
+                {
+                    content: '归并后的私密记忆',
+                    type: 'fact',
+                    scope: 'character',
+                    character: '角色A',
+                    supersedes: ['cm-01', 'cm-02']
+                }
+            ]
+        };
+        // 传入 null 参与者名单且上下文无有效参与者时
+        const origCtx = mockContext;
+        mockContext = null;
+        try {
+            const noPartRes = validateConsolidatedPayload(charConsolidatePayload, [charM1, charM2], null);
+            assert.strictEqual(noPartRes, null, '无法取得权威参与者名单时，受限记忆归并必须被 Fail-Closed 拦截');
+        } finally {
+            mockContext = origCtx;
+        }
+
+        // 3. normalizeAndValidateMemory 对显式非法 lifecycle 与 status 的拒绝性验证
+        const badLifecycleRes = normalizeAndValidateMemory({
+            content: '测试非法生命周期',
+            type: 'fact',
+            scope: 'world',
+            lifecycle: 'totally_invalid_lifecycle'
+        });
+        assert.strictEqual(badLifecycleRes.valid, false, '显式提供非法 lifecycle 必须拒绝入库');
+        assert.ok(badLifecycleRes.reason.includes('生命周期') && badLifecycleRes.reason.includes('非法'));
+
+        const badStatusRes = normalizeAndValidateMemory({
+            content: '测试非法状态',
+            type: 'fact',
+            scope: 'world',
+            status: 'unsupported_status_xxx'
+        });
+        assert.strictEqual(badStatusRes.valid, false, '显式提供非法 status 必须拒绝入库');
+        assert.ok(badStatusRes.reason.includes('状态') && badStatusRes.reason.includes('非法'));
     });
 
     console.log(`\n======================================================`);
