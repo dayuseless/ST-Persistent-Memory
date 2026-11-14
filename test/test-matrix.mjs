@@ -217,7 +217,9 @@ import {
     importSillyTavernApiConfig,
     togglePanel,
     renderMemoryCard,
-    showPromoteLoreModal
+    showPromoteLoreModal,
+    showAdvancedSettingsModal,
+    restoreRecommendedDefaults
 } from '../src/ui.js';
 
 import {
@@ -225,11 +227,16 @@ import {
     applyApiPreset,
     getContext,
     escapeHtml,
-    estimateTokens as commonEstimateTokens
+    estimateTokens as commonEstimateTokens,
+    restoreRecommendedDefaults as commonRestoreDefaults
 } from '../src/ui/common.js';
 
 import { renderMemoryCard as cardsRenderMemoryCard } from '../src/ui/cards.js';
-import { showSyncLoreModal as modalShowSyncLoreModal, showPromoteLoreModal as modalShowPromoteLoreModal } from '../src/ui/modal.js';
+import {
+    showSyncLoreModal as modalShowSyncLoreModal,
+    showPromoteLoreModal as modalShowPromoteLoreModal,
+    showAdvancedSettingsModal as modalShowAdvancedModal
+} from '../src/ui/modal.js';
 import { createFloatingButton as bubbleCreateFloatingButton, resetBubblePosition as bubbleResetBubblePosition } from '../src/ui/bubble.js';
 import {
     createNativeExtensionDrawer as drawerCreateNativeExtensionDrawer,
@@ -3102,25 +3109,25 @@ Intermediate analysis details...
     });
 
     // ─────────────────────────────────────────────────────────────
-    // T71: 全工程版本标识严格一致性核验 (0.1.41)
+    // T71: 全工程版本标识严格一致性核验 (0.1.42)
     // ─────────────────────────────────────────────────────────────
-    test('T71: 全工程版本标识严格一致性核验 (manifest, config, index 与各模块头部统一为 0.1.41)', () => {
+    test('T71: 全工程版本标识严格一致性核验 (manifest, config, index 与各模块头部统一为 0.1.42)', () => {
         const currentFile = fileURLToPath(import.meta.url);
         const rootDir = path.resolve(path.dirname(currentFile), '../');
 
         // 1. manifest.json
         const manifestPath = path.join(rootDir, 'manifest.json');
         const manifest = JSON.parse(fs.readFileSync(manifestPath, 'utf8'));
-        assert.strictEqual(manifest.version, '0.1.41', 'manifest.json 版本号应为 0.1.41');
+        assert.strictEqual(manifest.version, '0.1.42', 'manifest.json 版本号应为 0.1.42');
 
         // 2. src/config.js
-        assert.strictEqual(EXTENSION_VERSION, '0.1.41', 'config.js EXTENSION_VERSION 应为 0.1.41');
+        assert.strictEqual(EXTENSION_VERSION, '0.1.42', 'config.js EXTENSION_VERSION 应为 0.1.42');
 
         // 3. index.js
         const indexPath = path.join(rootDir, 'index.js');
         const indexContent = fs.readFileSync(indexPath, 'utf8');
-        assert.ok(indexContent.includes('v0.1.41'), 'index.js 头部必须标注 v0.1.41');
-        assert.ok(!indexContent.includes('v0.1.40'), 'index.js 严禁残留旧版本 v0.1.40 版本头');
+        assert.ok(indexContent.includes('v0.1.42'), 'index.js 头部必须标注 v0.1.42');
+        assert.ok(!indexContent.includes('v0.1.41'), 'index.js 严禁残留旧版本 v0.1.41 版本头');
 
         // 4. 各核心模块头部注释版本检查 (16 个核心模块 + 5 个 UI 子模块 = 21 个模块)
         const checkModules = [
@@ -3152,12 +3159,12 @@ Intermediate analysis details...
             const content = fs.readFileSync(filePath, 'utf8');
             const first10Lines = content.split('\n').slice(0, 10).join('\n');
             assert.ok(
-                first10Lines.includes('v0.1.41') || first10Lines.includes('0.1.41'),
-                `${relPath} 头部注释必须包含 0.1.41 版本标识`
+                first10Lines.includes('v0.1.42') || first10Lines.includes('0.1.42'),
+                `${relPath} 头部注释必须包含 0.1.42 版本标识`
             );
             assert.ok(
-                !first10Lines.includes('0.1.40') && !first10Lines.includes('v0.1.40'),
-                `${relPath} 头部注释严禁残留旧版本 0.1.40`
+                !first10Lines.includes('0.1.41') && !first10Lines.includes('v0.1.41'),
+                `${relPath} 头部注释严禁残留旧版本 0.1.41`
             );
         }
     });
@@ -4884,6 +4891,151 @@ Intermediate analysis details...
         assert.strictEqual(importedApi.url, 'https://api.openai.test/v1', '从酒馆配置导入 API url 应正确解析');
         assert.strictEqual(importedApi.model, 'test-model-turbo', '从酒馆配置导入 API model 应正确解析');
         delete mockContext.chatCompletionSettings;
+    });
+
+    // ─────────────────────────────────────────────────────────────
+    // T102: 傻瓜式全托管运行与详细参数模态框交互契约测试
+    // ─────────────────────────────────────────────────────────────
+    test('T102: 傻瓜式全托管运行与详细参数模态框交互契约测试 (一键恢复推荐参数且API凭据安全保留、详细设置弹窗构建与落盘)', () => {
+        // 1. 同源重导出透明性契约核验
+        assert.strictEqual(showAdvancedSettingsModal, modalShowAdvancedModal, 'src/ui.js 必须同源重导出 modal.js 的 showAdvancedSettingsModal');
+        assert.strictEqual(restoreRecommendedDefaults, commonRestoreDefaults, 'src/ui.js 必须同源重导出 common.js 的 restoreRecommendedDefaults');
+
+        // 2. 傻瓜式默认设想一键恢复测试 (restoreRecommendedDefaults: 重置底层参数，绝对安全保留 API 凭据)
+        const origSettings = { ...getSettings() };
+        try {
+            // 设定用户自定义的非常规底层参数 + 自定义 API 凭据
+            updateSettings({
+                maxSceneTokens: 380,
+                maxTotalMemoryTokens: 999,
+                asyncFrequency: 9,
+                semanticWeight: 0.15,
+                useCustomApi: true,
+                customApiUrl: 'https://my-private-model.org/v1',
+                customApiKey: 'sk-my-private-key-xyz-888',
+                customApiModel: 'my-custom-llm-v2',
+                embeddingApiUrl: 'https://my-embedding-api.org/v1'
+            });
+
+            // 执行恢复推荐默认参数
+            restoreRecommendedDefaults();
+
+            const curSettings = getSettings();
+
+            // 断言非 API 参数均已重置为官方推荐最佳实践默认值
+            assert.strictEqual(curSettings.maxSceneTokens, DEFAULT_SETTINGS.maxSceneTokens, '现场快照预算应恢复官方默认 150');
+            assert.strictEqual(curSettings.maxTotalMemoryTokens, DEFAULT_SETTINGS.maxTotalMemoryTokens, '记忆总预算应恢复官方默认 450');
+            assert.strictEqual(curSettings.asyncFrequency, DEFAULT_SETTINGS.asyncFrequency, '提炼频率应恢复官方默认 3');
+            assert.strictEqual(curSettings.semanticWeight, DEFAULT_SETTINGS.semanticWeight, '语义检索权重应恢复官方默认 0.60');
+
+            // ★ 核心安全约束断言：用户的自定义 API 凭据绝不可被重置或清除！
+            assert.strictEqual(curSettings.useCustomApi, true, '自定义 API 启用开关必须安全保留');
+            assert.strictEqual(curSettings.customApiUrl, 'https://my-private-model.org/v1', '用户的 API Base URL 必须安全保留');
+            assert.strictEqual(curSettings.customApiKey, 'sk-my-private-key-xyz-888', '用户的 API Key 必须安全保留');
+            assert.strictEqual(curSettings.customApiModel, 'my-custom-llm-v2', '用户的 API Model 必须安全保留');
+            assert.strictEqual(curSettings.embeddingApiUrl, 'https://my-embedding-api.org/v1', '用户的 Embedding API URL 必须安全保留');
+        } finally {
+            updateSettings(origSettings);
+        }
+
+        // 3. 详细参数设置模态框构建与交互测试 (showAdvancedSettingsModal)
+        let insertedModalHtml = '';
+        let modalClosed = false;
+        let saveCallbackTriggered = false;
+        const listeners = {};
+
+        const mockInputs = {
+            'input[name="pm-adv-mode"]:checked': { value: 'async' },
+            '#pm-adv-freq': { value: '4' },
+            '#pm-adv-slice': { value: '8' },
+            '#pm-adv-adaptive-cadence': { value: '1' },
+            '#pm-adv-adaptive-min-chars': { value: '80' },
+            '#pm-adv-scene-tokens': { value: '200' },
+            '#pm-adv-tokens': { value: '500' },
+            '#pm-adv-max-pinned': { value: '6' },
+            '#pm-adv-max-triggered': { value: '8' },
+            '#pm-adv-inject-pos': { value: '1' },
+            '#pm-adv-inject-depth': { value: '3' },
+            '#pm-adv-inject-template': { value: 'xml' },
+            '#pm-adv-semantic-enabled': { checked: true },
+            '#pm-adv-embedding-provider': { value: 'local' },
+            '#pm-adv-semantic-threshold': { value: '0.30' },
+            '#pm-adv-semantic-weight': { value: '0.70' },
+            '#pm-adv-embedding-url': { value: '' },
+            '#pm-adv-embedding-key': { value: '' },
+            '#pm-adv-embedding-model': { value: 'text-embedding-3-small' },
+            '#pm-adv-auto-consolidate': { value: '1' },
+            '#pm-adv-consolidate-threshold': { value: '12' },
+            '#pm-adv-auto-sleep': { value: '1' },
+            '#pm-adv-auto-sleep-turns': { value: '25' },
+            '#pm-adv-worldbook-enabled': { checked: true },
+            '#pm-adv-worldbook-context': { checked: true },
+            '#pm-adv-worldbook-boost': { value: '0.40' }
+        };
+
+        const mockAdvModalEl = {
+            remove: () => { modalClosed = true; insertedModalHtml = ''; },
+            addEventListener: (ev, cb) => { listeners['backdrop_' + ev] = cb; },
+            querySelector: (sel) => {
+                const node = mockInputs[sel] || {};
+                if (!node.addEventListener) {
+                    node.addEventListener = (ev, cb) => {
+                        listeners[sel + '_' + ev] = cb;
+                    };
+                }
+                return node;
+            },
+            querySelectorAll: (sel) => {
+                if (sel === 'input[name="pm-adv-mode"]') {
+                    return [
+                        { value: 'async', checked: true },
+                        { value: 'sync', checked: false }
+                    ];
+                }
+                return [];
+            }
+        };
+
+        const origDoc = global.document;
+        global.document = {
+            querySelectorAll: () => [],
+            getElementById: (id) => id === 'pm-advanced-settings-modal' ? mockAdvModalEl : null,
+            body: {
+                insertAdjacentHTML: (pos, html) => {
+                    insertedModalHtml = html;
+                }
+            }
+        };
+
+        try {
+            showAdvancedSettingsModal({
+                onSave: () => { saveCallbackTriggered = true; },
+                onClose: () => { modalClosed = true; }
+            });
+
+            // 验证模态框结构
+            assert.ok(insertedModalHtml.includes('pm-advanced-settings-modal'), '详细设置模态框必须插入 DOM');
+            assert.ok(insertedModalHtml.includes('详细与高级参数设置 (详细模式)'), '模态框标题必须醒目提示详细模式');
+            assert.ok(insertedModalHtml.includes('提炼运行模式与自适应节律'), '必须包含模块1：提炼运行模式与自适应节律');
+            assert.ok(insertedModalHtml.includes('Token 硬预算与配额保护'), '必须包含模块2：Token 硬预算与配额保护');
+            assert.ok(insertedModalHtml.includes('提示词注入位置与格式模板'), '必须包含模块3：提示词注入位置与格式模板');
+            assert.ok(insertedModalHtml.includes('语义检索与混合向量'), '必须包含模块4：语义检索与混合向量');
+            assert.ok(insertedModalHtml.includes('长程演进与休眠生命周期'), '必须包含模块5：长程演进与休眠生命周期');
+            assert.ok(insertedModalHtml.includes('世界书深度协同与参考'), '必须包含模块6：世界书深度协同与参考');
+            assert.ok(insertedModalHtml.includes('恢复推荐默认值'), '必须提供一键恢复推荐默认值按钮');
+
+            // 模拟触发保存按钮
+            if (listeners['#pm-adv-save-btn_click']) {
+                listeners['#pm-adv-save-btn_click']();
+                assert.strictEqual(saveCallbackTriggered, true, '点击保存必须调用 onSave 回调');
+                assert.strictEqual(modalClosed, true, '保存后模态框必须自动关闭清理');
+                const s = getSettings();
+                assert.strictEqual(s.maxSceneTokens, 200, '保存后设置应落盘对应数值');
+                assert.strictEqual(s.injectionTemplate, 'xml', '保存后注入模板应落盘对应选项');
+            }
+        } finally {
+            global.document = origDoc;
+        }
     });
 
     console.log(`\n======================================================`);

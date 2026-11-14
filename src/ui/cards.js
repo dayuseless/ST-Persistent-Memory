@@ -7,7 +7,7 @@
  * 4. 世界书设定关联标签、写入同步按钮与升格词条入口
  * 5. 行内原位即时编辑表单骨架与字符限制控制
  *
- * @version 0.1.41
+ * @version 0.1.42
  */
 
 import { MEMORY_STATUS, MEMORY_LIFECYCLE, MEMORY_SCOPE } from '../config.js';

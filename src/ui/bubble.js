@@ -6,7 +6,7 @@
  * 3. 手机端与桌面端屏幕坐标隔离持久化存储 (localStorage)
  * 4. 坐标重置自愈服务 (resetBubblePosition)
  *
- * @version 0.1.41
+ * @version 0.1.42
  */
 
 import { getSettings } from '../state.js';

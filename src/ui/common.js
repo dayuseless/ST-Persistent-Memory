@@ -5,11 +5,13 @@
  * 2. 酒馆全局上下文安全提取 (getContext)
  * 3. 启发式中英韩全字符 Token 快速估算 (estimateTokens)
  * 4. 常用 OpenAI 兼容 API 预设与一键填充 (API_PRESETS & applyApiPreset)
+ * 5. 傻瓜式全托管默认参数一键恢复服务 (restoreRecommendedDefaults，保留用户 API 凭据)
  *
- * @version 0.1.41
+ * @version 0.1.42
  */
 
-import { updateSettings, saveSettingsImmediately } from '../state.js';
+import { DEFAULT_SETTINGS } from '../config.js';
+import { getSettings, updateSettings, saveSettingsImmediately } from '../state.js';
 
 export const API_PRESETS = {
     deepseek: {
@@ -80,5 +82,31 @@ export function applyApiPreset(key, isNative = false) {
     saveSettingsImmediately();
     if (typeof window !== 'undefined') {
         window.toastr?.success?.(`已载入预设：${p.name} (${p.model})`, '持续记忆');
+    }
+}
+
+/**
+ * 傻瓜式全托管默认参数一键恢复服务
+ * 按照官方推荐设想将底层参数重置为系统最优默认值，同时绝对保留用户的 API 密钥与端点配置
+ */
+export function restoreRecommendedDefaults() {
+    const current = getSettings();
+    const preservedApi = {
+        useCustomApi: current.useCustomApi,
+        customApiUrl: current.customApiUrl,
+        customApiKey: current.customApiKey,
+        customApiModel: current.customApiModel,
+        embeddingApiUrl: current.embeddingApiUrl,
+        embeddingApiKey: current.embeddingApiKey,
+        embeddingModel: current.embeddingModel
+    };
+
+    updateSettings({
+        ...DEFAULT_SETTINGS,
+        ...preservedApi
+    });
+    saveSettingsImmediately();
+    if (typeof window !== 'undefined') {
+        window.toastr?.success?.('已一键恢复官方推荐默认参数（API 设置已安全保留）！', '持续记忆');
     }
 }

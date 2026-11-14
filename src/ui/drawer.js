@@ -4,15 +4,17 @@
  * 1. 注入 SillyTavern 原生扩展面板 (#extensions_settings)
  * 2. 注入顶部扩展下拉菜单快捷入口 (#extensionsMenu)
  * 3. 一键提取并同步酒馆原生 API 连接配置 (importSillyTavernApiConfig)
- * 4. 原生面板配置双向绑定、即时保存与连通性测试
+ * 4. 傻瓜式全托管运行状态概览与详细参数设置弹窗入口
+ * 5. 原生面板配置双向绑定、即时保存与连通性测试
  *
- * @version 0.1.41
+ * @version 0.1.42
  */
 
 import { MODULE_NAME } from '../config.js';
 import { getState, getSettings, updateSettings, saveSettingsImmediately } from '../state.js';
 import { triggerAsyncDigest, testCustomApiConnection } from '../extractor.js';
-import { escapeHtml, applyApiPreset } from './common.js';
+import { escapeHtml, applyApiPreset, restoreRecommendedDefaults } from './common.js';
+import { showAdvancedSettingsModal } from './modal.js';
 
 /**
  * 一键提取并同步 SillyTavern 原生连接设置中的 Custom / OpenAI API 端点、密钥与模型
@@ -193,54 +195,21 @@ export function renderNativeDrawerContent(onToggleHUD, onRenderPanel) {
                 </div>
             </div>
 
-            <div class="pm-input-row pm-mb-8">
-                <label class="pm-input-label">提炼运行模式：</label>
-                <div class="pm-toggle-group">
-                    <label class="pm-radio-label">
-                        <input type="radio" name="pm-native-mode" value="async" ${settings.mode === 'async' ? 'checked' : ''}>
-                        <span>异步后台 (独立提炼)</span>
-                    </label>
-                    <label class="pm-radio-label">
-                        <input type="radio" name="pm-native-mode" value="sync" ${settings.mode === 'sync' ? 'checked' : ''}>
-                        <span>伴随标签 (零额外请求)</span>
-                    </label>
+            <!-- 🚀 傻瓜式全托管运行简报与详细参数入口 -->
+            <div class="pm-section-card pm-mb-8">
+                <div style="font-weight: 700; color: #0f172a; font-size: 13px; display: flex; align-items: center; justify-content: space-between; margin-bottom: 6px;">
+                    <span><i class="fa-solid fa-wand-magic-sparkles" style="color: #2563eb;"></i> 傻瓜式全托管模式</span>
+                    <span style="font-size: 11px; color: #16a34a; font-weight: 600;"><i class="fa-solid fa-circle-check"></i> 官方推荐生效中</span>
                 </div>
-            </div>
-
-            <!-- 核心 Token 预算与快照上限设置 (原生抽屉直接调节) -->
-            <div class="pm-grid-2col pm-mb-8">
-                <div class="pm-input-row">
-                    <label class="pm-input-label">现场快照上限 (Tok):</label>
-                    <input type="number" id="pm-native-scene-tokens" class="pm-input" min="50" max="800" value="${settings.maxSceneTokens || 150}" title="现场快照所允许占用的独立硬 Token 预算 (默认 150，范围 50~800)">
+                <div style="font-size: 11px; color: #64748b; line-height: 1.4; margin-bottom: 10px;">
+                    已自动编排自适应提炼、Token 硬预算与混合语义检索。如需微调底层参数，可随时打开详细面板。
                 </div>
-                <div class="pm-input-row">
-                    <label class="pm-input-label">记忆总 Token 预算:</label>
-                    <input type="number" id="pm-native-tokens" class="pm-input" min="150" max="2500" value="${settings.maxTotalMemoryTokens || 450}" title="提示词记忆注入总硬预算 (默认 450，范围 150~2500)">
-                </div>
-            </div>
-
-            <div class="pm-input-row pm-mb-8">
-                <label class="pm-input-label">提示词注入格式模板：</label>
-                <select id="pm-native-inject-template" class="pm-input" style="cursor: pointer;">
-                    <option value="standard" ${settings.injectionTemplate === 'standard' || !settings.injectionTemplate ? 'selected' : ''}>🇨🇳 标准中文 (默认，通用RP)</option>
-                    <option value="xml" ${settings.injectionTemplate === 'xml' ? 'selected' : ''}>🏷️ 结构化 XML (推荐 Claude 3.5 / GPT-4o)</option>
-                    <option value="english" ${settings.injectionTemplate === 'english' ? 'selected' : ''}>🇬🇧 英文原生 English (推荐英文角色卡)</option>
-                    <option value="compact" ${settings.injectionTemplate === 'compact' ? 'selected' : ''}>⚡ 极简紧凑 Compact (极致节省 Token)</option>
-                </select>
-            </div>
-
-            <div class="pm-input-row pm-mb-8">
-                <label class="pm-input-label">智能增量提炼节律：</label>
-                <div class="pm-toggle-group">
-                    <label class="pm-radio-label">
-                        <input type="radio" name="pm-native-adaptive-cadence" value="1" ${settings.adaptiveCadenceEnabled !== false ? 'checked' : ''}>
-                        <span>启用 (防寒暄API浪费)</span>
-                    </label>
-                    <label class="pm-radio-label">
-                        <input type="radio" name="pm-native-adaptive-cadence" value="0" ${settings.adaptiveCadenceEnabled === false ? 'checked' : ''}>
-                        <span>停用 (固定轮数)</span>
-                    </label>
-                </div>
+                <button type="button" id="pm-native-open-adv-btn" class="pm-btn-primary" style="width: 100%; margin-bottom: 6px; padding: 7px 10px; font-size: 12px; background: #2563eb; border-color: #1d4ed8;">
+                    <i class="fa-solid fa-sliders"></i> 打开详细与高级参数设置 (弹出面板)
+                </button>
+                <button type="button" id="pm-native-restore-btn" class="pm-btn-secondary" style="width: 100%; padding: 6px 10px; font-size: 11px;" title="重置除 API 之外的所有底层微调参数为官方最优默认值">
+                    <i class="fa-solid fa-rotate-left"></i> 一键恢复推荐默认参数 (保持API)
+                </button>
             </div>
 
             <div class="pm-input-row pm-mb-8">
@@ -325,22 +294,19 @@ export function renderNativeDrawerContent(onToggleHUD, onRenderPanel) {
         }
     });
 
-    content.querySelectorAll('input[name="pm-native-mode"]').forEach(radio => {
-        radio.addEventListener('change', (e) => {
-            updateSettings({ mode: e.target.value });
-            const hudRadios = document.querySelectorAll('input[name="pm-mode"]');
-            hudRadios.forEach(hr => {
-                if (hr.value === e.target.value) hr.checked = true;
-            });
+    content.querySelector('#pm-native-open-adv-btn')?.addEventListener('click', () => {
+        showAdvancedSettingsModal({
+            onSave: () => {
+                if (typeof onRenderPanel === 'function') onRenderPanel();
+                renderNativeDrawerContent(onToggleHUD, onRenderPanel);
+            }
         });
     });
 
-    content.querySelector('#pm-native-inject-template')?.addEventListener('change', (e) => {
-        updateSettings({ injectionTemplate: e.target.value });
-        const hudSelect = document.getElementById('pm-setting-inject-template');
-        if (hudSelect) hudSelect.value = e.target.value;
-        saveSettingsImmediately();
-        window.toastr?.info?.(`提示词注入模板已切换为: ${e.target.options[e.target.selectedIndex].text}`, '持续记忆');
+    content.querySelector('#pm-native-restore-btn')?.addEventListener('click', () => {
+        restoreRecommendedDefaults();
+        if (typeof onRenderPanel === 'function') onRenderPanel();
+        renderNativeDrawerContent(onToggleHUD, onRenderPanel);
     });
 
     content.querySelector('#pm-native-custom-api-enabled')?.addEventListener('change', (e) => {
@@ -361,43 +327,23 @@ export function renderNativeDrawerContent(onToggleHUD, onRenderPanel) {
         const url = (content.querySelector('#pm-native-custom-api-url')?.value || '').trim();
         const key = (content.querySelector('#pm-native-custom-api-key')?.value || '').trim();
         const model = (content.querySelector('#pm-native-custom-api-model')?.value || 'gpt-4o-mini').trim();
-        const mode = content.querySelector('input[name="pm-native-mode"]:checked')?.value || 'async';
         const isEnabled = content.querySelector('#pm-setting-enabled')?.checked ?? true;
         const bubble = content.querySelector('#pm-native-bubble-enabled')?.checked ?? true;
         const useCustom = content.querySelector('#pm-native-custom-api-enabled')?.checked ?? false;
-        const template = content.querySelector('#pm-native-inject-template')?.value || 'standard';
-        const adaptiveCadence = (content.querySelector('input[name="pm-native-adaptive-cadence"]:checked')?.value ?? '1') === '1';
-        const sceneTok = Math.max(50, Math.min(800, parseInt(content.querySelector('#pm-native-scene-tokens')?.value) || 150));
-        const memTok = Math.max(150, Math.min(2500, parseInt(content.querySelector('#pm-native-tokens')?.value) || 450));
         updateSettings({
             customApiUrl: url,
             customApiKey: key,
             customApiModel: model,
-            mode: mode,
             enabled: isEnabled,
             showFloatingBubble: bubble,
-            useCustomApi: useCustom,
-            injectionTemplate: template,
-            adaptiveCadenceEnabled: adaptiveCadence,
-            maxSceneTokens: sceneTok,
-            maxTotalMemoryTokens: memTok
+            useCustomApi: useCustom
         });
-
-        // 联动同步 HUD 面板输入框数值
-        const hudSceneTok = document.getElementById('pm-setting-scene-tokens');
-        if (hudSceneTok && document.activeElement !== hudSceneTok) hudSceneTok.value = sceneTok;
-        const hudMemTok = document.getElementById('pm-setting-tokens');
-        if (hudMemTok && document.activeElement !== hudMemTok) hudMemTok.value = memTok;
-        const hudTab2SceneTok = document.getElementById('pm-scene-max-tokens');
-        if (hudTab2SceneTok && document.activeElement !== hudTab2SceneTok) hudTab2SceneTok.value = sceneTok;
     };
 
     ['input', 'change'].forEach(evt => {
         content.querySelector('#pm-native-custom-api-url')?.addEventListener(evt, syncNativeInputs);
         content.querySelector('#pm-native-custom-api-key')?.addEventListener(evt, syncNativeInputs);
         content.querySelector('#pm-native-custom-api-model')?.addEventListener(evt, syncNativeInputs);
-        content.querySelector('#pm-native-scene-tokens')?.addEventListener(evt, syncNativeInputs);
-        content.querySelector('#pm-native-tokens')?.addEventListener(evt, syncNativeInputs);
     });
 
     content.querySelector('#pm-native-import-st-api-btn')?.addEventListener('click', () => {

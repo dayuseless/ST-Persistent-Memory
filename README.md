@@ -1,6 +1,6 @@
 # SillyTavern 持续记忆插件 (ST-Persistent-Memory)
 
-[![Version](https://img.shields.io/badge/version-v0.1.41-blue.svg)](https://github.com/dayuseless/ST-Persistent-Memory)
+[![Version](https://img.shields.io/badge/version-v0.1.42-blue.svg)](https://github.com/dayuseless/ST-Persistent-Memory)
 [![SillyTavern](https://img.shields.io/badge/SillyTavern-1.12.0+-purple.svg)](https://github.com/SillyTavern/SillyTavern)
 [![License](https://img.shields.io/badge/license-MIT-green.svg)](LICENSE)
 
@@ -77,7 +77,7 @@
 
 ### 方式二：手动离线包安装
 
-1. 从 [Releases 页面](https://github.com/dayuseless/ST-Persistent-Memory/releases) 下载 `ST-Persistent-Memory-v0.1.41.zip`。
+1. 从 [Releases 页面](https://github.com/dayuseless/ST-Persistent-Memory/releases) 下载 `ST-Persistent-Memory-v0.1.42.zip`。
 2. 解压到 SillyTavern 的扩展目录中：
    ```text
    SillyTavern/public/scripts/extensions/third-party/ST-Persistent-Memory/
@@ -158,6 +158,17 @@ window.__persistentMemory.digestNow();
 ---
 
 ## 📝 版本历史
+
+### v0.1.42 (UX 体验重大升级：引入“傻瓜式默认全托管”与“详细式弹窗微调”双模式)
+
+- **UI 界面层繁琐度彻底净化 (傻瓜式全托管默认生效)**：
+  - 针对普通用户直面 20 余项微调参数认知过载的问题，重构设置交互架构：
+    1. **傻瓜式全托管 (默认主视图)**：底层参数（提炼频率、回溯切片、Token 预算、注入位置/深度、混合向量权重、长程归并阈值、自动沉睡轮数）完全遵循官方推荐最佳实践全自动运转，无需用户操心；
+    2. **API 设置独立保留**：自定义兼容 OpenAI API 端点、Key、模型、预设胶囊、一键同步酒馆主 API 依然直观陈列于主视图，确保新用户仅需配置好 API 即可开箱即用；
+    3. **详细参数弹窗面板 (`showAdvancedSettingsModal`)**：提供醒目的【打开详细与高级参数设置 (弹出面板)】入口，点击弹出全屏响应式模态框，供进阶用户精细调控所有 6 大底层模块的微调参数；
+    4. **一键恢复推荐默认值 (`restoreRecommendedDefaults`)**：支持随时一键将所有底层参数重置为黄金推荐值，且绝对安全保留用户的 API 密钥与端点凭据。
+- **测试矩阵扩展至 102 项 (102/102 全绿通过)**：
+  - 新增 **T102: 傻瓜式全托管运行与详细参数模态框交互契约测试**，全面验证双模式交互契约、API 凭据安全保留与参数重置逻辑。
 
 ### v0.1.41 (UI 界面层全组件化架构解耦：拆分出 5 大独立 UI 模块)
 

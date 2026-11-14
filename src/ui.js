@@ -1,6 +1,6 @@
 /**
- * UI 管理器 (v0.1.41)：原生扩展抽屉集成、屏幕快捷悬浮按钮（支持自由拖拽与持久化）与 HUD 侧边控制台
- * 全面升级：UI组件化架构解耦 (src/ui/common.js, cards.js, modal.js, bubble.js, drawer.js)、统一ACL判定层介入、行内即时编辑、记忆数据独立导出/导入迁移、世界书升格安全确认、长程宏观归并 (Consolidation)、终态记忆过滤与归档清理抽屉
+ * UI 管理器 (v0.1.42)：原生扩展抽屉集成、屏幕快捷悬浮按钮（支持自由拖拽与持久化）与 HUD 侧边控制台
+ * 全面升级：傻瓜式与详细式双模式架构（默认傻瓜全托管，详细参数弹窗微调）、UI组件化解耦、统一ACL判定层介入、行内即时编辑、记忆数据独立导出/导入迁移、世界书升格安全确认
  */
 
 import { MODULE_NAME, MEMORY_STATUS, MEMORY_LIFECYCLE, MEMORY_SCOPE } from './config.js';
@@ -8,9 +8,9 @@ import { getState, getSettings, updateSettings, saveSettingsImmediately, updateS
 import { triggerAsyncDigest, triggerMemoryConsolidation, testCustomApiConnection, triggerBacklogDigest, abortBacklogDigest, isBacklogDigestRunning } from './extractor.js';
 import { testEmbeddingApiConnection } from './semantic.js';
 
-import { API_PRESETS, applyApiPreset, getContext, escapeHtml, estimateTokens } from './ui/common.js';
+import { API_PRESETS, applyApiPreset, getContext, escapeHtml, estimateTokens, restoreRecommendedDefaults } from './ui/common.js';
 import { renderMemoryCard } from './ui/cards.js';
-import { showSyncLoreModal, showPromoteLoreModal } from './ui/modal.js';
+import { showSyncLoreModal, showPromoteLoreModal, showAdvancedSettingsModal } from './ui/modal.js';
 import { createFloatingButton, resetBubblePosition } from './ui/bubble.js';
 import { createNativeExtensionDrawer, registerExtensionsMenuEntry, renderNativeDrawerContent, importSillyTavernApiConfig } from './ui/drawer.js';
 
@@ -609,242 +609,72 @@ function renderPanelContent() {
                 </div>
             </div>
 
-            <!-- 核心参数与 Token 预算 -->
-            <div class="pm-section-card">
-                <div class="pm-section-header">
-                    <span class="pm-section-title"><i class="fa-solid fa-sliders"></i> 提炼参数与 Token 预算</span>
+            <!-- 🚀 傻瓜式全托管运行概览与详细参数入口 -->
+            <div class="pm-section-card pm-mb-8">
+                <div class="pm-section-header" style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 8px;">
+                    <span class="pm-section-title" style="font-weight: 700; color: #0f172a; font-size: 13px; display: flex; align-items: center; gap: 6px;">
+                        <i class="fa-solid fa-wand-magic-sparkles" style="color: #2563eb;"></i> 傻瓜式全托管模式 (官方推荐)
+                    </span>
+                    <span class="pm-hero-pill" style="background: rgba(37, 99, 235, 0.1); color: #2563eb; border: 1px solid rgba(37, 99, 235, 0.25); font-size: 11px; padding: 2px 8px; border-radius: 12px; font-weight: 600;">
+                        已就绪
+                    </span>
+                </div>
+                <div style="font-size: 12px; color: #475569; margin-bottom: 12px; line-height: 1.5;">
+                    无需繁杂调试，系统已根据酒馆最佳实践预置黄金调控参数。记忆提炼、Token 硬预算隔离、混合语义检索与长程归并全自动无感运行。
                 </div>
 
-                <div class="pm-input-row pm-mb-8">
-                    <label class="pm-input-label">提炼运行模式：</label>
-                    <div class="pm-toggle-group">
-                        <label class="pm-radio-label">
-                            <input type="radio" name="pm-mode" value="async" ${settings.mode === 'async' ? 'checked' : ''}>
-                            <span>异步后台 (独立提炼)</span>
-                        </label>
-                        <label class="pm-radio-label">
-                            <input type="radio" name="pm-mode" value="sync" ${settings.mode === 'sync' ? 'checked' : ''}>
-                            <span>伴随标签 (零额外请求)</span>
-                        </label>
-                    </div>
-                    <div style="font-size: 11px; color: #64748b; line-height: 1.4; margin-top: 4px;">
-                        💡 <b>异步后台 (独立提炼)</b>：主回复完成后由独立 API 自动异步安静提炼，不占正文输出；<br>
-                        💡 <b>伴随标签 (零额外请求)</b>：回复末尾自动附带隐藏状态标签由插件拦截入库，零额外请求。
-                    </div>
-                </div>
-
-                <div class="pm-grid-2col pm-mb-8">
-                    <div class="pm-input-row">
-                        <label class="pm-input-label">提炼频率 (每 N 轮):</label>
-                        <input type="number" id="pm-setting-freq" class="pm-input" min="1" max="20" value="${settings.asyncFrequency || 3}">
-                    </div>
-                    <div class="pm-input-row">
-                        <label class="pm-input-label">历史回溯 (条数):</label>
-                        <input type="number" id="pm-setting-slice" class="pm-input" min="2" max="15" value="${settings.digestSliceCount || 6}">
-                    </div>
-                </div>
-
-                <div class="pm-grid-2col pm-mb-8">
-                    <div class="pm-input-row">
-                        <label class="pm-input-label">现场快照上限 (Tok):</label>
-                        <input type="number" id="pm-setting-scene-tokens" class="pm-input" min="50" max="800" value="${settings.maxSceneTokens || 150}">
-                    </div>
-                    <div class="pm-input-row">
-                        <label class="pm-input-label">记忆总 Token 预算:</label>
-                        <input type="number" id="pm-setting-tokens" class="pm-input" min="150" max="2500" value="${settings.maxTotalMemoryTokens || 450}">
-                    </div>
-                </div>
-
-                <div class="pm-grid-2col pm-mb-8">
-                    <div class="pm-input-row">
-                        <label class="pm-input-label">常驻记忆上限 (条):</label>
-                        <input type="number" id="pm-setting-max-pinned" class="pm-input" min="1" max="15" value="${settings.maxPinnedCount || 5}">
-                    </div>
-                    <div class="pm-input-row">
-                        <label class="pm-input-label">激活记忆上限 (条):</label>
-                        <input type="number" id="pm-setting-max-triggered" class="pm-input" min="1" max="30" value="${settings.maxTriggeredCount || 5}">
-                    </div>
-                </div>
-
-                <div class="pm-grid-2col pm-mb-8">
-                    <div class="pm-input-row">
-                        <label class="pm-input-label">提示词注入位置：</label>
-                        <select id="pm-setting-inject-pos" class="pm-input" style="cursor: pointer;">
-                            <option value="1" ${(settings.injectionPosition ?? 1) == 1 ? 'selected' : ''}>对话内 (In-Chat @ 深度)</option>
-                            <option value="0" ${(settings.injectionPosition ?? 1) == 0 ? 'selected' : ''}>系统主提示词 (System Prompt)</option>
-                        </select>
-                    </div>
-                    <div class="pm-input-row">
-                        <label class="pm-input-label">对话注入深度 (Depth):</label>
-                        <input type="number" id="pm-setting-inject-depth" class="pm-input" min="0" max="20" value="${settings.injectionDepth ?? 2}">
-                    </div>
-                </div>
-
-                <div class="pm-input-row pm-mb-8">
-                    <label class="pm-input-label">提示词注入格式模板 (Template):</label>
-                    <select id="pm-setting-inject-template" class="pm-input" style="cursor: pointer;">
-                        <option value="standard" ${settings.injectionTemplate === 'standard' || !settings.injectionTemplate ? 'selected' : ''}>🇨🇳 标准中文 (默认，通用RP)</option>
-                        <option value="xml" ${settings.injectionTemplate === 'xml' ? 'selected' : ''}>🏷️ 结构化 XML (推荐 Claude 3.5 / GPT-4o)</option>
-                        <option value="english" ${settings.injectionTemplate === 'english' ? 'selected' : ''}>🇬🇧 英文原生 English (推荐英文角色卡)</option>
-                        <option value="compact" ${settings.injectionTemplate === 'compact' ? 'selected' : ''}>⚡ 极简紧凑 Compact (极致节省 Token)</option>
-                    </select>
-                </div>
-
-                <div class="pm-grid-2col pm-mb-8">
-                    <div class="pm-input-row">
-                        <label class="pm-input-label">长程宏观自动归并：</label>
-                        <select id="pm-setting-auto-consolidate" class="pm-input" style="cursor: pointer;">
-                            <option value="1" ${settings.autoConsolidate !== false ? 'selected' : ''}>启用 (达到阈值后台自动压缩)</option>
-                            <option value="0" ${settings.autoConsolidate === false ? 'selected' : ''}>停用 (仅允许手动触发)</option>
-                        </select>
-                    </div>
-                    <div class="pm-input-row">
-                        <label class="pm-input-label">归并触发阈值 (条数):</label>
-                        <input type="number" id="pm-setting-consolidate-threshold" class="pm-input" min="5" max="50" value="${settings.consolidateThreshold || 10}">
-                    </div>
-                </div>
-
-                <div class="pm-grid-2col pm-mb-8">
-                    <div class="pm-input-row">
-                        <label class="pm-input-label">闲置记忆自动沉睡：</label>
-                        <select id="pm-setting-auto-sleep" class="pm-input" style="cursor: pointer;">
-                            <option value="1" ${settings.autoSleepEnabled !== false ? 'selected' : ''}>启用 (超期未提及自动休眠)</option>
-                            <option value="0" ${settings.autoSleepEnabled === false ? 'selected' : ''}>停用 (始终保持活跃)</option>
-                        </select>
-                    </div>
-                    <div class="pm-input-row">
-                        <label class="pm-input-label">沉睡未命中轮数：</label>
-                        <input type="number" id="pm-setting-auto-sleep-turns" class="pm-input" min="5" max="100" value="${settings.autoSleepTurns || 20}">
-                    </div>
-                </div>
-
-                <div class="pm-grid-2col pm-mb-8">
-                    <div class="pm-input-row">
-                        <label class="pm-input-label">智能增量提炼节律：</label>
-                        <select id="pm-setting-adaptive-cadence" class="pm-input" style="cursor: pointer;">
-                            <option value="1" ${settings.adaptiveCadenceEnabled !== false ? 'selected' : ''}>启用 (寒暄短句延迟以节约API)</option>
-                            <option value="0" ${settings.adaptiveCadenceEnabled === false ? 'selected' : ''}>停用 (按固定轮数强制触发)</option>
-                        </select>
-                    </div>
-                    <div class="pm-input-row">
-                        <label class="pm-input-label">剧情增量门槛 (字数):</label>
-                        <input type="number" id="pm-setting-adaptive-min-chars" class="pm-input" min="20" max="500" value="${settings.adaptiveCadenceMinChars || 60}">
-                    </div>
-                </div>
-
-                <!-- 语义检索与向量基建 -->
-                <div class="pm-section-card pm-mt-12" style="background: #f8fafc; border: 1px solid #e2e8f0; border-radius: 8px; padding: 12px; margin-top: 14px;">
-                    <div class="pm-section-header" style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 6px;">
-                        <span class="pm-section-title" style="font-weight: 600; font-size: 13px; color: #1e293b; display: flex; align-items: center; gap: 6px;">
-                            <i class="fa-solid fa-brain" style="color: #8b5cf6;"></i> 语义检索与向量基建 (Hybrid Search)
-                        </span>
-                        <div class="pm-switch">
-                            <input type="checkbox" id="pm-setting-semantic-enabled" ${settings.semanticRetrievalEnabled !== false ? 'checked' : ''}>
-                            <span class="pm-slider"></span>
+                <!-- 4 宫格全托管规则简报 -->
+                <div style="display: grid; grid-template-columns: 1fr 1fr; gap: 8px; margin-bottom: 12px;">
+                    <div style="background: #f8fafc; border: 1px solid #e2e8f0; border-radius: 6px; padding: 8px 10px;">
+                        <div style="font-size: 11px; font-weight: 600; color: #0f172a; display: flex; align-items: center; gap: 4px;">
+                            <i class="fa-solid fa-clock-rotate-left" style="color: #f59e0b;"></i> 自适应节律
+                        </div>
+                        <div style="font-size: 11px; color: #64748b; margin-top: 2px;">
+                            每 ${settings.asyncFrequency || 3} 轮后台静默提炼，智能过滤无剧情闲聊
                         </div>
                     </div>
-                    <div style="font-size: 12px; color: #64748b; margin-bottom: 10px; line-height: 1.4;">
-                        结合关键词词法与高维向量余弦相似度，精准识别近义表达与概念关联（如“海啸”与“巨浪侵袭村庄”），彻底摆脱死板字面匹配。
+                    <div style="background: #f8fafc; border: 1px solid #e2e8f0; border-radius: 6px; padding: 8px 10px;">
+                        <div style="font-size: 11px; font-weight: 600; color: #0f172a; display: flex; align-items: center; gap: 4px;">
+                            <i class="fa-solid fa-shield-halved" style="color: #10b981;"></i> Token 安全预算
+                        </div>
+                        <div style="font-size: 11px; color: #64748b; margin-top: 2px;">
+                            快照 ${settings.maxSceneTokens || 150} T + 记忆 ${settings.maxTotalMemoryTokens || 450} T 动态硬上限
+                        </div>
                     </div>
-
-                    <div id="pm-semantic-settings-block" style="${settings.semanticRetrievalEnabled !== false ? 'display: block;' : 'display: none;'}">
-                        <div class="pm-grid-2col pm-mb-8">
-                            <div class="pm-input-row">
-                                <label class="pm-input-label">向量计算引擎：</label>
-                                <select id="pm-setting-embedding-provider" class="pm-input" style="cursor: pointer;">
-                                    <option value="local" ${(settings.embeddingProvider || 'local') === 'local' ? 'selected' : ''}>内置轻量向量引擎 (零依赖/全离线/秒级响应)</option>
-                                    <option value="custom_api" ${settings.embeddingProvider === 'custom_api' ? 'selected' : ''}>外部 OpenAI 兼容端点 (/embeddings)</option>
-                                </select>
-                            </div>
-                            <div class="pm-input-row">
-                                <label class="pm-input-label">语义相似度激活阈值 (<span id="pm-val-semantic-threshold">${Number(settings.semanticThreshold ?? 0.25).toFixed(2)}</span>):</label>
-                                <input type="range" id="pm-setting-semantic-threshold" min="0.10" max="0.90" step="0.05" value="${settings.semanticThreshold ?? 0.25}" style="width: 100%; cursor: pointer;">
-                            </div>
+                    <div style="background: #f8fafc; border: 1px solid #e2e8f0; border-radius: 6px; padding: 8px 10px;">
+                        <div style="font-size: 11px; font-weight: 600; color: #0f172a; display: flex; align-items: center; gap: 4px;">
+                            <i class="fa-solid fa-brain" style="color: #8b5cf6;"></i> 混合语义检索
                         </div>
-
-                        <div class="pm-grid-2col pm-mb-8">
-                            <div class="pm-input-row">
-                                <label class="pm-input-label">语义打分权重占比 (<span id="pm-val-semantic-weight">${Math.round((settings.semanticWeight ?? 0.60) * 100)}%</span> 语义 + <span id="pm-val-lexical-weight">${Math.round((1 - (settings.semanticWeight ?? 0.60)) * 100)}%</span> 词法):</label>
-                                <input type="range" id="pm-setting-semantic-weight" min="0.0" max="1.0" step="0.05" value="${settings.semanticWeight ?? 0.60}" style="width: 100%; cursor: pointer;">
-                            </div>
-                            <div class="pm-input-row" style="display: flex; align-items: flex-end;">
-                                <button id="pm-btn-reindex-all" class="pm-btn-secondary" style="width: 100%; cursor: pointer; padding: 6px 10px; font-size: 12px;">
-                                    <i class="fa-solid fa-arrows-rotate"></i> 重新索引全库向量
-                                </button>
-                            </div>
+                        <div style="font-size: 11px; color: #64748b; margin-top: 2px;">
+                            本地向量引擎 + 关键词近义关联召回
                         </div>
-
-                        <div id="pm-embedding-api-fields" style="${settings.embeddingProvider === 'custom_api' ? 'display: block;' : 'display: none;'} margin-top: 8px; padding-top: 8px; border-top: 1px dashed #cbd5e1;">
-                            <div class="pm-input-row">
-                                <label class="pm-input-label">Embedding API Base URL (留空沿用提炼端点):</label>
-                                <input type="text" id="pm-setting-embedding-url" class="pm-input" value="${escapeHtml(settings.embeddingApiUrl || '')}" placeholder="继承提炼 API 或如 https://api.openai.com/v1">
-                            </div>
-                            <div class="pm-grid-2col pm-mb-8">
-                                <div class="pm-input-row" style="margin-bottom: 0;">
-                                    <label class="pm-input-label">Embedding API Key (留空沿用提炼密钥):</label>
-                                    <input type="password" id="pm-setting-embedding-key" class="pm-input" value="${escapeHtml(settings.embeddingApiKey || '')}" placeholder="继承提炼 API Key">
-                                </div>
-                                <div class="pm-input-row" style="margin-bottom: 0;">
-                                    <label class="pm-input-label">向量模型 (如 text-embedding-3-small, bge-m3):</label>
-                                    <input type="text" id="pm-setting-embedding-model" class="pm-input" value="${escapeHtml(settings.embeddingModel || 'text-embedding-3-small')}" placeholder="text-embedding-3-small">
-                                </div>
-                            </div>
-                            <div style="display: flex; gap: 8px; align-items: center; margin-top: 6px; flex-wrap: wrap;">
-                                <button id="pm-btn-test-embedding-api" class="pm-btn-test">
-                                    <i class="fa-solid fa-plug"></i> 测试向量 API 连通性
-                                </button>
-                                <button id="pm-btn-import-digest-api" class="pm-btn-test" title="一键从上方提炼 API 同步 Base URL 与 Key">
-                                    <i class="fa-solid fa-copy"></i> 继承提炼 API 配置
-                                </button>
-                                <span id="pm-embedding-api-test-status" style="font-size: 11px; font-weight: 500;"></span>
-                            </div>
+                    </div>
+                    <div style="background: #f8fafc; border: 1px solid #e2e8f0; border-radius: 6px; padding: 8px 10px;">
+                        <div style="font-size: 11px; font-weight: 600; color: #0f172a; display: flex; align-items: center; gap: 4px;">
+                            <i class="fa-solid fa-boxes-packing" style="color: #0284c7;"></i> 长期演进维护
+                        </div>
+                        <div style="font-size: 11px; color: #64748b; margin-top: 2px;">
+                            满 ${settings.consolidateThreshold || 10} 条自动宏观归并，${settings.autoSleepTurns || 20} 轮闲置沉睡
                         </div>
                     </div>
                 </div>
 
-                <!-- 世界书关联与协同 (World Info Integration) - 会话内作用域 -->
-                <div class="pm-section-card pm-mt-8">
-                    <div class="flex-container alignitemscenter wide100p pm-mb-4" style="justify-content: space-between;">
-                        <div style="font-weight: 700; color: #0f172a; font-size: 13px; display: flex; align-items: center; gap: 6px;">
-                            <i class="fa-solid fa-book-atlas" style="color: #0284c7;"></i> 世界书关联与协同 (World Info)
-                            <span class="pm-hero-pill" style="background: rgba(14, 165, 233, 0.15); color: #0284c7; border: 1px solid rgba(14, 165, 233, 0.3);">会话内协同</span>
-                        </div>
-                        <div class="pm-switch">
-                            <input type="checkbox" id="pm-setting-worldbook-enabled" ${settings.worldBookIntegrationEnabled !== false ? 'checked' : ''}>
-                            <span class="pm-slider"></span>
-                        </div>
-                    </div>
-                    <div style="font-size: 12px; color: #64748b; margin-bottom: 10px; line-height: 1.4;">
-                        允许动态记忆与世界书设定条目进行关联，将故事中发生的状态变迁（如神剑拔出、城池失守）作为世界书条目的实时动态补丁协同注入上下文。
-                    </div>
-
-                    <div id="pm-worldbook-settings-block" style="${settings.worldBookIntegrationEnabled !== false ? 'display: block;' : 'display: none;'}">
-                        <div class="pm-grid-2col pm-mb-8">
-                            <div class="pm-input-row" style="margin-bottom: 0;">
-                                <label class="pm-switch-wrapper">
-                                    <span style="font-size: 12px; color: #334155; font-weight: 600;">提炼时参考当前世界书条目：</span>
-                                    <div class="pm-switch" style="margin-left: 8px;">
-                                        <input type="checkbox" id="pm-setting-worldbook-context" ${settings.worldBookContextToExtractor !== false ? 'checked' : ''}>
-                                        <span class="pm-slider"></span>
-                                    </div>
-                                </label>
-                            </div>
-                            <div class="pm-input-row" style="margin-bottom: 0;">
-                                <label class="pm-input-label">世界书条目激活加权 (<span id="pm-val-worldbook-boost">${Number(settings.worldBookBoostScore ?? 0.35).toFixed(2)}</span>):</label>
-                                <input type="range" id="pm-setting-worldbook-boost" min="0.0" max="1.0" step="0.05" value="${settings.worldBookBoostScore ?? 0.35}" style="width: 100%; cursor: pointer;">
-                            </div>
-                        </div>
-                        <div id="pm-active-worldbook-info" style="font-size: 12px; color: #475569; background: #f0f9ff; border: 1px solid #bae6fd; border-radius: 6px; padding: 8px 10px; margin-top: 6px; display: flex; align-items: center; gap: 6px;">
-                            <i class="fa-solid fa-spinner fa-spin" style="color: #0284c7;"></i> 检测当前会话生效的世界书...
-                        </div>
-                    </div>
-                </div>
-
-                <div class="pm-mt-8">
-                    <button id="pm-save-all-settings-btn" class="pm-btn-primary" style="padding: 10px 14px; font-size: 13px; background: #059669; border-color: #047857;">
-                        <i class="fa-solid fa-floppy-disk"></i> 保存并生效全部配置
+                <!-- 详细设置入口与一键恢复 -->
+                <div style="display: flex; gap: 8px; flex-wrap: wrap; margin-bottom: 8px;">
+                    <button id="pm-open-advanced-modal-btn" class="pm-btn-primary" style="flex: 1; padding: 9px 14px; font-size: 12px; background: #2563eb; border-color: #1d4ed8;">
+                        <i class="fa-solid fa-sliders"></i> 打开详细与高级参数设置 (弹出面板)
+                    </button>
+                    <button id="pm-restore-defaults-quick-btn" class="pm-btn-secondary" style="padding: 9px 14px; font-size: 12px;" title="将除 API 外的全部底层参数还原为官方推荐黄金默认值">
+                        <i class="fa-solid fa-rotate-left"></i> 一键恢复推荐默认值
                     </button>
                 </div>
+
+                <div class="pm-mt-8" style="margin-top: 10px; border-top: 1px dashed #e2e8f0; padding-top: 8px;">
+                    <button id="pm-save-all-settings-btn" class="pm-btn-primary" style="width: 100%; padding: 8px 14px; font-size: 12px; background: #059669; border-color: #047857;">
+                        <i class="fa-solid fa-floppy-disk"></i> 保存插件基础设置
+                    </button>
+                </div>
+            </div>
 
                 <!-- 记忆数据备份与跨会话迁移 -->
                 <div class="pm-section-card pm-mt-12" style="background: #f8fafc; border: 1px solid #e2e8f0; border-radius: 8px; padding: 12px; margin-top: 14px;">
@@ -1126,222 +956,46 @@ function bindPanelEvents(container) {
         }
     });
 
-    // 语义检索与向量设置交互
-    container.querySelector('#pm-setting-semantic-enabled')?.addEventListener('change', (e) => {
-        const isSemEnabled = e.target.checked;
-        const block = container.querySelector('#pm-semantic-settings-block');
-        if (block) block.style.display = isSemEnabled ? 'block' : 'none';
-        updateSettings({ semanticRetrievalEnabled: isSemEnabled });
-    });
-
-    container.querySelector('#pm-setting-embedding-provider')?.addEventListener('change', (e) => {
-        const provider = e.target.value;
-        const apiBlock = container.querySelector('#pm-embedding-api-fields');
-        if (apiBlock) apiBlock.style.display = provider === 'custom_api' ? 'block' : 'none';
-        updateSettings({ embeddingProvider: provider });
-    });
-
-    container.querySelector('#pm-setting-semantic-threshold')?.addEventListener('input', (e) => {
-        const val = parseFloat(e.target.value);
-        const span = container.querySelector('#pm-val-semantic-threshold');
-        if (span) span.textContent = val.toFixed(2);
-        updateSettings({ semanticThreshold: val });
-    });
-
-    container.querySelector('#pm-setting-semantic-weight')?.addEventListener('input', (e) => {
-        const val = parseFloat(e.target.value);
-        const semSpan = container.querySelector('#pm-val-semantic-weight');
-        const lexSpan = container.querySelector('#pm-val-lexical-weight');
-        if (semSpan) semSpan.textContent = `${Math.round(val * 100)}%`;
-        if (lexSpan) lexSpan.textContent = `${Math.round((1 - val) * 100)}%`;
-        updateSettings({ semanticWeight: val });
-    });
-
-    // 测试向量 API 连通性
-    container.querySelector('#pm-btn-test-embedding-api')?.addEventListener('click', async () => {
-        const url = container.querySelector('#pm-setting-embedding-url')?.value?.trim() || getSettings().customApiUrl;
-        const key = container.querySelector('#pm-setting-embedding-key')?.value?.trim() || getSettings().customApiKey;
-        const model = container.querySelector('#pm-setting-embedding-model')?.value?.trim() || 'text-embedding-3-small';
-        const statusEl = container.querySelector('#pm-embedding-api-test-status');
-        if (statusEl) {
-            statusEl.style.color = '#38bdf8';
-            statusEl.innerHTML = '<i class="fa-solid fa-spinner fa-spin"></i> 测试向量接口中...';
-        }
-        const res = await testEmbeddingApiConnection({ apiUrl: url, apiKey: key, model });
-        if (res.success) {
-            if (statusEl) {
-                statusEl.style.color = '#34d399';
-                statusEl.innerHTML = `<i class="fa-solid fa-check"></i> 向量连接成功！(${res.latency}ms, ${res.dimensions}维)`;
+    // 打开详细与高级参数设置模态面板
+    container.querySelector('#pm-open-advanced-modal-btn')?.addEventListener('click', () => {
+        showAdvancedSettingsModal({
+            onSave: () => {
+                renderPanelContent();
+                renderNativeDrawerContent();
             }
-            window.toastr?.success?.(`向量 API 连接成功！响应延时 ${res.latency}ms，嵌入维度: ${res.dimensions}`, '持续记忆');
-        } else {
-            if (statusEl) {
-                statusEl.style.color = '#f87171';
-                statusEl.innerHTML = `<i class="fa-solid fa-xmark"></i> 失败: ${escapeHtml(res.error).slice(0, 35)}`;
-            }
-            window.toastr?.error?.(res.error, '向量 API 连接失败');
-        }
-    });
-
-    // 继承提炼 API 配置
-    container.querySelector('#pm-btn-import-digest-api')?.addEventListener('click', () => {
-        const s = getSettings();
-        const urlInput = container.querySelector('#pm-setting-embedding-url');
-        const keyInput = container.querySelector('#pm-setting-embedding-key');
-        if (urlInput && s.customApiUrl) urlInput.value = s.customApiUrl;
-        if (keyInput && s.customApiKey) keyInput.value = s.customApiKey;
-        window.toastr?.success?.('已从提炼 API 继承 Base URL 与 Key！', '持续记忆');
-    });
-
-    // 全库向量重建索引
-    container.querySelector('#pm-btn-reindex-all')?.addEventListener('click', async () => {
-        const btn = container.querySelector('#pm-btn-reindex-all');
-        const originalHtml = btn?.innerHTML || '';
-        if (btn) {
-            btn.disabled = true;
-            btn.innerHTML = '<i class="fa-solid fa-spinner fa-spin"></i> 索引建立中...';
-        }
-        try {
-            const res = await reindexAllMemories(true, (cur, total) => {
-                if (btn) btn.innerHTML = `<i class="fa-solid fa-spinner fa-spin"></i> 索引进度: ${cur}/${total}`;
-            });
-            window.toastr?.success?.(`全库向量索引构建完成！共更新 ${res.updated} 条记忆向量`, '持续记忆');
-            renderPanelContent();
-        } catch (err) {
-            window.toastr?.error?.(`向量索引失败: ${err.message}`, '持续记忆');
-        } finally {
-            if (btn) {
-                btn.disabled = false;
-                btn.innerHTML = originalHtml;
-            }
-        }
-    });
-
-    // 世界书关联与协同设置监听
-    const wbBoostSlider = container.querySelector('#pm-setting-worldbook-boost');
-    const wbBoostLabel = container.querySelector('#pm-val-worldbook-boost');
-    if (wbBoostSlider && wbBoostLabel) {
-        wbBoostSlider.addEventListener('input', (e) => {
-            wbBoostLabel.textContent = Number(e.target.value).toFixed(2);
         });
-    }
+    });
 
-    const wbToggle = container.querySelector('#pm-setting-worldbook-enabled');
-    const wbBlock = container.querySelector('#pm-worldbook-settings-block');
-    if (wbToggle && wbBlock) {
-        wbToggle.addEventListener('change', (e) => {
-            wbBlock.style.display = e.target.checked ? 'block' : 'none';
-        });
-    }
+    // 傻瓜式一键恢复官方推荐默认值
+    container.querySelector('#pm-restore-defaults-quick-btn')?.addEventListener('click', () => {
+        restoreRecommendedDefaults();
+        renderPanelContent();
+        renderNativeDrawerContent();
+    });
 
-    const wbInfoEl = container.querySelector('#pm-active-worldbook-info');
-    if (wbInfoEl) {
-        getActiveWorldBookInfo().then(wb => {
-            if (!wbInfoEl) return;
-            if (wb && wb.bookName) {
-                const count = Array.isArray(wb.entries) ? wb.entries.length : 0;
-                wbInfoEl.innerHTML = `<i class="fa-solid fa-book-open" style="color: #0284c7;"></i> 当前生效世界书: <strong>${escapeHtml(wb.bookName)}</strong> (${count} 个条目，来源: ${wb.source === 'character_embedded' ? '角色卡内置' : '会话绑定'})`;
-            } else {
-                wbInfoEl.innerHTML = `<i class="fa-solid fa-circle-info" style="color: #64748b;"></i> 当前会话未绑定专属世界书（可在酒馆聊天或角色设置中关联世界书）`;
-            }
-        }).catch(() => {
-            if (wbInfoEl) wbInfoEl.innerHTML = `<i class="fa-solid fa-circle-info" style="color: #64748b;"></i> 当前会话未检测到生效的世界书`;
-        });
-    }
-
-    // 保存并生效全部配置按钮 (Tab 3)
+    // 保存设置按钮 (Tab 3: 保存 API 配置与开关)
     container.querySelector('#pm-save-all-settings-btn')?.addEventListener('click', () => {
         syncHudApiInputs();
-        const freqVal = Math.max(1, parseInt(container.querySelector('#pm-setting-freq')?.value) || 3);
-        const sliceVal = Math.max(2, Math.min(15, parseInt(container.querySelector('#pm-setting-slice')?.value) || 6));
-        const sceneTok = Math.max(50, Math.min(800, parseInt(container.querySelector('#pm-setting-scene-tokens')?.value) || 150));
-        const memTok = Math.max(150, Math.min(2500, parseInt(container.querySelector('#pm-setting-tokens')?.value) || 450));
-        const maxPinnedVal = Math.max(1, Math.min(15, parseInt(container.querySelector('#pm-setting-max-pinned')?.value) || 5));
-        const maxTriggeredVal = Math.max(1, Math.min(30, parseInt(container.querySelector('#pm-setting-max-triggered')?.value) || 5));
-        const selectedMode = container.querySelector('input[name="pm-mode"]:checked')?.value || 'async';
         const isEnabled = container.querySelector('#pm-setting-hud-enabled')?.checked ?? true;
         const showBubble = container.querySelector('#pm-setting-hud-bubble')?.checked ?? true;
         const useCustom = container.querySelector('#pm-setting-custom-api-enabled')?.checked ?? false;
-        const rawPos = parseInt(container.querySelector('#pm-setting-inject-pos')?.value);
-        const injectPos = !isNaN(rawPos) ? rawPos : 1;
-        const rawDep = parseInt(container.querySelector('#pm-setting-inject-depth')?.value);
-        const injectDep = !isNaN(rawDep) ? Math.max(0, Math.min(20, rawDep)) : 2;
-        const autoConsolidate = (container.querySelector('#pm-setting-auto-consolidate')?.value ?? '1') === '1';
-        const rawConsolidateThreshold = parseInt(container.querySelector('#pm-setting-consolidate-threshold')?.value);
-        const consolidateThreshold = !isNaN(rawConsolidateThreshold) ? Math.max(5, Math.min(50, rawConsolidateThreshold)) : 10;
-        const autoSleepEnabled = (container.querySelector('#pm-setting-auto-sleep')?.value ?? '1') === '1';
-        const rawSleepTurns = parseInt(container.querySelector('#pm-setting-auto-sleep-turns')?.value);
-        const autoSleepTurns = !isNaN(rawSleepTurns) ? Math.max(5, Math.min(100, rawSleepTurns)) : 20;
-        const adaptiveCadenceEnabled = (container.querySelector('#pm-setting-adaptive-cadence')?.value ?? '1') === '1';
-        const rawAdaptiveMinChars = parseInt(container.querySelector('#pm-setting-adaptive-min-chars')?.value);
-        const adaptiveCadenceMinChars = !isNaN(rawAdaptiveMinChars) ? Math.max(20, Math.min(500, rawAdaptiveMinChars)) : 60;
-
-        const isSemEnabled = container.querySelector('#pm-setting-semantic-enabled')?.checked ?? true;
-        const embProvider = container.querySelector('#pm-setting-embedding-provider')?.value || 'local';
-        const rawSemThresh = parseFloat(container.querySelector('#pm-setting-semantic-threshold')?.value);
-        const semThresh = !isNaN(rawSemThresh) ? rawSemThresh : 0.25;
-        const rawSemWeight = parseFloat(container.querySelector('#pm-setting-semantic-weight')?.value);
-        const semWeight = !isNaN(rawSemWeight) ? rawSemWeight : 0.60;
-        const embUrl = container.querySelector('#pm-setting-embedding-url')?.value?.trim() || '';
-        const embKey = container.querySelector('#pm-setting-embedding-key')?.value?.trim() || '';
-        const embModel = container.querySelector('#pm-setting-embedding-model')?.value?.trim() || 'text-embedding-3-small';
-
-        const isWbEnabled = container.querySelector('#pm-setting-worldbook-enabled')?.checked ?? true;
-        const isWbCtx = container.querySelector('#pm-setting-worldbook-context')?.checked ?? true;
-        const rawWbBoost = parseFloat(container.querySelector('#pm-setting-worldbook-boost')?.value);
-        const wbBoost = !isNaN(rawWbBoost) ? rawWbBoost : 0.35;
-        const injectTemplate = container.querySelector('#pm-setting-inject-template')?.value || 'standard';
 
         updateSettings({
             enabled: isEnabled,
             showFloatingBubble: showBubble,
-            useCustomApi: useCustom,
-            asyncFrequency: freqVal,
-            digestSliceCount: sliceVal,
-            maxSceneTokens: sceneTok,
-            maxTotalMemoryTokens: memTok,
-            maxPinnedCount: maxPinnedVal,
-            maxTriggeredCount: maxTriggeredVal,
-            mode: selectedMode,
-            injectionPosition: injectPos,
-            injectionDepth: injectDep,
-            injectionTemplate: injectTemplate,
-            autoConsolidate,
-            consolidateThreshold,
-            autoSleepEnabled,
-            autoSleepTurns,
-            adaptiveCadenceEnabled,
-            adaptiveCadenceMinChars,
-            semanticRetrievalEnabled: isSemEnabled,
-            embeddingProvider: embProvider,
-            semanticThreshold: semThresh,
-            semanticWeight: semWeight,
-            embeddingApiUrl: embUrl,
-            embeddingApiKey: embKey,
-            embeddingModel: embModel,
-            worldBookIntegrationEnabled: isWbEnabled,
-            worldBookContextToExtractor: isWbCtx,
-            worldBookBoostScore: wbBoost
+            useCustomApi: useCustom
         });
-
-        // 联动同步原生抽屉与现场快照界面的数值
-        const nativeSceneTok = document.getElementById('pm-native-scene-tokens');
-        if (nativeSceneTok && document.activeElement !== nativeSceneTok) nativeSceneTok.value = sceneTok;
-        const nativeMemTok = document.getElementById('pm-native-tokens');
-        if (nativeMemTok && document.activeElement !== nativeMemTok) nativeMemTok.value = memTok;
-        const sceneTabMaxTok = document.getElementById('pm-scene-max-tokens');
-        if (sceneTabMaxTok && document.activeElement !== sceneTabMaxTok) sceneTabMaxTok.value = sceneTok;
 
         const ok = saveSettingsImmediately();
         const btn = container.querySelector('#pm-save-all-settings-btn');
         if (btn) {
-            btn.innerHTML = '<i class="fa-solid fa-check"></i> 全部配置已成功保存！';
+            btn.innerHTML = '<i class="fa-solid fa-check"></i> 设置已保存！';
             setTimeout(() => {
-                btn.innerHTML = '<i class="fa-solid fa-floppy-disk"></i> 保存并生效全部配置';
+                btn.innerHTML = '<i class="fa-solid fa-floppy-disk"></i> 保存插件基础设置';
             }, 1800);
         }
         if (ok) {
-            window.toastr?.success?.('插件配置已成功保存并立即生效！', '持续记忆');
+            window.toastr?.success?.('设置已保存并立即生效！', '持续记忆');
         } else {
             window.toastr?.error?.('保存配置失败，请检查浏览器控制台', '持续记忆');
         }
@@ -1948,5 +1602,7 @@ export {
     importSillyTavernApiConfig,
     togglePanel,
     renderMemoryCard,
-    showPromoteLoreModal
+    showPromoteLoreModal,
+    showAdvancedSettingsModal,
+    restoreRecommendedDefaults
 };
