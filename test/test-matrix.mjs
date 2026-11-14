@@ -3076,25 +3076,25 @@ Intermediate analysis details...
     });
 
     // ─────────────────────────────────────────────────────────────
-    // T71: 全工程版本标识严格一致性核验 (0.1.39)
+    // T71: 全工程版本标识严格一致性核验 (0.1.40)
     // ─────────────────────────────────────────────────────────────
-    test('T71: 全工程版本标识严格一致性核验 (manifest, config, index 与各模块头部统一为 0.1.39)', () => {
+    test('T71: 全工程版本标识严格一致性核验 (manifest, config, index 与各模块头部统一为 0.1.40)', () => {
         const currentFile = fileURLToPath(import.meta.url);
         const rootDir = path.resolve(path.dirname(currentFile), '../');
 
         // 1. manifest.json
         const manifestPath = path.join(rootDir, 'manifest.json');
         const manifest = JSON.parse(fs.readFileSync(manifestPath, 'utf8'));
-        assert.strictEqual(manifest.version, '0.1.39', 'manifest.json 版本号应为 0.1.39');
+        assert.strictEqual(manifest.version, '0.1.40', 'manifest.json 版本号应为 0.1.40');
 
         // 2. src/config.js
-        assert.strictEqual(EXTENSION_VERSION, '0.1.39', 'config.js EXTENSION_VERSION 应为 0.1.39');
+        assert.strictEqual(EXTENSION_VERSION, '0.1.40', 'config.js EXTENSION_VERSION 应为 0.1.40');
 
         // 3. index.js
         const indexPath = path.join(rootDir, 'index.js');
         const indexContent = fs.readFileSync(indexPath, 'utf8');
-        assert.ok(indexContent.includes('v0.1.39'), 'index.js 头部必须标注 v0.1.39');
-        assert.ok(!indexContent.includes('v0.1.38'), 'index.js 严禁残留旧版本 v0.1.38 版本头');
+        assert.ok(indexContent.includes('v0.1.40'), 'index.js 头部必须标注 v0.1.40');
+        assert.ok(!indexContent.includes('v0.1.39'), 'index.js 严禁残留旧版本 v0.1.39 版本头');
 
         // 4. 各核心模块头部注释版本检查 (16 个核心模块)
         const checkModules = [
@@ -3121,12 +3121,12 @@ Intermediate analysis details...
             const content = fs.readFileSync(filePath, 'utf8');
             const first10Lines = content.split('\n').slice(0, 10).join('\n');
             assert.ok(
-                first10Lines.includes('v0.1.39') || first10Lines.includes('0.1.39'),
-                `${relPath} 头部注释必须包含 0.1.39 版本标识`
+                first10Lines.includes('v0.1.40') || first10Lines.includes('0.1.40'),
+                `${relPath} 头部注释必须包含 0.1.40 版本标识`
             );
             assert.ok(
-                !first10Lines.includes('0.1.38') && !first10Lines.includes('v0.1.38'),
-                `${relPath} 头部注释严禁残留旧版本 0.1.38`
+                !first10Lines.includes('0.1.39') && !first10Lines.includes('v0.1.39'),
+                `${relPath} 头部注释严禁残留旧版本 0.1.39`
             );
         }
     });
@@ -4521,6 +4521,179 @@ Intermediate analysis details...
         const fallbackIds = filteredFallback.map(m => m.id);
         assert.ok(fallbackIds.includes('m_char_absent'), '回退列表中存在的角色私知应被包含');
         assert.ok(!fallbackIds.includes('m_char_present'), '回退列表中不存在的角色私知应被排除');
+    });
+
+    // ─────────────────────────────────────────────────────────────
+    // T100: 端到端全链路解耦架构总成契约集成测试 (End-to-End Decoupled Pipeline Integration)
+    // 覆盖全链路协同：对话分片 -> 提示词编排 -> 网络通信 -> 文本清洗修复 -> 数据模式校验 -> 事务落盘 -> 准出 POV 路由
+    // ─────────────────────────────────────────────────────────────
+    await testAsync('T100: 端到端全链路解耦架构总成契约集成测试 (百项里程碑：十大解耦子系统全链路金标验收)', async () => {
+        // 1. 初始化纯净且受控的全局上下文与测试会话环境
+        const c = mockContext;
+        c.chatId = 'chat_e2e_t100_milestone';
+        c.name1 = '玩家';
+        c.name2 = '角色A';
+        c.characters = [
+            { name: '角色A', avatar: 'a.png' },
+            { name: '角色B', avatar: 'b.png' }
+        ];
+
+        const state = getState();
+        state.state_revision = 20;
+        state.last_digest_floor = 0;
+        state.scene = {
+            location: '落日谷入口',
+            time: '黄昏薄雾',
+            action: '警惕探路',
+            tension: '紧绷',
+            unresolved: '山谷异动探查',
+            in_scene_characters: ['玩家', '角色A']
+        };
+        state.memories = [
+            {
+                id: 'mem_t100_old_todo',
+                type: 'todo',
+                content: '调查落日谷异动来源',
+                scope: 'world',
+                lifecycle: 'active',
+                status: 'triggered'
+            }
+        ];
+
+        // 2. 模拟构建历史对话切片 (包含玩家与角色A的交谈，共 6 条消息 / 3 轮 AI 回复)
+        c.chat = [
+            { is_user: true, mes: '前面谷口有打斗的痕迹，大家小心！' },
+            { is_user: false, name: '角色A', mes: '确实，草叶上有未干的血迹。' },
+            { is_user: true, mes: '看，黑衣首领冲我们杀过来了！' },
+            { is_user: false, name: '角色A', mes: '剑出鞘！我来挡住正面刺客！' },
+            { is_user: true, mes: '合力击退他们了！缴获了这一封带有火漆的密信。' },
+            { is_user: false, name: '角色A', mes: '太好了，我们先就地扎营，仔细研读这封血色密信。' }
+        ];
+
+        // 3. 模拟大模型提炼输出 (融合思考链标签、Markdown 代码块、快照更新、生命周期流转、新世界事实与角色私密记忆)
+        const mockModelRawResponse = `<think>
+经过此战，双方成功击退了黑衣人，原本的“调查落日谷异动”目标已经达成，应当流转为 completed。
+现场转移到了深处营地，缴获了血色密信作为关键世界事实。
+角色A在此过程中暗中藏匿了玉佩，这是角色A个人的私密推测/心境。
+</think>
+\`\`\`json
+{
+  "scene": {
+    "location": "落日谷深处营地",
+    "time": "夜幕降临",
+    "action": "生火检视战利品",
+    "tension": "暂时缓和",
+    "unresolved": "密信真实来源",
+    "in_scene_characters": ["玩家", "角色A"]
+  },
+  "lifecycle_updates": [
+    { "id": "mem_t100_old_todo", "lifecycle": "completed" },
+    { "id": "mem_t100_old_todo", "lifecycle": "active" }
+  ],
+  "new_memories": [
+    {
+      "type": "fact",
+      "content": "两人合力击退黑衣人伏击并缴获血色密信",
+      "scope": "world",
+      "trigger_keys": ["黑衣人", "血色密信"]
+    },
+    {
+      "type": "inference",
+      "content": "角色A暗中藏匿了半块带有家徽的断裂玉佩",
+      "scope": "character",
+      "character": "角色A",
+      "trigger_keys": ["断裂玉佩", "家徽"]
+    }
+  ]
+}
+\`\`\``;
+
+        c.generateRaw = async (opts) => {
+            return mockModelRawResponse;
+        };
+
+        const settings = getSettings();
+        settings.enabled = true;
+        settings.mode = 'async';
+
+        // 4. 触发异步提炼调度器 (extractor.js -> prompt.js -> api.js -> parser.js -> schema.js -> apply.js -> state.js)
+        const digestResult = await triggerAsyncDigest(true);
+        assert.strictEqual(digestResult.success, true, '全链路提炼必须顺利执行成功');
+
+        // 5. 校验阶段成果：落盘写回与数据模式防线拦截 (apply.js & schema.js & state.js)
+        assert.ok(state.state_revision > 20, '状态修订号必须单调自增');
+        assert.strictEqual(state.scene.location, '落日谷深处营地', '快照位置必须成功 PATCH 更新');
+        assert.strictEqual(state.scene.action, '生火检视战利品', '快照动作必须成功 PATCH 更新');
+        assert.strictEqual(state.scene.tension, '暂时缓和');
+
+        // 验证生命周期流转：第一条 completed 生效，第二条非法的 active 流转被 schema.js 强拦截
+        const oldTodo = state.memories.find(m => m.id === 'mem_t100_old_todo');
+        assert.ok(oldTodo, '旧待办记忆必须存在');
+        assert.strictEqual(oldTodo.lifecycle, 'completed', '旧记忆必须被标记为 completed (禁止被非法 active 逆流)');
+
+        // 验证新记忆入库 (世界公开事实与角色私密条目)
+        const factMem = state.memories.find(m => m.content.includes('缴获血色密信'));
+        assert.ok(factMem, '世界事实记忆必须成功入库');
+        assert.strictEqual(factMem.scope, 'world');
+
+        const privMem = state.memories.find(m => m.content.includes('暗中藏匿了半块带有家徽'));
+        assert.ok(privMem, '角色A私密记忆必须成功入库');
+        assert.strictEqual(privMem.scope, 'character');
+        assert.strictEqual(privMem.character, '角色A');
+
+        // 6. 伴随协议模式 (Sync Tag) 交织验证：模拟主会话伴随标签在同一会话中无缝写回
+        const followUpMessage = `师兄，我先去拾些干柴。\n<!-- PERSISTENT_MEMORY: {
+            "scene": { "action": "借着篝火研读血色密信" },
+            "new_memories": [{ "type": "statement", "content": "角色A提议天亮前破译密信暗码", "scope": "world" }]
+        } -->\n夜里风大，小心着凉。`;
+
+        const strippedText = extractAndApplySyncTag(followUpMessage);
+        assert.ok(!strippedText.includes('PERSISTENT_MEMORY'), '正文中的伴随标签必须被剥离干净');
+        assert.ok(strippedText.includes('师兄，我先去拾些干柴。'));
+        assert.strictEqual(state.scene.action, '借着篝火研读血色密信', '伴随标签中的快照动作必须即时更新');
+        assert.ok(state.memories.some(m => m.content.includes('破译密信暗码')), '伴随标签新记忆必须无缝沉淀');
+
+        // 7. 准出端 POV 权限路由与提示词注入金标核验 (injector.js & acl.js)
+        // 场景 7.1: 当前生成主体为【角色A】(POV: 角色A)
+        c.characterId = 0;
+        c.this_chid = 0;
+        c.name2 = '角色A';
+        let injectedPromptA = '';
+        c.setExtensionPrompt = (key, promptText) => {
+            if (key === 'PERSISTENT_MEMORY_INJECT') {
+                injectedPromptA = promptText;
+            }
+        };
+
+        buildAndInjectMemoryPrompt(c);
+        assert.ok(injectedPromptA.length > 0, '角色A提示词必须成功注入');
+        assert.ok(injectedPromptA.includes('落日谷深处营地'), '注入必须包含最新现场快照');
+        assert.ok(injectedPromptA.includes('缴获血色密信'), '注入必须包含公共世界记忆');
+        assert.ok(injectedPromptA.includes('暗中藏匿了半块带有家徽'), '角色A自身生成的上下文必须包含其本人的私密记忆');
+        assert.ok(!injectedPromptA.includes('mem_t100_old_todo') && !injectedPromptA.includes('调查落日谷异动来源'), '已履约结项记忆绝不得出现在活跃注入中');
+
+        // 场景 7.2: 当前生成主体切换为【角色B】(POV: 角色B，角色B未在场且非私密归属人)
+        c.characterId = 1;
+        c.this_chid = 1;
+        c.name2 = '角色B';
+        let injectedPromptB = '';
+        c.setExtensionPrompt = (key, promptText) => {
+            if (key === 'PERSISTENT_MEMORY_INJECT') {
+                injectedPromptB = promptText;
+            }
+        };
+
+        buildAndInjectMemoryPrompt(c);
+        assert.ok(injectedPromptB.length > 0, '角色B提示词必须成功注入');
+        assert.ok(injectedPromptB.includes('落日谷深处营地'), '注入必须包含现场快照');
+        assert.ok(injectedPromptB.includes('缴获血色密信'), '注入必须包含公共世界记忆');
+        // ★ 核心安全铁律验证：角色B的注入中绝对不能出现角色A的私密记忆！
+        assert.ok(!injectedPromptB.includes('暗中藏匿了半块带有家徽'), '【核心安全隔离】严禁将角色A的私密记忆注入至角色B的生成上下文！');
+
+        // 恢复 context 环境
+        c.characterId = 0;
+        c.this_chid = 0;
+        c.name2 = '角色A';
     });
 
     console.log(`\n======================================================`);

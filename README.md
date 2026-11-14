@@ -1,6 +1,6 @@
 # SillyTavern 持续记忆插件 (ST-Persistent-Memory)
 
-[![Version](https://img.shields.io/badge/version-v0.1.39-blue.svg)](https://github.com/dayuseless/ST-Persistent-Memory)
+[![Version](https://img.shields.io/badge/version-v0.1.40-blue.svg)](https://github.com/dayuseless/ST-Persistent-Memory)
 [![SillyTavern](https://img.shields.io/badge/SillyTavern-1.12.0+-purple.svg)](https://github.com/SillyTavern/SillyTavern)
 [![License](https://img.shields.io/badge/license-MIT-green.svg)](LICENSE)
 
@@ -77,7 +77,7 @@
 
 ### 方式二：手动离线包安装
 
-1. 从 [Releases 页面](https://github.com/dayuseless/ST-Persistent-Memory/releases) 下载 `ST-Persistent-Memory-v0.1.39.zip`。
+1. 从 [Releases 页面](https://github.com/dayuseless/ST-Persistent-Memory/releases) 下载 `ST-Persistent-Memory-v0.1.40.zip`。
 2. 解压到 SillyTavern 的扩展目录中：
    ```text
    SillyTavern/public/scripts/extensions/third-party/ST-Persistent-Memory/
@@ -158,6 +158,22 @@ window.__persistentMemory.digestNow();
 ---
 
 ## 📝 版本历史
+
+### v0.1.40 (测试矩阵突破 100 项大关：全链路解耦架构总成契约金标验收)
+
+- **达成 100 项全自动化测试里程碑 (100/100 全绿通过)**：
+  - 新增 **T100: 端到端全链路解耦架构总成契约集成测试 (End-to-End Decoupled Architecture Integration Test)**；
+  - 完整打通并金标验收自 v0.1.34 以来完成的十大核心模块重构与解耦总成流水线：
+    1. **消息切片与逆序预算** (`src/extractor.js` / `src/backlog.js`)；
+    2. **提示词模板与元指令拼装** (`src/prompt.js`)；
+    3. **网络传输与超时降级** (`src/api.js`)；
+    4. **推理思维链清洗与容错修复** (`src/parser.js`)；
+    5. **数据模式校验与安全防线门禁** (`src/schema.js`)；
+    6. **提炼落盘与伴随协议流水线** (`src/apply.js`)；
+    7. **底层原子事务与状态机修订** (`src/state.js`)；
+    8. **准出端 POV 权限路由与快照预算注入** (`src/injector.js`)；
+    9. **双模式兼容**：同一会话内异步后台提炼与伴随标签无缝交织且互不污染；
+  - 工程架构整体达到高内聚、低耦合、强类型约束与生产级鲁棒性，正式跨入全新高度。
 
 ### v0.1.39 (提炼落盘与伴随协议流水线解耦：构建独立 apply.js 模块)
 

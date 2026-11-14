@@ -1,5 +1,5 @@
 /**
- * 持续记忆数据模式校验与防线准入网关 (Schema Validation & Defense Gate, v0.1.39)
+ * 持续记忆数据模式校验与防线准入网关 (Schema Validation & Defense Gate, v0.1.40)
  * 职责：
  * 1. 结构完整性校验与拒绝型门禁拦截 (validateExtractedPayload)
  * 2. 宏观长程归并产物 Schema 与 ACL 边界守卫 (validateConsolidatedPayload)
