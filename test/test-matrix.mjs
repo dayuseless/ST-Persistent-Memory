@@ -132,6 +132,7 @@ import {
     findMessageIndexByTurn,
     getContextParticipants,
     sanitizeTriggerKeys,
+    MODEL_ALLOWED_LIFECYCLES,
     applyExtractedData
 } from '../src/extractor.js';
 
@@ -142,6 +143,13 @@ import {
     isQuietDigestPayload as parserIsQuietDigestPayload,
     cleanAndParseJson as parserCleanAndParseJson
 } from '../src/parser.js';
+
+import {
+    validateExtractedPayload as schemaValidateExtractedPayload,
+    validateConsolidatedPayload as schemaValidateConsolidatedPayload,
+    sanitizeTriggerKeys as schemaSanitizeTriggerKeys,
+    MODEL_ALLOWED_LIFECYCLES as schemaModelAllowedLifecycles
+} from '../src/schema.js';
 
 import {
     buildConsolidationCandidateGroups as consolidatorBuildGroups,
@@ -3044,27 +3052,27 @@ Intermediate analysis details...
     });
 
     // ─────────────────────────────────────────────────────────────
-    // T71: 全工程版本标识严格一致性核验 (0.1.35)
+    // T71: 全工程版本标识严格一致性核验 (0.1.37)
     // ─────────────────────────────────────────────────────────────
-    test('T71: 全工程版本标识严格一致性核验 (manifest, config, index 与各模块头部统一为 0.1.36)', () => {
+    test('T71: 全工程版本标识严格一致性核验 (manifest, config, index 与各模块头部统一为 0.1.37)', () => {
         const currentFile = fileURLToPath(import.meta.url);
         const rootDir = path.resolve(path.dirname(currentFile), '../');
 
         // 1. manifest.json
         const manifestPath = path.join(rootDir, 'manifest.json');
         const manifest = JSON.parse(fs.readFileSync(manifestPath, 'utf8'));
-        assert.strictEqual(manifest.version, '0.1.36', 'manifest.json 版本号应为 0.1.36');
+        assert.strictEqual(manifest.version, '0.1.37', 'manifest.json 版本号应为 0.1.37');
 
         // 2. src/config.js
-        assert.strictEqual(EXTENSION_VERSION, '0.1.36', 'config.js EXTENSION_VERSION 应为 0.1.36');
+        assert.strictEqual(EXTENSION_VERSION, '0.1.37', 'config.js EXTENSION_VERSION 应为 0.1.37');
 
         // 3. index.js
         const indexPath = path.join(rootDir, 'index.js');
         const indexContent = fs.readFileSync(indexPath, 'utf8');
-        assert.ok(indexContent.includes('v0.1.36'), 'index.js 头部必须标注 v0.1.36');
-        assert.ok(!indexContent.includes('v0.1.34'), 'index.js 严禁残留旧版本 v0.1.34 版本头');
+        assert.ok(indexContent.includes('v0.1.37'), 'index.js 头部必须标注 v0.1.37');
+        assert.ok(!indexContent.includes('v0.1.35'), 'index.js 严禁残留旧版本 v0.1.35 版本头');
 
-        // 4. 各核心模块头部注释版本检查 (13 个核心模块)
+        // 4. 各核心模块头部注释版本检查 (14 个核心模块)
         const checkModules = [
             'src/acl.js',
             'src/api.js',
@@ -3076,6 +3084,7 @@ Intermediate analysis details...
             'src/state.js',
             'src/extractor.js',
             'src/parser.js',
+            'src/schema.js',
             'src/injector.js',
             'src/semantic.js',
             'src/ui.js'
@@ -3086,12 +3095,12 @@ Intermediate analysis details...
             const content = fs.readFileSync(filePath, 'utf8');
             const first10Lines = content.split('\n').slice(0, 10).join('\n');
             assert.ok(
-                first10Lines.includes('v0.1.36') || first10Lines.includes('0.1.36'),
-                `${relPath} 头部注释必须包含 0.1.36 版本标识`
+                first10Lines.includes('v0.1.37') || first10Lines.includes('0.1.37'),
+                `${relPath} 头部注释必须包含 0.1.37 版本标识`
             );
             assert.ok(
-                !first10Lines.includes('0.1.34') && !first10Lines.includes('v0.1.34'),
-                `${relPath} 头部注释严禁残留旧版本 0.1.34`
+                !first10Lines.includes('0.1.35') && !first10Lines.includes('v0.1.35'),
+                `${relPath} 头部注释严禁残留旧版本 0.1.35`
             );
         }
     });
@@ -4125,6 +4134,133 @@ Intermediate analysis details...
         assert.strictEqual(parsed.scene.location, '城东演武场');
         assert.strictEqual(parsed.new_memories.length, 1);
         assert.strictEqual(parsed.new_memories[0].content, '与玩家在城东演武场进行了剑术切磋');
+    });
+
+    // ─────────────────────────────────────────────────────────────
+    // T97: 数据模式校验与防线准入网关解耦契约与极端边界测试 (src/schema.js ↔ src/extractor.js ↔ src/consolidator.js)
+    // ─────────────────────────────────────────────────────────────
+    test('T97: 数据模式校验与防线准入网关解耦契约与极端边界测试 (src/schema.js ↔ src/extractor.js ↔ src/consolidator.js)', () => {
+        // 1. 同源引用契约验证 (extractor.js 与 consolidator.js 透明重导出必须严格全等于 schema.js 对应导出)
+        assert.strictEqual(validateExtractedPayload, schemaValidateExtractedPayload, 'validateExtractedPayload 必须同源全等');
+        assert.strictEqual(validateConsolidatedPayload, schemaValidateConsolidatedPayload, 'validateConsolidatedPayload (extractor) 必须同源全等');
+        assert.strictEqual(consolidatorValidatePayload, schemaValidateConsolidatedPayload, 'validateConsolidatedPayload (consolidator) 必须同源全等');
+        assert.strictEqual(sanitizeTriggerKeys, schemaSanitizeTriggerKeys, 'sanitizeTriggerKeys 必须同源全等');
+        assert.strictEqual(MODEL_ALLOWED_LIFECYCLES, schemaModelAllowedLifecycles, 'MODEL_ALLOWED_LIFECYCLES 必须同源全等');
+
+        // 2. validateExtractedPayload 拒绝型门禁极限测试
+        // 2.1 根节点非对象拒绝
+        assert.strictEqual(schemaValidateExtractedPayload(null), null);
+        assert.strictEqual(schemaValidateExtractedPayload('not an object'), null);
+        assert.strictEqual(schemaValidateExtractedPayload([1, 2, 3]), null);
+
+        // 2.2 缺少三大核心字段整包拒绝
+        assert.strictEqual(schemaValidateExtractedPayload({ other_field: 'nothing' }), null);
+
+        // 2.3 非纯字符串字段防御 (防止隐式 toString 导致 [object Object])
+        const rawWithEvilObject = {
+            scene: {
+                location: { evil: 'object' },
+                action: '正常动作描述',
+                in_scene_characters: ['角色A', 123, null, '角色B']
+            }
+        };
+        const sanitizedEvil = schemaValidateExtractedPayload(rawWithEvilObject);
+        assert(sanitizedEvil, '包含有效 action 的 payload 必须被接收');
+        assert.strictEqual(sanitizedEvil.scene.location, undefined, '非字符串 location 必须被剔除防 [object Object]');
+        assert.strictEqual(sanitizedEvil.scene.action, '正常动作描述');
+        assert.deepStrictEqual(sanitizedEvil.scene.in_scene_characters, ['角色A', '角色B'], '非字符串角色必须被过滤');
+
+        // 2.4 清空语义支持 (空串与空数组保留，null 角色保留)
+        const clearPayload = {
+            scene: {
+                location: '主城',
+                action: '',
+                tension: '',
+                unresolved: '',
+                in_scene_characters: []
+            }
+        };
+        const sanitizedClear = schemaValidateExtractedPayload(clearPayload);
+        assert.strictEqual(sanitizedClear.scene.action, '');
+        assert.strictEqual(sanitizedClear.scene.tension, '');
+        assert.deepStrictEqual(sanitizedClear.scene.in_scene_characters, []);
+
+        // 2.5 lifecycle_updates 拦截模型激活 active 与不存在的 ID
+        const fakeMemories = [{ id: 'mem-001', lifecycle: 'active' }];
+        const updatePayload = {
+            lifecycle_updates: [
+                { id: 'mem-001', lifecycle: 'active' }, // 企图激活 -> 必须被拒绝
+                { id: 'mem-001', lifecycle: 'completed' }, // 合法终态 -> 必须被采纳
+                { id: 'mem-not-exist', lifecycle: 'superseded' } // 不存在 ID -> 必须丢弃
+            ]
+        };
+        const sanitizedUpdates = schemaValidateExtractedPayload(updatePayload, fakeMemories);
+        assert.strictEqual(sanitizedUpdates.lifecycle_updates.length, 1);
+        assert.strictEqual(sanitizedUpdates.lifecycle_updates[0].id, 'mem-001');
+        assert.strictEqual(sanitizedUpdates.lifecycle_updates[0].lifecycle, 'completed');
+
+        // 3. validateConsolidatedPayload 归并边界守卫测试
+        const sourceMems = [
+            { id: 'm1', type: 'fact', scope: 'character', character: '角色A', known_by: [], lifecycle: 'active', status: 'triggered' },
+            { id: 'm2', type: 'fact', scope: 'character', character: '角色A', known_by: [], lifecycle: 'active', status: 'triggered' },
+            { id: 'm3_other', type: 'fact', scope: 'character', character: '角色B', known_by: [], lifecycle: 'active', status: 'triggered' }
+        ];
+
+        // 3.1 跨角色拼凑归并尝试 -> 必须坚决拦截
+        const crossCharPayload = {
+            consolidated: [
+                {
+                    content: '跨角色试图归并',
+                    type: 'fact',
+                    scope: 'character',
+                    supersedes: ['m1', 'm3_other']
+                }
+            ]
+        };
+        assert.strictEqual(schemaValidateConsolidatedPayload(crossCharPayload, sourceMems), null, '跨角色拼凑归并必须返回 null');
+
+        // 3.2 归并少于 2 条 -> 必须拦截
+        const singleSupersede = {
+            consolidated: [
+                {
+                    content: '只替代1条记忆',
+                    type: 'fact',
+                    scope: 'character',
+                    supersedes: ['m1']
+                }
+            ]
+        };
+        assert.strictEqual(schemaValidateConsolidatedPayload(singleSupersede, sourceMems), null);
+
+        // 3.3 正常归并 -> 必须成功生成有效条目
+        const goodConsolidated = {
+            consolidated: [
+                {
+                    content: '角色A在多次探索中掌握了秘术全篇',
+                    type: 'fact',
+                    scope: 'character',
+                    trigger_keys: ['秘术', '你', '探索'],
+                    supersedes: ['m1', 'm2']
+                }
+            ]
+        };
+        const goodRes = schemaValidateConsolidatedPayload(goodConsolidated, sourceMems, new Set(['玩家', '角色A']));
+        assert(goodRes, '合法归并必须校验通过');
+        assert.strictEqual(goodRes.consolidated.length, 1);
+        assert.strictEqual(goodRes.consolidated[0].character, '角色A');
+        assert.deepStrictEqual(goodRes.consolidated[0].supersedes, ['m1', 'm2']);
+        assert.ok(!goodRes.consolidated[0].trigger_keys.includes('你'), '触发词停用词必须被自动清洗');
+
+        // 4. sanitizeTriggerKeys 过滤边界测试
+        assert.deepStrictEqual(schemaSanitizeTriggerKeys(null), []);
+        assert.deepStrictEqual(schemaSanitizeTriggerKeys('not an array'), []);
+        const testKeys = ['你', '我', '一个词汇太长了超过十五个字符将被丢弃', 'a', '有效词汇一', '有效词汇二', '超长词汇超过十五个字符将被无情剔除', '有效词汇三', '有效词汇四', '有效词汇五', '有效词汇六'];
+        const sanitized = schemaSanitizeTriggerKeys(testKeys);
+        assert.ok(!sanitized.includes('你') && !sanitized.includes('我'));
+        assert.ok(!sanitized.includes('a'));
+        assert.ok(!sanitized.includes('一个词汇太长了超过十五个字符将被丢弃'));
+        assert.ok(sanitized.length <= 5, '最多保留 5 个有效触发词');
+        assert.strictEqual(sanitized[0], '有效词汇一');
     });
 
     console.log(`\n======================================================`);

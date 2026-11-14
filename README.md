@@ -1,6 +1,6 @@
 # SillyTavern 持续记忆插件 (ST-Persistent-Memory)
 
-[![Version](https://img.shields.io/badge/version-v0.1.36-blue.svg)](https://github.com/dayuseless/ST-Persistent-Memory)
+[![Version](https://img.shields.io/badge/version-v0.1.37-blue.svg)](https://github.com/dayuseless/ST-Persistent-Memory)
 [![SillyTavern](https://img.shields.io/badge/SillyTavern-1.12.0+-purple.svg)](https://github.com/SillyTavern/SillyTavern)
 [![License](https://img.shields.io/badge/license-MIT-green.svg)](LICENSE)
 
@@ -77,7 +77,7 @@
 
 ### 方式二：手动离线包安装
 
-1. 从 [Releases 页面](https://github.com/dayuseless/ST-Persistent-Memory/releases) 下载 `ST-Persistent-Memory-v0.1.36.zip`。
+1. 从 [Releases 页面](https://github.com/dayuseless/ST-Persistent-Memory/releases) 下载 `ST-Persistent-Memory-v0.1.37.zip`。
 2. 解压到 SillyTavern 的扩展目录中：
    ```text
    SillyTavern/public/scripts/extensions/third-party/ST-Persistent-Memory/
@@ -158,6 +158,21 @@ window.__persistentMemory.digestNow();
 ---
 
 ## 📝 版本历史
+
+### v0.1.37 (数据模式校验与防线准入网关解耦：构建独立 schema.js 模块)
+
+- **数据模式校验与防线准入网关解耦 (`src/schema.js`)**：
+  - 将大模型提炼与归并输出的 Schema 校验、终态流转约束、触发词过滤以及防线准入纯逻辑彻底从 `src/extractor.js` 与 `src/consolidator.js` 中抽离，独立封装为 `src/schema.js` 网关模块；
+  - 模块统一收敛四大核心能力：
+    1. `validateExtractedPayload`：提炼输出结构完整性校验与拒绝型门禁拦截（支持 scene/new_memories/lifecycle_updates、Token 预算动态长度净化、非字符串隐式转换防御）；
+    2. `validateConsolidatedPayload`：长程宏观归并产物 Schema 与 ACL 边界守卫（严格同 scope/同角色/同知情者校验、防幽灵替代、supersedes 映射有效性核验）；
+    3. `MODEL_ALLOWED_LIFECYCLES`：流转终态约束集合（`completed`, `superseded`, `refuted`），严禁大模型擅自越权激活已结项记忆；
+    4. `sanitizeTriggerKeys`：触发词合法性净化与停用词过滤；
+  - `src/extractor.js` 体积再瘦身近 180 行，提炼管道、归并引擎与全量回溯管道形成清晰的三层流水线（`parser.js 语法解析` -> `schema.js 模式校验` -> `extractor/consolidator/backlog 业务编排`）。
+- **100% 同源透明向后兼容**：
+  - `src/extractor.js` 与 `src/consolidator.js` 完整保留重导出（`export { validateExtractedPayload, validateConsolidatedPayload, sanitizeTriggerKeys, MODEL_ALLOWED_LIFECYCLES } from './schema.js'`），既有外部调用与既有测试无感平滑迁移。
+- **测试矩阵扩充至 97 项 (97/97 全绿通过)**：
+  - 新增 **T97**：全面覆盖 `src/schema.js`、`src/extractor.js`、`src/consolidator.js` 的同源重导出契约、缺失核心结构整包拒绝、非字符串类型防御、知情权限准入拦截、长程归并跨权限拼凑拦截与触发词过滤极限边界。
 
 ### v0.1.36 (文本清洗与容错 JSON 解析解耦：构建独立 parser.js 模块)
 

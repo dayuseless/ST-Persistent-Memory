@@ -7,7 +7,7 @@
  * 4. 会话隔离检查，防止中途会话切换导致的数据串线落盘
  * 5. 批次消化后自动触发未激活记忆沉睡巡检及链式长程宏观归并
  *
- * @version 0.1.36
+ * @version 0.1.37
  */
 
 import { MODULE_NAME, MEMORY_TYPES, MEMORY_STATUS, MEMORY_LIFECYCLE, MEMORY_SCOPE } from './config.js';
@@ -19,8 +19,8 @@ import {
     unwrapJsonPayload,
     isQuietDigestPayload
 } from './parser.js';
+import { validateExtractedPayload } from './schema.js';
 import {
-    validateExtractedPayload,
     filterMemoriesForDigest,
     applyExtractedData,
     getChatTurnCount,

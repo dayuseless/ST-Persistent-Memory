@@ -1,6 +1,6 @@
 /**
- * 提炼引擎 (v0.1.36)
- * 严格落实：状态版本并发保护 (state_revision)、独立API传输层解耦 (src/api.js)、统一ACL准入层介入、长程归并引擎解耦 (src/consolidator.js)、全量历史回溯管道解耦 (src/backlog.js)、智能文本清洗与容错JSON解析解耦 (src/parser.js)
+ * 提炼引擎 (v0.1.37)
+ * 严格落实：状态版本并发保护 (state_revision)、独立API传输层解耦 (src/api.js)、统一ACL准入层介入、长程归并引擎解耦 (src/consolidator.js)、全量历史回溯管道解耦 (src/backlog.js)、智能文本清洗与容错JSON解析解耦 (src/parser.js)、数据模式校验与防线准入网关解耦 (src/schema.js)
  */
 
 import { MODULE_NAME, MEMORY_TYPES, MEMORY_STATUS, MEMORY_LIFECYCLE, MEMORY_SCOPE } from './config.js';
@@ -15,8 +15,13 @@ import {
     cleanAndParseJson
 } from './parser.js';
 import {
-    buildConsolidationCandidateGroups,
+    validateExtractedPayload,
     validateConsolidatedPayload,
+    sanitizeTriggerKeys,
+    MODEL_ALLOWED_LIFECYCLES
+} from './schema.js';
+import {
+    buildConsolidationCandidateGroups,
     triggerMemoryConsolidation,
     isMemoryConsolidationRunning
 } from './consolidator.js';
@@ -33,6 +38,10 @@ export {
     unwrapJsonPayload,
     isQuietDigestPayload,
     cleanAndParseJson,
+    validateExtractedPayload,
+    validateConsolidatedPayload,
+    sanitizeTriggerKeys,
+    MODEL_ALLOWED_LIFECYCLES,
     getContextParticipants,
     validateMemoryAcl,
     normalizeAndValidateMemory,
@@ -44,7 +53,6 @@ export {
     DIGEST_REQUEST_TIMEOUT_MS,
     TEST_CONNECTION_TIMEOUT_MS,
     buildConsolidationCandidateGroups,
-    validateConsolidatedPayload,
     triggerMemoryConsolidation,
     isMemoryConsolidationRunning,
     findMessageIndexByTurn,
@@ -56,13 +64,6 @@ export {
 function getContext() {
     return window.SillyTavern?.getContext?.() ?? null;
 }
-
-// 针对模型提炼接口，只允许流转至终态 (P1 修复：严禁模型将已完结记忆重新激活为 active)
-const MODEL_ALLOWED_LIFECYCLES = new Set([
-    MEMORY_LIFECYCLE.COMPLETED,
-    MEMORY_LIFECYCLE.SUPERSEDED,
-    MEMORY_LIFECYCLE.REFUTED
-]);
 
 /**
  * 计算实际对话轮数 (以 AI 回复次数为基准统计真实轮次)
@@ -92,153 +93,6 @@ export function getChatIdentifier(c) {
         if (chatFile) return `char_${c.this_chid}_${chatFile}`;
     }
     return null;
-}
-
-/**
- * P0-4 修复：建立严格的“拒绝型” Schema 验证拦截器
- * 核心原则：结构缺失全拒，类型未知单拒，严禁把未知类型静默降级为 fact
- */
-export function validateExtractedPayload(raw, currentMemories = [], allowedParticipants = null) {
-    // 根节点必须是纯对象
-    if (!raw || typeof raw !== 'object' || Array.isArray(raw)) {
-        return null;
-    }
-
-    const target = unwrapJsonPayload(raw);
-
-    // 权威可信参与者名单解析
-    const trustedParticipants = allowedParticipants instanceof Set
-        ? allowedParticipants
-        : (Array.isArray(allowedParticipants)
-            ? new Set(allowedParticipants.filter(x => typeof x === 'string').map(x => x.trim()).filter(Boolean))
-            : (typeof getContext === 'function' ? getContextParticipants(getContext(), getState?.()) : null));
-
-    // 必须至少包含有效 scene 或 new_memories 或 lifecycle_updates 之一，否则拒绝整个 payload
-    const hasScene = target.scene && typeof target.scene === 'object' && !Array.isArray(target.scene);
-    const hasMemories = Array.isArray(target.new_memories);
-    const hasUpdates = Array.isArray(target.lifecycle_updates) || Array.isArray(target.resolved_memory_ids);
-
-    if (!hasScene && !hasMemories && !hasUpdates) {
-        console.warn(`[${MODULE_NAME}] [Schema 拦截] Payload 缺少核心结构 (scene / new_memories / lifecycle_updates)，整包拒绝`);
-        return null;
-    }
-
-    const validated = {
-        scene: null,
-        new_memories: [],
-        lifecycle_updates: []
-    };
-
-    // 1. 校验 scene 结构 (支持显式清空语义: 允许空字符串和空数组)
-    const curSettings = typeof getSettings === 'function' ? getSettings() : {};
-    const maxSceneTok = Math.max(50, Number(curSettings?.maxSceneTokens) || 150);
-    const maxTotalTok = Math.max(100, Number(curSettings?.maxTotalMemoryTokens) || 450);
-
-    // 动态放宽净化截断上限，支持用户调高预算后保留更详尽生动的现场描述
-    const maxActionLen = Math.max(150, Math.min(800, Math.floor(maxSceneTok * 1.6)));
-    const maxLocLen = Math.max(80, Math.min(300, Math.floor(maxSceneTok * 0.8)));
-    const maxUnresLen = Math.max(120, Math.min(400, Math.floor(maxSceneTok * 1.0)));
-    const maxTensionLen = Math.max(80, Math.min(300, Math.floor(maxSceneTok * 0.8)));
-    const maxMemContentLen = Math.max(100, Math.min(400, Math.floor(maxTotalTok / 3)));
-    const maxNewMemoriesAllowed = Math.max(5, Math.min(15, Math.floor(maxTotalTok / 80)));
-
-    if (hasScene) {
-        const sc = target.scene;
-        validated.scene = {};
-
-        const sanitizeString = (val, maxLen) => {
-            if (val === undefined) return undefined;
-            if (val === null || val === '') return '';
-            // P1 工程加固：严禁隐式转换对象为字符串 (防止产生 [object Object])
-            if (typeof val !== 'string') {
-                console.warn(`[${MODULE_NAME}] [Schema 拦截] 字段值非纯字符串，拒绝隐式转换:`, val);
-                return undefined;
-            }
-            return val.trim().slice(0, maxLen);
-        };
-
-        if (sc.scene_id !== undefined) validated.scene.scene_id = sanitizeString(sc.scene_id, 40);
-        if (sc.location !== undefined) validated.scene.location = sanitizeString(sc.location, maxLocLen);
-        if (sc.time !== undefined) validated.scene.time = sanitizeString(sc.time, 60);
-        if (sc.action !== undefined) validated.scene.action = sanitizeString(sc.action, maxActionLen);
-        if (sc.tension !== undefined) validated.scene.tension = sanitizeString(sc.tension, maxTensionLen);
-        if (sc.unresolved !== undefined) validated.scene.unresolved = sanitizeString(sc.unresolved, maxUnresLen);
-
-        if (Array.isArray(sc.in_scene_characters)) {
-            validated.scene.in_scene_characters = sc.in_scene_characters
-                .filter(x => typeof x === 'string')
-                .map(x => x.trim().slice(0, 30))
-                .filter(Boolean)
-                .slice(0, 10);
-        } else if (sc.in_scene_characters === null) {
-            validated.scene.in_scene_characters = null; // P1 修复：严格保留 null 语义，允许状态机将现场重置为未知
-        }
-    }
-
-    // 2. 校验 new_memories 数组 (统一数据准入判定层 Fail-Closed 核验：非法类型直接丢弃，严禁降级为 fact)
-    if (hasMemories) {
-        for (const item of target.new_memories) {
-            if (!item || typeof item !== 'object') continue;
-
-            const norm = normalizeAndValidateMemory(item, {
-                participants: trustedParticipants,
-                source: 'ai_extraction',
-                maxContentLen: maxMemContentLen,
-                context: typeof getContext === 'function' ? getContext() : null
-            });
-
-            if (!norm.valid) {
-                if (norm.aclRejected) {
-                    console.warn(`[${MODULE_NAME}] [ACL 拦截] ${norm.reason}`);
-                } else {
-                    console.warn(`[${MODULE_NAME}] [Schema 拦截] ${norm.reason}`);
-                }
-                continue;
-            }
-
-            validated.new_memories.push(norm.memory);
-
-            // 单次提炼吸收上限根据预算动态弹性扩展 (5~15条)
-            if (validated.new_memories.length >= maxNewMemoriesAllowed) break;
-        }
-    }
-
-    // 3. 校验 lifecycle_updates (确认 ID 真实存在于当前记忆库中)
-    const existingIds = new Set(currentMemories.map(m => m.id));
-
-    if (Array.isArray(target.lifecycle_updates)) {
-        for (const up of target.lifecycle_updates) {
-            if (!up || typeof up !== 'object') continue;
-            const id = String(up.id || '').trim();
-            if (!existingIds.has(id)) {
-                console.warn(`[${MODULE_NAME}] [Schema 拦截] 待更新记忆 ID "${id}" 不存在，丢弃`);
-                continue;
-            }
-            // P1 修复：模型提炼仅允许流转至终态 (completed, superseded, refuted)，严禁模型擅自将已结项重新激活为 active
-            if (!MODEL_ALLOWED_LIFECYCLES.has(up.lifecycle)) {
-                console.warn(`[${MODULE_NAME}] [Schema 拦截] 模型尝试将记忆 ID "${id}" 流转至非终态状态 "${up.lifecycle}"，拒绝`);
-                continue;
-            }
-
-            validated.lifecycle_updates.push({
-                id: id,
-                lifecycle: up.lifecycle
-            });
-        }
-    } else if (Array.isArray(target.resolved_memory_ids)) {
-        // 向后兼容旧格式
-        for (const id of target.resolved_memory_ids) {
-            const trimmed = String(id || '').trim();
-            if (existingIds.has(trimmed)) {
-                validated.lifecycle_updates.push({
-                    id: trimmed,
-                    lifecycle: MEMORY_LIFECYCLE.COMPLETED
-                });
-            }
-        }
-    }
-
-    return validated;
 }
 
 /**
@@ -622,18 +476,6 @@ ${conversationText}
     } finally {
         activeChatDigests.delete(startChatId);
     }
-}
-
-/**
- * 清洗并过滤低质触发词
- */
-export function sanitizeTriggerKeys(keys) {
-    if (!Array.isArray(keys)) return [];
-    const stopWords = new Set(['你', '我', '他', '她', '它', '我们', '你们', '他们', '这个', '那个', '是', '在', '有', '说', '想', '看', '去', '来', '做', '事情', '东西', '什么', '怎么', '然后', '但是']);
-    return keys
-        .map(k => String(k || '').trim())
-        .filter(k => k.length >= 2 && k.length <= 15 && !stopWords.has(k))
-        .slice(0, 5);
 }
 
 /**
