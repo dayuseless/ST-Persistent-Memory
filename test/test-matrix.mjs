@@ -184,6 +184,12 @@ import {
 } from '../src/backlog.js';
 
 import {
+    applyExtractedData as applyApplyExtractedData,
+    extractAndApplySyncTag as applyExtractAndApplySyncTag,
+    filterMemoriesForDigest as applyFilterMemoriesForDigest
+} from '../src/apply.js';
+
+import {
     sanitizeLorebookRef as lbSanitizeRef,
     getActiveWorldBookInfo as lbGetActiveInfo,
     syncMemoryDeltaToWorldInfo as lbSyncDelta,
@@ -3070,30 +3076,31 @@ Intermediate analysis details...
     });
 
     // ─────────────────────────────────────────────────────────────
-    // T71: 全工程版本标识严格一致性核验 (0.1.38)
+    // T71: 全工程版本标识严格一致性核验 (0.1.39)
     // ─────────────────────────────────────────────────────────────
-    test('T71: 全工程版本标识严格一致性核验 (manifest, config, index 与各模块头部统一为 0.1.38)', () => {
+    test('T71: 全工程版本标识严格一致性核验 (manifest, config, index 与各模块头部统一为 0.1.39)', () => {
         const currentFile = fileURLToPath(import.meta.url);
         const rootDir = path.resolve(path.dirname(currentFile), '../');
 
         // 1. manifest.json
         const manifestPath = path.join(rootDir, 'manifest.json');
         const manifest = JSON.parse(fs.readFileSync(manifestPath, 'utf8'));
-        assert.strictEqual(manifest.version, '0.1.38', 'manifest.json 版本号应为 0.1.38');
+        assert.strictEqual(manifest.version, '0.1.39', 'manifest.json 版本号应为 0.1.39');
 
         // 2. src/config.js
-        assert.strictEqual(EXTENSION_VERSION, '0.1.38', 'config.js EXTENSION_VERSION 应为 0.1.38');
+        assert.strictEqual(EXTENSION_VERSION, '0.1.39', 'config.js EXTENSION_VERSION 应为 0.1.39');
 
         // 3. index.js
         const indexPath = path.join(rootDir, 'index.js');
         const indexContent = fs.readFileSync(indexPath, 'utf8');
-        assert.ok(indexContent.includes('v0.1.38'), 'index.js 头部必须标注 v0.1.38');
-        assert.ok(!indexContent.includes('v0.1.36'), 'index.js 严禁残留旧版本 v0.1.36 版本头');
+        assert.ok(indexContent.includes('v0.1.39'), 'index.js 头部必须标注 v0.1.39');
+        assert.ok(!indexContent.includes('v0.1.38'), 'index.js 严禁残留旧版本 v0.1.38 版本头');
 
-        // 4. 各核心模块头部注释版本检查 (15 个核心模块)
+        // 4. 各核心模块头部注释版本检查 (16 个核心模块)
         const checkModules = [
             'src/acl.js',
             'src/api.js',
+            'src/apply.js',
             'src/consolidator.js',
             'src/backlog.js',
             'src/lorebook.js',
@@ -3114,12 +3121,12 @@ Intermediate analysis details...
             const content = fs.readFileSync(filePath, 'utf8');
             const first10Lines = content.split('\n').slice(0, 10).join('\n');
             assert.ok(
-                first10Lines.includes('v0.1.38') || first10Lines.includes('0.1.38'),
-                `${relPath} 头部注释必须包含 0.1.38 版本标识`
+                first10Lines.includes('v0.1.39') || first10Lines.includes('0.1.39'),
+                `${relPath} 头部注释必须包含 0.1.39 版本标识`
             );
             assert.ok(
-                !first10Lines.includes('0.1.36') && !first10Lines.includes('v0.1.36'),
-                `${relPath} 头部注释严禁残留旧版本 0.1.36`
+                !first10Lines.includes('0.1.38') && !first10Lines.includes('v0.1.38'),
+                `${relPath} 头部注释严禁残留旧版本 0.1.38`
             );
         }
     });
@@ -4370,6 +4377,150 @@ Intermediate analysis details...
         const updateTag = '<!-- MEMORY_UPDATE: {"scene":{"location":"客栈"}} -->';
         assert.ok(promptSyncTagRegex.test(updateTag), 'MEMORY_UPDATE 伴随标签必须成功匹配');
         assert.ok(!promptSyncTagRegex.test('<!-- 这是普通HTML注释，不是记忆伴随标签 -->'), '普通 HTML 注释绝不能被误判为伴随标签');
+    });
+
+    // ─────────────────────────────────────────────────────────────
+    // T99: 提炼落盘与伴随协议流水线解耦契约与极端边界测试 (src/apply.js ↔ src/extractor.js ↔ src/backlog.js)
+    // ─────────────────────────────────────────────────────────────
+    test('T99: 提炼落盘与伴随协议流水线解耦契约与极端边界测试 (src/apply.js ↔ src/extractor.js ↔ src/backlog.js)', () => {
+        // 1. 同源引用契约验证 (extractor.js 透明重导出必须严格全等于 apply.js 对应导出)
+        assert.strictEqual(applyExtractedData, applyApplyExtractedData, 'applyExtractedData 必须同源全等');
+        assert.strictEqual(extractAndApplySyncTag, applyExtractAndApplySyncTag, 'extractAndApplySyncTag 必须同源全等');
+        assert.strictEqual(filterMemoriesForDigest, applyFilterMemoriesForDigest, 'filterMemoriesForDigest 必须同源全等');
+
+        // 2. applyExtractedData 单元与事务行为测试
+        // 2.1 空/无效 payload 处理
+        assert.strictEqual(applyExtractedData(null), '无有效更新');
+        assert.strictEqual(applyExtractedData(undefined), '无有效更新');
+        assert.strictEqual(applyExtractedData('invalid_payload'), '无有效更新');
+
+        // 2.2 准备独立隔离状态
+        const state = getState();
+        state.scene = {
+            location: '原始青石阶',
+            time: '清晨微风',
+            action: '拾级而上',
+            tension: '平静',
+            unresolved: '未知前路',
+            in_scene_characters: ['玩家', '小师妹']
+        };
+        state.memories = [
+            {
+                id: 'mem_t99_old_1',
+                type: 'todo',
+                content: '打水浇花',
+                scope: 'character',
+                character: '小师妹',
+                lifecycle: 'active',
+                status: 'triggered'
+            }
+        ];
+
+        // 2.3 现场快照三态 PATCH 更新与生命周期流转
+        const res1 = applyExtractedData({
+            scene: {
+                location: '后山幽谷',
+                tension: '高度戒备'
+            },
+            lifecycle_updates: [
+                { id: 'mem_t99_old_1', lifecycle: 'completed' }
+            ],
+            new_memories: [
+                {
+                    type: 'fact',
+                    content: '发现幽谷深处藏有上古阵法残卷',
+                    scope: 'world',
+                    trigger_keys: ['幽谷', '阵法残卷'],
+                    status: 'triggered'
+                }
+            ]
+        }, 12);
+
+        // 验证汇总摘要返回值
+        assert.ok(res1.includes('快照更新'));
+        assert.ok(res1.includes('沉淀 1 条记忆'));
+        assert.ok(res1.includes('流转 1 条状态'));
+
+        // 验证底层状态更新
+        assert.strictEqual(state.scene.location, '后山幽谷', '现场位置必须 PATCH 更新');
+        assert.strictEqual(state.scene.tension, '高度戒备', '现场张力必须 PATCH 更新');
+        assert.strictEqual(state.scene.time, '清晨微风', '未修改的现场字段必须保持继承');
+        assert.strictEqual(state.memories.find(m => m.id === 'mem_t99_old_1').lifecycle, 'completed', '目标记忆生命周期必须流转为 completed');
+
+        const newMem = state.memories.find(m => m.content === '发现幽谷深处藏有上古阵法残卷');
+        assert.ok(newMem, '新记忆必须成功沉淀入库');
+        assert.strictEqual(newMem.floor, 12, '新记忆楼层号必须正确写入');
+        assert.strictEqual(newMem.scope, 'world');
+
+        // 2.4 空更新摘要分支
+        const resEmpty = applyExtractedData({});
+        assert.strictEqual(resEmpty, '情境稳定，无新记忆沉淀');
+
+        // 3. extractAndApplySyncTag 同步伴随协议测试
+        // 3.1 非字符串或不含标签原样返回
+        assert.strictEqual(extractAndApplySyncTag(null), null);
+        assert.strictEqual(extractAndApplySyncTag(12345), 12345);
+        const normalText = '这是普通的聊天回复，没有任何伴随标签。';
+        assert.strictEqual(extractAndApplySyncTag(normalText), normalText);
+
+        // 3.2 正常伴随标签入库与正文剥离
+        const rawWithTag = `师兄你看，这草丛里有东西！\n\n<!-- PERSISTENT_MEMORY: {
+            "scene": { "action": "弯腰捡起玉佩" },
+            "new_memories": [{ "type": "fact", "content": "拾得刻有龙纹的青色玉佩", "scope": "world" }]
+        } -->\n这是一块成色极佳的古玉。`;
+
+        const cleanedText = extractAndApplySyncTag(rawWithTag);
+        assert.ok(!cleanedText.includes('PERSISTENT_MEMORY'), '剥离后正文绝不能残留伴随标签');
+        assert.ok(cleanedText.includes('师兄你看，这草丛里有东西！'));
+        assert.ok(cleanedText.includes('这是一块成色极佳的古玉。'));
+        assert.strictEqual(state.scene.action, '弯腰捡起玉佩', '伴随标签中的快照更新必须生效');
+        assert.ok(state.memories.some(m => m.content === '拾得刻有龙纹的青色玉佩'), '伴随标签中的新记忆必须成功入库');
+        assert.strictEqual(state.last_sync_error, null, '成功入库后 last_sync_error 必须清空');
+
+        // 3.3 畸形 JSON 标签留痕与 HUD 排错支持
+        const malformedTag = '前方凶险，速退！\n<!-- PERSISTENT_MEMORY: {bad_json: "missing quote} -->';
+        const cleanedMalformed = extractAndApplySyncTag(malformedTag);
+        assert.strictEqual(cleanedMalformed, '前方凶险，速退！', '畸形标签必须干净剥离');
+        assert.ok(state.last_sync_error, '畸形标签必须留存 last_sync_error');
+        assert.ok(state.last_sync_error.error.includes('JSON 解析失败'), '错误原因必须准确识别为 JSON 解析失败');
+        assert.ok(state.last_sync_error.rawSnippet.includes('bad_json'), '必须截取保留原始片段用于排错');
+
+        // 3.4 Schema 校验失败标签留痕
+        const invalidSchemaTag = '天色已晚。\n<!-- PERSISTENT_MEMORY: {"unrelated_field": "test"} -->';
+        extractAndApplySyncTag(invalidSchemaTag);
+        assert.ok(state.last_sync_error.error.includes('Schema 校验未通过'), 'Schema 校验失败必须准确记录');
+
+        // 4. filterMemoriesForDigest 提炼候选记忆过滤器测试
+        const testMems = [
+            { id: 'm_active_world', lifecycle: 'active', scope: 'world', content: '世界公开事件' },
+            { id: 'm_completed_world', lifecycle: 'completed', scope: 'world', content: '已结项事件' },
+            { id: 'm_char_present', lifecycle: 'active', scope: 'character', character: '小师妹', content: '小师妹独知秘密' },
+            { id: 'm_char_absent', lifecycle: 'active', scope: 'character', character: '远方掌门', content: '掌门密信' },
+            { id: 'm_shared_present', lifecycle: 'active', scope: 'shared', known_by: ['小师妹', '路人甲'], content: '两人共享线索' },
+            { id: 'm_shared_absent', lifecycle: 'active', scope: 'shared', known_by: ['远方掌门', '二师兄'], content: '不在场共享线索' }
+        ];
+
+        // 4.1 在场角色包含小师妹
+        const filtered1 = filterMemoriesForDigest(testMems, {
+            sceneParticipants: ['玩家', '小师妹']
+        });
+        const ids1 = filtered1.map(m => m.id);
+        assert.ok(ids1.includes('m_active_world'), '活跃 world 记忆必须包含');
+        assert.ok(!ids1.includes('m_completed_world'), '非 active 状态记忆必须剔除');
+        assert.ok(ids1.includes('m_char_present'), '在场角色私密记忆必须包含');
+        assert.ok(!ids1.includes('m_char_absent'), '缺席角色私密记忆必须排除');
+        assert.ok(ids1.includes('m_shared_present'), '在场角色共享记忆必须包含');
+        assert.ok(!ids1.includes('m_shared_absent'), '全员缺席共享记忆必须排除');
+
+        // 4.2 场景参与者未定义时的回退策略
+        const filteredFallback = filterMemoriesForDigest(testMems, {
+            sceneParticipants: null,
+            conversationParticipants: ['远方掌门'],
+            fallbackParticipants: []
+        });
+        const fallbackIds = filteredFallback.map(m => m.id);
+        assert.ok(fallbackIds.includes('m_char_absent'), '回退列表中存在的角色私知应被包含');
+        assert.ok(!fallbackIds.includes('m_char_present'), '回退列表中不存在的角色私知应被排除');
     });
 
     console.log(`\n======================================================`);

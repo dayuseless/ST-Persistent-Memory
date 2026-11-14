@@ -1,6 +1,6 @@
 # SillyTavern 持续记忆插件 (ST-Persistent-Memory)
 
-[![Version](https://img.shields.io/badge/version-v0.1.38-blue.svg)](https://github.com/dayuseless/ST-Persistent-Memory)
+[![Version](https://img.shields.io/badge/version-v0.1.39-blue.svg)](https://github.com/dayuseless/ST-Persistent-Memory)
 [![SillyTavern](https://img.shields.io/badge/SillyTavern-1.12.0+-purple.svg)](https://github.com/SillyTavern/SillyTavern)
 [![License](https://img.shields.io/badge/license-MIT-green.svg)](LICENSE)
 
@@ -77,7 +77,7 @@
 
 ### 方式二：手动离线包安装
 
-1. 从 [Releases 页面](https://github.com/dayuseless/ST-Persistent-Memory/releases) 下载 `ST-Persistent-Memory-v0.1.38.zip`。
+1. 从 [Releases 页面](https://github.com/dayuseless/ST-Persistent-Memory/releases) 下载 `ST-Persistent-Memory-v0.1.39.zip`。
 2. 解压到 SillyTavern 的扩展目录中：
    ```text
    SillyTavern/public/scripts/extensions/third-party/ST-Persistent-Memory/
@@ -158,6 +158,21 @@ window.__persistentMemory.digestNow();
 ---
 
 ## 📝 版本历史
+
+### v0.1.39 (提炼落盘与伴随协议流水线解耦：构建独立 apply.js 模块)
+
+- **提炼落盘与伴随协议流水线解耦 (`src/apply.js`)**：
+  - 将数据写回状态库、伴随标签提取剥离与候选记忆过滤逻辑从 `src/extractor.js` 中抽离，独立封装为 `src/apply.js` 模块；
+  - 模块统一收敛三大核心能力：
+    1. `applyExtractedData`：原子批量事务 (`batchUpdate`) 提交、现场快照三态 PATCH 更新、显式生命周期流转（completed / superseded / refuted）、新记忆入库及防重融合；
+    2. `extractAndApplySyncTag`：同步伴随标签解析、安全剥离正文、Schema 验证、入库提交、`last_sync_error` 留痕与 Toastr 提示；
+    3. `filterMemoriesForDigest`：提炼候选活跃记忆场景化过滤（按当前场景在场角色判定私密与共享记忆知情范围）；
+  - 核心提炼引擎 `src/extractor.js` 彻底瘦身为轻量纯粹的任务并发调度器（仅保留会话标识提取、消息分片、轮次计数、并发锁与 `triggerAsyncDigest` 调度流程，源码降至 360 行）；
+  - 插件入口 `index.js` 与全量回溯管道 `src/backlog.js` 依赖解耦分明，职责清晰。
+- **100% 同源透明向后兼容**：
+  - `src/extractor.js` 完整保留代理重导出（`export { filterMemoriesForDigest, applyExtractedData, extractAndApplySyncTag } from './apply.js'`），外部调用与现有集成零感知、零破损。
+- **测试矩阵扩充至 99 项 (99/99 全绿通过)**：
+  - 新增 **T99**：深度覆盖 `src/apply.js ↔ src/extractor.js` 同源重导出全等契约、现场快照三态 PATCH 更新、显式生命周期流转、新记忆入库与去重、伴随标签完整解析与正文剥离、畸形标签 HUD 留痕排错以及提炼候选记忆权限过滤。
 
 ### v0.1.38 (提示词模板与元指令编排解耦：构建独立 prompt.js 模块)
 

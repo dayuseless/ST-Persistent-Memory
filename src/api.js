@@ -1,5 +1,5 @@
 /**
- * 持续记忆 API 通信客户端与网络传输层 (API Client & Transport Layer, v0.1.38)
+ * 持续记忆 API 通信客户端与网络传输层 (API Client & Transport Layer, v0.1.39)
  *
  * 核心职责：
  * 1. 领域职责解耦：将底层 HTTP 请求、酒馆宿主 generateRaw 降级、AbortController 超时管理从提炼业务引擎中彻底剥离。

@@ -1,12 +1,13 @@
 /**
- * SillyTavern 插件入口: 持续记忆 (Persistent Memory) v0.1.38
+ * SillyTavern 插件入口: 持续记忆 (Persistent Memory) v0.1.39
  * 遵循现场快照 (L0 Resume) 与事件驱动记忆架构
  */
 
 import { MODULE_NAME, EXTENSION_VERSION } from './src/config.js';
 import { loadCurrentState, getSettings, onStateChange } from './src/state.js';
 import { buildAndInjectMemoryPrompt } from './src/injector.js';
-import { extractAndApplySyncTag, triggerAsyncDigest } from './src/extractor.js';
+import { extractAndApplySyncTag } from './src/apply.js';
+import { triggerAsyncDigest } from './src/extractor.js';
 import { initUI } from './src/ui.js';
 
 const CTX_WAIT_MS = 250;
