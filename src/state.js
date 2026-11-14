@@ -696,6 +696,7 @@ export function applyInactivitySleep(currentTurn, overrideSettings = null) {
                 : (Number.isInteger(mem.floor) ? mem.floor : 0);
             if (currentTurn - lastActive >= sleepTurns) {
                 mem.status = MEMORY_STATUS.ARCHIVED;
+                mem.last_woken_floor = null;
                 mem.updated_at = new Date().toISOString();
                 sleptCount++;
                 console.log(`[${MODULE_NAME}] [Auto-Sleep] 记忆 [${mem.id}] 超过 ${sleepTurns} 轮未命中 (最后活跃: 楼层 ${lastActive}, 当前: 楼层 ${currentTurn})，已自动转入沉睡休眠`);

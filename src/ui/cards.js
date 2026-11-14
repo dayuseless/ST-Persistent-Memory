@@ -16,10 +16,14 @@ import { escapeHtml } from './common.js';
 /**
  * 渲染单个记忆卡片
  */
-export function renderMemoryCard(mem, selectedMemoryIds = new Set()) {
+export function renderMemoryCard(mem, selectedMemoryIds = new Set(), currentFloor = 0) {
     if (!mem || typeof mem !== 'object') return '';
 
     const selectedSet = (selectedMemoryIds instanceof Set) ? selectedMemoryIds : new Set();
+
+    // 判断沉睡休眠与刚唤醒状态
+    const isDormant = mem.status === MEMORY_STATUS.ARCHIVED && (!mem.lifecycle || mem.lifecycle === MEMORY_LIFECYCLE.ACTIVE);
+    const isWoken = Boolean(mem.last_woken_floor && (currentFloor === 0 || Math.abs(currentFloor - mem.last_woken_floor) <= 4));
 
     let statusClass = 'pm-chip-triggered';
     let statusIcon = '<i class="fa-solid fa-bolt"></i> 动态触发';
@@ -27,8 +31,13 @@ export function renderMemoryCard(mem, selectedMemoryIds = new Set()) {
         statusClass = 'pm-chip-pinned';
         statusIcon = '<i class="fa-solid fa-thumbtack"></i> 常驻置顶';
     } else if (mem.status === MEMORY_STATUS.ARCHIVED) {
-        statusClass = 'pm-chip-archived';
-        statusIcon = '<i class="fa-solid fa-box-archive"></i> 归档休眠';
+        if (isDormant) {
+            statusClass = 'pm-chip-dormant';
+            statusIcon = '<i class="fa-solid fa-moon"></i> 沉睡休眠';
+        } else {
+            statusClass = 'pm-chip-archived';
+            statusIcon = '<i class="fa-solid fa-box-archive"></i> 历史归档';
+        }
     }
 
     let scopeClass = 'pm-scope-world';
@@ -51,6 +60,11 @@ export function renderMemoryCard(mem, selectedMemoryIds = new Set()) {
         lifecycleBadge = '<span class="pm-lifecycle-badge pm-life-refuted"><i class="fa-solid fa-xmark"></i> 证伪</span>';
     }
 
+    let wakeBadge = '';
+    if (isWoken && mem.status !== MEMORY_STATUS.ARCHIVED) {
+        wakeBadge = `<span class="pm-wake-badge" title="刚刚由剧情高匹配度自动从休眠中唤醒 (第 ${mem.last_woken_floor} 轮)"><i class="fa-solid fa-sun"></i> 刚唤醒</span>`;
+    }
+
     const keysHtml = (mem.trigger_keys || []).map(k => `<span class="pm-key-pill">${escapeHtml(k)}</span>`).join('');
 
     let typeIcon = 'fa-file-lines';
@@ -70,12 +84,18 @@ export function renderMemoryCard(mem, selectedMemoryIds = new Set()) {
     }
 
     const isSelected = selectedSet.has(mem.id);
+    const cardClasses = [
+        'pm-card',
+        isSelected ? 'pm-card-selected' : '',
+        isDormant ? 'pm-card-dormant' : '',
+        (isWoken && mem.status !== MEMORY_STATUS.ARCHIVED) ? 'pm-card-woken' : ''
+    ].filter(Boolean).join(' ');
 
     return `
-        <div class="pm-card ${isSelected ? 'pm-card-selected' : ''}" data-id="${escapeHtml(mem.id)}">
+        <div class="${cardClasses}" data-id="${escapeHtml(mem.id)}">
             <div class="pm-card-top">
                 <input type="checkbox" class="pm-card-select-cb" data-id="${escapeHtml(mem.id)}" ${isSelected ? 'checked' : ''} title="选择此项进行批量操作">
-                <button class="pm-status-chip ${statusClass}" title="点击切换：常驻 / 触发 / 归档" data-action="cycle">
+                <button class="pm-status-chip ${statusClass}" title="${isDormant ? '沉睡休眠：长期闲置已自动沉睡，当剧情提及且匹配分达到唤醒阈值时将自动唤醒激活。点击可手动切换' : '点击切换：常驻 / 触发 / 归档'}" data-action="cycle">
                     ${statusIcon}
                 </button>
                 <button class="pm-type-badge pm-type-${curType}" title="点击切换类型：事实 (fact) / 约定 (statement) / 推断 (inference) / 待办 (todo)" data-action="cycle-type">
@@ -83,6 +103,7 @@ export function renderMemoryCard(mem, selectedMemoryIds = new Set()) {
                 </button>
                 <span class="pm-scope-badge ${scopeClass}">${scopeLabel}</span>
                 ${lifecycleBadge}
+                ${wakeBadge}
                 <div class="pm-card-actions">
                     <button class="pm-edit-btn" title="编辑记忆内容与触发词" data-action="edit"><i class="fa-solid fa-pen-to-square"></i></button>
                     <button class="pm-del-btn" title="删除此条记忆" data-action="delete"><i class="fa-solid fa-trash-can"></i></button>

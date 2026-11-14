@@ -33,7 +33,9 @@ export function parseCommandArgs(rawText) {
 
     for (let i = 0; i < tokens.length; i++) {
         const t = tokens[i];
-        if (t === '--pinned' || t === '-p') {
+        if (t === '--all') {
+            flags.all = true;
+        } else if (t === '--pinned' || t === '-p') {
             flags.pinned = true;
         } else if (t === '--type' || t === '-t') {
             if (i + 1 < tokens.length) flags.type = tokens[++i];
@@ -186,13 +188,34 @@ export function executeForgetCommand(argsText = '', namedArgs = {}) {
     const target = (parsed.positional || namedArgs.id || namedArgs.keyword || '').trim();
 
     if (!target) {
-        const help = '[持续记忆] 请提供要证伪或移除的记忆ID或关键词。用法: /forget <记忆ID或关键词>';
+        const help = '[持续记忆] 请提供要证伪或移除的记忆ID或关键词。用法: /forget [--all] <记忆ID或关键词>';
         window.toastr?.warning?.(help, '持续记忆');
         return help;
     }
 
     const s = getState();
     const lowerTarget = target.toLowerCase();
+    const isAll = Boolean(parsed.flags.all || namedArgs.all);
+
+    if (isAll) {
+        const matches = s.memories.filter(m => m.id === target || (m.content && m.content.toLowerCase().includes(lowerTarget)));
+        if (matches.length === 0) {
+            const notFound = `[持续记忆] 未找到匹配 "${target}" 的记忆条目`;
+            window.toastr?.warning?.(notFound, '持续记忆');
+            return notFound;
+        }
+        for (const m of matches) {
+            updateMemory(m.id, {
+                lifecycle: MEMORY_LIFECYCLE.REFUTED,
+                status: MEMORY_STATUS.ARCHIVED
+            });
+        }
+        saveCurrentState();
+        const msg = `[持续记忆] 已批量将 ${matches.length} 条匹配记忆标记为已证伪并归档 ("${target}")`;
+        window.toastr?.success?.(msg, '持续记忆');
+        return msg;
+    }
+
     const match = s.memories.find(m => m.id === target || (m.content && m.content.toLowerCase().includes(lowerTarget)));
 
     if (!match) {
@@ -300,7 +323,7 @@ export const SLASH_COMMAND_DEFINITIONS = [
     {
         name: 'forget',
         aliases: ['pm-forget'],
-        helpString: '将某条记忆快速标记为已证伪并归档。用法: /forget <关键词或ID>',
+        helpString: '将某条记忆快速标记为已证伪并归档。用法: /forget [--all] <关键词或ID>',
         callback: (named, unnamed) => {
             const raw = Array.isArray(unnamed) ? unnamed.join(' ') : String(unnamed || '');
             return executeForgetCommand(raw, named);

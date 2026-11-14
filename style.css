@@ -612,6 +612,42 @@
     border: 1px solid #e2e8f0;
 }
 
+.pm-chip-dormant {
+    background: #ede9fe;
+    color: #5b21b6;
+    border: 1px solid #ddd6fe;
+}
+.pm-chip-dormant:hover {
+    background: #e0e7ff;
+    color: #4338ca;
+}
+
+.pm-wake-badge {
+    display: inline-flex;
+    align-items: center;
+    gap: 3px;
+    font-size: 10px;
+    font-weight: 700;
+    padding: 1px 6px;
+    border-radius: 4px;
+    background: linear-gradient(135deg, #fef3c7 0%, #fde68a 100%);
+    color: #92400e;
+    border: 1px solid #fcd34d;
+    box-shadow: 0 0 8px rgba(245, 158, 11, 0.35);
+    animation: pmWakeGlow 2.5s infinite ease-in-out;
+}
+
+@keyframes pmWakeGlow {
+    0%, 100% {
+        box-shadow: 0 0 4px rgba(245, 158, 11, 0.2);
+        border-color: #fcd34d;
+    }
+    50% {
+        box-shadow: 0 0 10px rgba(245, 158, 11, 0.55);
+        border-color: #f59e0b;
+    }
+}
+
 .pm-scope-badge {
     font-size: 11px;
     padding: 2px 6px;
@@ -1116,8 +1152,9 @@
 }
 .pm-bulk-actions {
     display: flex;
-    gap: 5px;
+    gap: 4px;
     align-items: center;
+    flex-wrap: wrap;
 }
 .pm-bulk-btn {
     font-size: 11px;
@@ -1146,6 +1183,23 @@
 .pm-bulk-del:hover {
     background: #fee2e2;
     border-color: #ef4444;
+}
+
+/* 沉睡记忆卡片微暗样式 */
+.pm-card-dormant {
+    opacity: 0.88;
+    background: #fafafc;
+    border-color: #e2e8f0;
+}
+.pm-card-dormant:hover {
+    opacity: 1;
+    border-color: #c7d2fe;
+}
+
+/* 刚唤醒记忆卡片金光微晕 */
+.pm-card-woken {
+    border-color: #fcd34d !important;
+    background: #fffdfa;
 }
 
 /* 复选框与选中卡片高亮 */

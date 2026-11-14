@@ -6421,6 +6421,190 @@ Intermediate analysis details...
         }
     });
 
+    // ─────────────────────────────────────────────────────────────
+    // T116: 沉睡休眠与刚唤醒直观视觉标记 (Visual Lifecycle) 及增强型批量操作契约测试 (Phase 3)
+    // ─────────────────────────────────────────────────────────────
+    await testAsync('T116: 沉睡休眠与刚唤醒直观视觉标记 (Visual Lifecycle) 及增强型批量操作契约测试 (Phase 3)', async () => {
+        const origCtx = JSON.parse(JSON.stringify(mockContext));
+        const origSettings = JSON.parse(JSON.stringify(getSettings()));
+
+        try {
+            // 1. 沉睡记忆 (Dormant) vs 结项历史记忆 (Terminal) 渲染视觉区分核验
+            // 1.1 沉睡休眠条目 (status === 'archived' && lifecycle === 'active')
+            const dormantMem = {
+                id: 'mem_dormant_t116',
+                content: '在亚坛高原古遗迹遗留的星光碎片',
+                type: 'fact',
+                scope: 'world',
+                status: 'archived',
+                lifecycle: 'active'
+            };
+            const dormantHtml = renderMemoryCard(dormantMem);
+            assert.ok(dormantHtml.includes('pm-card-dormant'), '沉睡记忆卡片必须包含 pm-card-dormant 类名');
+            assert.ok(dormantHtml.includes('pm-chip-dormant'), '沉睡记忆卡片状态药丸必须为 pm-chip-dormant');
+            assert.ok(dormantHtml.includes('沉睡休眠'), '沉睡记忆必须明确标注 "沉睡休眠" 文本而非泛化归档');
+            assert.ok(dormantHtml.includes('fa-moon'), '沉睡记忆必须呈现静谧月亮图标');
+
+            // 1.2 历史结项条目 (status === 'archived' && lifecycle === 'completed')
+            const terminalMem = {
+                id: 'mem_terminal_t116',
+                content: '已将仿身泪滴骨灰交付给菈妮',
+                type: 'fact',
+                scope: 'world',
+                status: 'archived',
+                lifecycle: 'completed'
+            };
+            const terminalHtml = renderMemoryCard(terminalMem);
+            assert.ok(!terminalHtml.includes('pm-chip-dormant'), '结项记忆绝不能显示为沉睡药丸');
+            assert.ok(terminalHtml.includes('pm-chip-archived'), '结项记忆必须显示为 pm-chip-archived');
+            assert.ok(terminalHtml.includes('历史归档'), '结项记忆必须标注为 "历史归档"');
+            assert.ok(terminalHtml.includes('pm-life-completed'), '结项记忆必须同时具有履约徽章');
+
+            // 2. 刚刚唤醒 (Just Woken) 记忆金色微晕与高亮徽标核验
+            const wokenMem = {
+                id: 'mem_woken_t116',
+                content: '永恒之城的指头刀可以斩断无上意志',
+                type: 'statement',
+                scope: 'world',
+                status: 'triggered',
+                lifecycle: 'active',
+                last_woken_floor: 12
+            };
+            // 模拟当前轮次为 14 (在 4 轮唤醒时效窗口内)
+            const wokenHtml = renderMemoryCard(wokenMem, new Set(), 14);
+            assert.ok(wokenHtml.includes('pm-card-woken'), '刚刚唤醒记忆卡片根节点必须包含 pm-card-woken 类名');
+            assert.ok(wokenHtml.includes('pm-wake-badge'), '刚刚唤醒记忆必须呈现 pm-wake-badge 徽章');
+            assert.ok(wokenHtml.includes('刚唤醒'), '必须标注 "刚唤醒" 动态提示');
+            assert.ok(wokenHtml.includes('fa-sun'), '唤醒徽标必须呈现金色太阳图标');
+
+            // 3. 端到端沉睡到剧情唤醒生命周期流转测试 (applyInactivitySleep -> buildAndInjectMemoryPrompt)
+            clearStateCache();
+            const state = loadCurrentState();
+            state.memories = [
+                {
+                    id: 'mem_lifecycle_flow',
+                    content: '隐藏在月光祭坛的黑刀刺客首领',
+                    type: 'fact',
+                    scope: 'world',
+                    status: 'triggered',
+                    lifecycle: 'active',
+                    trigger_keys: ['月光祭坛', '黑刀刺客'],
+                    floor: 1,
+                    last_activated_floor: 1
+                }
+            ];
+
+            // 3.1 长期未命中触发沉睡
+            const sleepRes = applyInactivitySleep(25, { autoSleepEnabled: true, autoSleepTurns: 20 });
+            assert.strictEqual(sleepRes.sleptCount, 1);
+            const sleptMem = state.memories.find(m => m.id === 'mem_lifecycle_flow');
+            assert.strictEqual(sleptMem.status, 'archived', '超期条目必须进入 archived 状态');
+            assert.strictEqual(sleptMem.last_woken_floor, null, '沉睡时必须清空 last_woken_floor');
+
+            // 3.2 剧情提及高匹配度触发自动唤醒 (currentTurn = 26)
+            mockContext.chat = [
+                { is_user: true, mes: '我们终于抵达了月光祭坛，附近似乎有黑刀刺客埋伏！' }
+            ];
+            updateSettings({
+                autoSleepEnabled: true,
+                autoSleepWakeThreshold: 0.30,
+                semanticRetrievalEnabled: true
+            });
+
+            buildAndInjectMemoryPrompt({ currentTurn: 26, isDryRun: false });
+
+            const reawakenedMem = state.memories.find(m => m.id === 'mem_lifecycle_flow');
+            assert.strictEqual(reawakenedMem.status, 'triggered', '高匹配剧情必须将沉睡条目重新唤醒为 triggered');
+            assert.strictEqual(reawakenedMem.last_woken_floor, 26, '唤醒时必须精准记录 last_woken_floor');
+
+            // 4. 批量操作原子事务 (batchUpdate) 契约测试
+            state.memories = [
+                { id: 'b1', content: '批量记忆1', status: 'triggered', lifecycle: 'active' },
+                { id: 'b2', content: '批量记忆2', status: 'triggered', lifecycle: 'active' },
+                { id: 'b3', content: '批量记忆3', status: 'pinned', lifecycle: 'active' }
+            ];
+
+            // 4.1 批量归档/沉睡 (b1, b2)
+            const selIds1 = new Set(['b1', 'b2']);
+            batchUpdate(() => {
+                const s = getState();
+                for (const id of selIds1) {
+                    const t = s.memories.find(m => m.id === id);
+                    if (t) t.status = 'archived';
+                }
+            });
+            assert.strictEqual(state.memories.find(m => m.id === 'b1').status, 'archived');
+            assert.strictEqual(state.memories.find(m => m.id === 'b2').status, 'archived');
+            assert.strictEqual(state.memories.find(m => m.id === 'b3').status, 'pinned');
+
+            // 4.2 批量履约办结 (b1, b3)
+            const selIds2 = new Set(['b1', 'b3']);
+            batchUpdate(() => {
+                const s = getState();
+                for (const id of selIds2) {
+                    const t = s.memories.find(m => m.id === id);
+                    if (t) {
+                        t.lifecycle = 'completed';
+                        t.status = 'archived';
+                    }
+                }
+            });
+            assert.strictEqual(state.memories.find(m => m.id === 'b1').lifecycle, 'completed');
+            assert.strictEqual(state.memories.find(m => m.id === 'b3').lifecycle, 'completed');
+            assert.strictEqual(state.memories.find(m => m.id === 'b3').status, 'archived');
+
+            // 4.3 批量彻底删除 (b2)
+            const selIds3 = new Set(['b2']);
+            batchUpdate(() => {
+                const s = getState();
+                s.memories = s.memories.filter(m => !selIds3.has(m.id));
+            });
+            assert.strictEqual(state.memories.length, 2);
+            assert.ok(!state.memories.some(m => m.id === 'b2'));
+
+            // 5. 增强型 /forget --all 批量证伪契约测试
+            state.memories = [
+                { id: 'f1', content: '虚假谣言：无上意志是仁慈的', status: 'triggered', lifecycle: 'active' },
+                { id: 'f2', content: '虚假谣言：黄金律法完美无缺', status: 'triggered', lifecycle: 'active' },
+                { id: 'f3', content: '真实事实：黄金律法存在破绽', status: 'triggered', lifecycle: 'active' }
+            ];
+
+            // 5.1 /forget 默认单条命中
+            const singleForgetRes = executeForgetCommand('破绽');
+            assert.ok(singleForgetRes.includes('记忆已标记为已证伪并归档'));
+            assert.strictEqual(state.memories.find(m => m.id === 'f3').lifecycle, 'refuted');
+
+            // 5.2 /forget --all 批量命中多条
+            const batchForgetRes = executeForgetCommand('--all 虚假谣言');
+            assert.ok(batchForgetRes.includes('已批量将 2 条匹配记忆标记为已证伪并归档'));
+            assert.strictEqual(state.memories.find(m => m.id === 'f1').lifecycle, 'refuted');
+            assert.strictEqual(state.memories.find(m => m.id === 'f2').lifecycle, 'refuted');
+
+            // 6. 多维筛选逻辑核验 (active, dormant, archived, all)
+            const testPool = [
+                { id: 'p1', status: 'pinned', lifecycle: 'active' },      // active
+                { id: 'p2', status: 'triggered', lifecycle: 'active' },   // active
+                { id: 'p3', status: 'archived', lifecycle: 'active' },    // dormant
+                { id: 'p4', status: 'archived', lifecycle: 'completed' }, // terminal
+                { id: 'p5', status: 'archived', lifecycle: 'refuted' }    // terminal
+            ];
+            const isTerminal = m => m.lifecycle && m.lifecycle !== 'active';
+            const isDormant = m => m.status === 'archived' && (!m.lifecycle || m.lifecycle === 'active');
+            const isTermOrArch = m => m.status === 'archived' || isTerminal(m);
+
+            assert.strictEqual(testPool.filter(m => !isTermOrArch(m)).length, 2, '活跃项应为 2 (p1, p2)');
+            assert.strictEqual(testPool.filter(isDormant).length, 1, '沉睡项应为 1 (p3)');
+            assert.strictEqual(testPool.filter(isTerminal).length, 2, '结项历史应为 2 (p4, p5)');
+            assert.strictEqual(testPool.length, 5, '全部项应为 5');
+
+        } finally {
+            Object.assign(mockContext, origCtx);
+            updateSettings(origSettings);
+            clearStateCache();
+            loadCurrentState();
+        }
+    });
+
     console.log(`\n======================================================`);
     console.log(`  测试结果: 共 ${passed + failed} 项 | \x1b[32m${passed} 通过\x1b[0m | \x1b[31m${failed} 失败\x1b[0m`);
     console.log(`======================================================\n`);

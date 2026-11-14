@@ -175,8 +175,13 @@ function renderPanelContent() {
         `;
     }
 
-    const isTerminalOrArchived = m => m.status === MEMORY_STATUS.ARCHIVED || (m.lifecycle && m.lifecycle !== MEMORY_LIFECYCLE.ACTIVE);
+    const isTerminal = m => m.lifecycle && m.lifecycle !== MEMORY_LIFECYCLE.ACTIVE;
+    const isDormant = m => m.status === MEMORY_STATUS.ARCHIVED && (!m.lifecycle || m.lifecycle === MEMORY_LIFECYCLE.ACTIVE);
+    const isTerminalOrArchived = m => m.status === MEMORY_STATUS.ARCHIVED || isTerminal(m);
+
     const activeCount = memories.filter(m => !isTerminalOrArchived(m)).length;
+    const dormantCount = memories.filter(isDormant).length;
+    const terminalCount = memories.filter(isTerminal).length;
     const archivedOrTerminalCount = memories.filter(isTerminalOrArchived).length;
     const pinnedCount = memories.filter(m => m.status === MEMORY_STATUS.PINNED).length;
     const triggeredCount = memories.filter(m => m.status === MEMORY_STATUS.TRIGGERED && m.lifecycle === MEMORY_LIFECYCLE.ACTIVE).length;
@@ -192,7 +197,8 @@ function renderPanelContent() {
     // 根据当前筛选状态选择要渲染的卡片列表 (结合生命周期、世界书关联与实时搜索)
     const filteredMemories = memories.filter(m => {
         if (memoryFilter === 'active' && isTerminalOrArchived(m)) return false;
-        if (memoryFilter === 'archived' && !isTerminalOrArchived(m)) return false;
+        if (memoryFilter === 'dormant' && !isDormant(m)) return false;
+        if (memoryFilter === 'archived' && !isTerminal(m)) return false;
 
         if (lorebookFilter === '__unlinked__') {
             if (m.lorebook_ref && m.lorebook_ref.entry_name) return false;
@@ -224,10 +230,11 @@ function renderPanelContent() {
     // TAB 1: 记忆流 (Memories)
     // ─────────────────────────────────────────────────────────────────────────
     if (currentTab === 'memories') {
+        const currentFloor = Array.isArray(c?.chat) ? c.chat.length : (state.last_floor || 0);
         const isAllSelected = filteredMemories.length > 0 && filteredMemories.every(m => selectedMemoryIds.has(m.id));
         const memCardsHtml = filteredMemories.length > 0
-            ? filteredMemories.map(m => renderMemoryCard(m, selectedMemoryIds)).join('')
-            : `<div class="pm-empty-hint"><i class="fa-solid fa-box-open" style="font-size: 24px; margin-bottom: 6px; display: block; opacity: 0.5;"></i>${memorySearchQuery ? `未找到包含 “${escapeHtml(memorySearchQuery)}” 的相关记忆` : (lorebookFilter ? `设定【${escapeHtml(lorebookFilter === '__unlinked__' ? '未关联' : lorebookFilter)}】下暂无匹配记忆` : (memoryFilter === 'archived' ? '暂无归档或已结项记忆' : (memoryFilter === 'active' ? '暂无活跃记忆' : '记忆库暂无条目')))}</div>`;
+            ? filteredMemories.map(m => renderMemoryCard(m, selectedMemoryIds, currentFloor)).join('')
+            : `<div class="pm-empty-hint"><i class="fa-solid fa-box-open" style="font-size: 24px; margin-bottom: 6px; display: block; opacity: 0.5;"></i>${memorySearchQuery ? `未找到包含 “${escapeHtml(memorySearchQuery)}” 的相关记忆` : (lorebookFilter ? `设定【${escapeHtml(lorebookFilter === '__unlinked__' ? '未关联' : lorebookFilter)}】下暂无匹配记忆` : (memoryFilter === 'dormant' ? '暂无沉睡休眠中的记忆' : (memoryFilter === 'archived' ? '暂无结项或历史归档记忆' : (memoryFilter === 'active' ? '暂无活跃记忆' : '记忆库暂无条目'))))}</div>`;
 
         tabHtml = `
             <!-- 统计数据横幅 (大号清晰数字) -->
@@ -261,7 +268,9 @@ function renderPanelContent() {
                 <div class="pm-bulk-actions">
                     <button id="pm-bulk-pin" class="pm-bulk-btn" title="批量设为常驻"><i class="fa-solid fa-thumbtack pm-text-amber"></i> 常驻</button>
                     <button id="pm-bulk-trigger" class="pm-bulk-btn" title="批量设为条件激活"><i class="fa-solid fa-bolt pm-text-emerald"></i> 激活</button>
-                    <button id="pm-bulk-archive" class="pm-bulk-btn" title="批量归档"><i class="fa-solid fa-box-archive pm-text-sky"></i> 归档</button>
+                    <button id="pm-bulk-archive" class="pm-bulk-btn" title="批量设为沉睡休眠"><i class="fa-solid fa-moon" style="color: #6366f1;"></i> 休眠</button>
+                    <button id="pm-bulk-complete" class="pm-bulk-btn" title="批量标记为已履约/办结"><i class="fa-solid fa-check" style="color: #059669;"></i> 办结</button>
+                    <button id="pm-bulk-refute" class="pm-bulk-btn" title="批量标记为已证伪"><i class="fa-solid fa-xmark" style="color: #dc2626;"></i> 证伪</button>
                     <button id="pm-bulk-delete" class="pm-bulk-btn pm-bulk-del" title="批量彻底删除"><i class="fa-solid fa-trash-can"></i> 删除</button>
                     <button id="pm-bulk-cancel" class="pm-bulk-btn" title="取消选择"><i class="fa-solid fa-xmark"></i></button>
                 </div>
@@ -315,11 +324,14 @@ function renderPanelContent() {
                             <input type="checkbox" id="pm-select-all-cb" ${isAllSelected ? 'checked' : ''}>
                             <span style="font-size: 11px; margin-left: 2px;">全选</span>
                         </label>
-                        <button class="pm-filter-pill ${memoryFilter === 'active' ? 'pm-filter-active' : ''}" data-action="filter-mem" data-filter="active">
+                        <button class="pm-filter-pill ${memoryFilter === 'active' ? 'pm-filter-active' : ''}" data-action="filter-mem" data-filter="active" title="常规活跃参与提示词注入的记忆">
                             活跃 (${activeCount})
                         </button>
-                        <button class="pm-filter-pill ${memoryFilter === 'archived' ? 'pm-filter-active' : ''}" data-action="filter-mem" data-filter="archived">
-                            <i class="fa-solid fa-box-archive"></i> 归档/终态 (${archivedOrTerminalCount})
+                        <button class="pm-filter-pill ${memoryFilter === 'dormant' ? 'pm-filter-active' : ''}" data-action="filter-mem" data-filter="dormant" title="超期未提及自动沉睡、等待剧情触发唤醒的记忆">
+                            <i class="fa-solid fa-moon" style="color: #6366f1;"></i> 沉睡 (${dormantCount})
+                        </button>
+                        <button class="pm-filter-pill ${memoryFilter === 'archived' ? 'pm-filter-active' : ''}" data-action="filter-mem" data-filter="archived" title="已结项/履约/证伪的历史记忆">
+                            <i class="fa-solid fa-box-archive"></i> 结项 (${terminalCount})
                         </button>
                         <button class="pm-filter-pill ${memoryFilter === 'all' ? 'pm-filter-active' : ''}" data-action="filter-mem" data-filter="all">
                             全部 (${memories.length})
@@ -1353,10 +1365,13 @@ function bindPanelEvents(container) {
     container.querySelector('#pm-select-all-cb')?.addEventListener('change', (e) => {
         const isChecked = e.target.checked;
         const memories = getState().memories || [];
-        const isTermOrArch = m => m.status === MEMORY_STATUS.ARCHIVED || (m.lifecycle && m.lifecycle !== MEMORY_LIFECYCLE.ACTIVE);
+        const isTerminal = m => m.lifecycle && m.lifecycle !== MEMORY_LIFECYCLE.ACTIVE;
+        const isDormant = m => m.status === MEMORY_STATUS.ARCHIVED && (!m.lifecycle || m.lifecycle === MEMORY_LIFECYCLE.ACTIVE);
+        const isTermOrArch = m => m.status === MEMORY_STATUS.ARCHIVED || isTerminal(m);
         const curList = memories.filter(m => {
             if (memoryFilter === 'active' && isTermOrArch(m)) return false;
-            if (memoryFilter === 'archived' && !isTermOrArch(m)) return false;
+            if (memoryFilter === 'dormant' && !isDormant(m)) return false;
+            if (memoryFilter === 'archived' && !isTerminal(m)) return false;
             if (lorebookFilter === '__unlinked__') {
                 if (m.lorebook_ref && m.lorebook_ref.entry_name) return false;
             } else if (lorebookFilter) {
@@ -1389,7 +1404,10 @@ function bindPanelEvents(container) {
             const s = getState();
             for (const id of selectedMemoryIds) {
                 const target = s.memories.find(m => m.id === id);
-                if (target) target.status = MEMORY_STATUS.PINNED;
+                if (target) {
+                    target.status = MEMORY_STATUS.PINNED;
+                    target.lifecycle = MEMORY_LIFECYCLE.ACTIVE;
+                }
             }
         });
         window.toastr?.success?.(`已将选中的 ${count} 条记忆设为常驻置顶`, '持续记忆');
@@ -1426,6 +1444,42 @@ function bindPanelEvents(container) {
             }
         });
         window.toastr?.success?.(`已将选中的 ${count} 条记忆归档休眠`, '持续记忆');
+        selectedMemoryIds.clear();
+        renderPanelContent();
+    });
+
+    container.querySelector('#pm-bulk-complete')?.addEventListener('click', () => {
+        if (selectedMemoryIds.size === 0) return;
+        const count = selectedMemoryIds.size;
+        batchUpdate(() => {
+            const s = getState();
+            for (const id of selectedMemoryIds) {
+                const target = s.memories.find(m => m.id === id);
+                if (target) {
+                    target.lifecycle = MEMORY_LIFECYCLE.COMPLETED;
+                    target.status = MEMORY_STATUS.ARCHIVED;
+                }
+            }
+        });
+        window.toastr?.success?.(`已将选中的 ${count} 条记忆标记为已履约/办结`, '持续记忆');
+        selectedMemoryIds.clear();
+        renderPanelContent();
+    });
+
+    container.querySelector('#pm-bulk-refute')?.addEventListener('click', () => {
+        if (selectedMemoryIds.size === 0) return;
+        const count = selectedMemoryIds.size;
+        batchUpdate(() => {
+            const s = getState();
+            for (const id of selectedMemoryIds) {
+                const target = s.memories.find(m => m.id === id);
+                if (target) {
+                    target.lifecycle = MEMORY_LIFECYCLE.REFUTED;
+                    target.status = MEMORY_STATUS.ARCHIVED;
+                }
+            }
+        });
+        window.toastr?.success?.(`已将选中的 ${count} 条记忆标记为已证伪`, '持续记忆');
         selectedMemoryIds.clear();
         renderPanelContent();
     });

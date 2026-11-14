@@ -395,7 +395,9 @@ export function buildAndInjectMemoryPrompt(options = {}) {
     const triggeredCandidates = [];
     const suppressedCandidates = [];
     const VALID_SCOPES = new Set(Object.values(MEMORY_SCOPE));
-    const currentTurn = Array.isArray(c?.chat) ? c.chat.filter(m => !m.is_user).length : 0;
+    const currentTurn = (options && Number.isInteger(options.currentTurn))
+        ? options.currentTurn
+        : (Array.isArray(c?.chat) ? (c.chat.filter(m => !m.is_user).length || c.chat.length) : 0);
 
     for (const mem of memories) {
         // 规则 A：生命周期过滤——已完成、已被取代、已被证伪的条目绝不主动注入
@@ -525,6 +527,7 @@ export function buildAndInjectMemoryPrompt(options = {}) {
             if (item.wasArchived) {
                 if (!isDryRun) {
                     item.mem.status = MEMORY_STATUS.TRIGGERED;
+                    item.mem.last_woken_floor = currentTurn;
                     hasMemoryStateMutated = true;
                 }
                 console.log(`[${MODULE_NAME}] [Wake-Up] 沉睡记忆 [${item.mem.id}] 被高匹配度重新唤醒: "${item.mem.content}"`);
