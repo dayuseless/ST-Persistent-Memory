@@ -5484,6 +5484,96 @@ Intermediate analysis details...
         }
     });
 
+    // ─────────────────────────────────────────────────────────────
+    // T110: 群聊模式感知 ST 原生角色禁用/静音 (disabled_members) 与动态离场契约测试 (I-02)
+    // ─────────────────────────────────────────────────────────────
+    test('T110: 群聊模式感知 ST 原生角色禁用/静音与动态离场契约测试 (disabled_members 自动过滤、准入拦截与在场保密约束)', () => {
+        const origCtx = { ...mockContext };
+        try {
+            // 构造具备禁用/静音角色的群聊环境
+            mockContext.groupId = 'group_team_t110';
+            mockContext.groups = [
+                {
+                    id: 'group_team_t110',
+                    name: '冒险者公会',
+                    members: ['charA.png', 'charB.png', 'charC.png'],
+                    disabled_members: ['charC.png'] // 角色C处于酒馆禁用/静音状态
+                }
+            ];
+            mockContext.characters = [
+                { name: '角色A', avatar: 'charA.png' },
+                { name: '角色B', avatar: 'charB.png' },
+                { name: '角色C', avatar: 'charC.png' }
+            ];
+            mockContext.name1 = '玩家';
+
+            // 1. 验证 getContextParticipants 自动排除 disabled_members
+            const participants = getContextParticipants(mockContext);
+            assert.ok(participants.has('玩家'), '有效参战者必须包含玩家');
+            assert.ok(participants.has('角色A'), '有效参战者必须包含激活角色A');
+            assert.ok(participants.has('角色B'), '有效参战者必须包含激活角色B');
+            assert.ok(!participants.has('角色C'), '被静音/禁用的角色C必须被从有效参战者名单中剔除');
+
+            // 2. 验证数据准入层对已禁用角色的拦截
+            const memPrivC = {
+                scope: 'character',
+                character: '角色C',
+                content: '角色C个人的私密日记',
+                type: 'fact'
+            };
+            const aclRes = validateMemoryAcl(memPrivC, null, { context: mockContext });
+            assert.strictEqual(aclRes.allowed, false, '不可向已被静音/禁用的角色赋予新记忆归属');
+            assert.ok(aclRes.reason.includes('超出当前会话实际参与者名单'));
+
+            // 3. 验证端到端提示词注入中动态离场与静音感知 (In-Scene Presence Filter)
+            const state = getState();
+            state.scene = {
+                location: '公会酒馆大厅',
+                in_scene_characters: ['角色A', '角色B', '角色C'] // 现场记录包含C，但C已被静音
+            };
+            // 角色A和角色C的机密记忆 (角色B不知情)
+            const sharedAC = {
+                id: 'mem_shared_ac',
+                type: 'fact',
+                scope: 'shared',
+                known_by: ['角色A', '角色C'],
+                content: '角色A和角色C密谋探索禁地',
+                status: 'pinned',
+                lifecycle: 'active'
+            };
+            state.memories = [sharedAC];
+
+            // 当前由角色A生成 (POV: 角色A)
+            updateSettings({ injectionTemplate: 'standard' });
+            mockContext.characterId = 0;
+            mockContext.this_chid = 0;
+            mockContext.name2 = '角色A';
+
+            let injected = '';
+            mockContext.setExtensionPrompt = (key, prompt) => {
+                if (key === 'PERSISTENT_MEMORY_INJECT') injected = prompt;
+            };
+
+            buildAndInjectMemoryPrompt();
+
+            // 核心断言：
+            // A. 在场角色必须过滤掉被静音的角色C，仅保留角色A与角色B
+            assert.ok(!injected.includes('角色C、') && !injected.includes('、角色C') && !injected.includes('在场角色: 角色C'), '在场角色展示中必须过滤已禁用的角色C');
+            // B. 角色A作为生成主体在场，但知情者C已被静音离场，现场只有不知情者角色B，必须附加保密约束标记！
+            assert.ok(injected.includes('角色A和角色C密谋探索禁地'), '角色A自身生成的提示词中应包含其知晓的机密');
+            assert.ok(injected.includes('保密提示') && injected.includes('角色B'), '现场存在不知情者角色B时必须自动附加保密提示');
+
+            // 4. 验证 prompt.js 离场感知指引
+            const promptText = promptBuildDigestPrompt('', '', '', 450, 150);
+            assert.ok(promptText.includes('in_scene_characters 必须忠实反映当前物理空间内正在场的角色名单'), '提炼提示词中必须包含在场与离场感知指引');
+            assert.ok(promptText.includes('必须从 in_scene_characters 中果断剔除'), '提示词必须强调剔除中途离场角色');
+        } finally {
+            Object.assign(mockContext, origCtx);
+            clearStateCache();
+            loadCurrentState();
+        }
+    });
+
     console.log(`\n======================================================`);
     console.log(`  测试结果: 共 ${passed + failed} 项 | \x1b[32m${passed} 通过\x1b[0m | \x1b[31m${failed} 失败\x1b[0m`);
     console.log(`======================================================\n`);

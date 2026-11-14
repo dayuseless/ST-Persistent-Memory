@@ -250,6 +250,27 @@ export function buildAndInjectMemoryPrompt() {
         inScene = [charName, userName];
     }
 
+    // 若处于群聊且存在群组禁言/禁用成员列表 (disabled_members)，在场名单中自动剔除已静音/禁用的角色
+    if (Array.isArray(inScene) && inScene.length > 0 && c?.groupId && Array.isArray(c?.groups)) {
+        const activeGroup = c.groups.find(g => String(g.id) === String(c.groupId));
+        if (activeGroup && Array.isArray(activeGroup.disabled_members) && activeGroup.disabled_members.length > 0) {
+            const disabledSet = new Set(activeGroup.disabled_members.map(m => String(m).trim().toLowerCase()));
+            const disabledNames = new Set();
+            if (Array.isArray(c.characters)) {
+                c.characters.forEach(ch => {
+                    const av = String(ch?.avatar || '').trim().toLowerCase();
+                    const nm = String(ch?.name || '').trim().toLowerCase();
+                    if (disabledSet.has(av) || disabledSet.has(nm) || ch?.disabled || ch?.is_disabled) {
+                        disabledNames.add(nm);
+                    }
+                });
+            }
+            activeGroup.disabled_members.forEach(m => disabledNames.add(String(m).trim().toLowerCase()));
+
+            inScene = inScene.filter(name => !disabledNames.has(String(name).trim().toLowerCase()));
+        }
+    }
+
     // 2. 组装 L0 现场快照并落实硬预算 (扣减全部固定模板与协议开销)
     const template = settings.injectionTemplate || INJECTION_TEMPLATES.STANDARD;
     const envelope = getTemplateEnvelope(template);

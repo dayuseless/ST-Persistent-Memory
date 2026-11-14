@@ -36,13 +36,21 @@ export function getContextParticipants(c, state = null) {
     if (isGroupChat && Array.isArray(c.groups)) {
         const activeGroup = c.groups.find(g => String(g.id) === String(c.groupId));
         if (activeGroup && Array.isArray(activeGroup.members)) {
+            // 感知群组中被禁用/静音的成员 (disabled_members)
+            const disabledSet = new Set(
+                Array.isArray(activeGroup.disabled_members)
+                    ? activeGroup.disabled_members.map(m => String(m).trim().toLowerCase())
+                    : []
+            );
+
             const memberSet = new Set(activeGroup.members.map(m => String(m).trim().toLowerCase()));
             if (Array.isArray(c.characters)) {
                 c.characters.forEach(ch => {
                     if (ch && typeof ch.name === 'string' && ch.name.trim()) {
                         const avatarName = String(ch.avatar || '').trim().toLowerCase();
                         const charName = ch.name.trim().toLowerCase();
-                        if (memberSet.has(avatarName) || memberSet.has(charName)) {
+                        const isDisabled = ch.disabled === true || ch.is_disabled === true || disabledSet.has(avatarName) || disabledSet.has(charName);
+                        if (!isDisabled && (memberSet.has(avatarName) || memberSet.has(charName))) {
                             participants.add(ch.name.trim());
                         }
                     }
@@ -50,7 +58,10 @@ export function getContextParticipants(c, state = null) {
             }
             activeGroup.members.forEach(m => {
                 if (typeof m === 'string' && m.trim() && !m.includes('.')) {
-                    participants.add(m.trim());
+                    const mLower = m.trim().toLowerCase();
+                    if (!disabledSet.has(mLower)) {
+                        participants.add(m.trim());
+                    }
                 }
             });
         }
