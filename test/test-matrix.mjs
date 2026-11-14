@@ -210,7 +210,33 @@ import {
     exportMemoryDataPackage as migExportPackage,
     importMemoryDataPackage as migImportPackage
 } from '../src/migration.js';
-import { renderMemoryCard, showPromoteLoreModal } from '../src/ui.js';
+import {
+    API_PRESETS,
+    initUI,
+    resetBubblePosition,
+    importSillyTavernApiConfig,
+    togglePanel,
+    renderMemoryCard,
+    showPromoteLoreModal
+} from '../src/ui.js';
+
+import {
+    API_PRESETS as commonApiPresets,
+    applyApiPreset,
+    getContext,
+    escapeHtml,
+    estimateTokens as commonEstimateTokens
+} from '../src/ui/common.js';
+
+import { renderMemoryCard as cardsRenderMemoryCard } from '../src/ui/cards.js';
+import { showSyncLoreModal as modalShowSyncLoreModal, showPromoteLoreModal as modalShowPromoteLoreModal } from '../src/ui/modal.js';
+import { createFloatingButton as bubbleCreateFloatingButton, resetBubblePosition as bubbleResetBubblePosition } from '../src/ui/bubble.js';
+import {
+    createNativeExtensionDrawer as drawerCreateNativeExtensionDrawer,
+    registerExtensionsMenuEntry as drawerRegisterExtensionsMenuEntry,
+    renderNativeDrawerContent as drawerRenderNativeDrawerContent,
+    importSillyTavernApiConfig as drawerImportSillyTavernApiConfig
+} from '../src/ui/drawer.js';
 import {
     LOCAL_VECTOR_DIM,
     cosineSimilarity,
@@ -3076,27 +3102,27 @@ Intermediate analysis details...
     });
 
     // ─────────────────────────────────────────────────────────────
-    // T71: 全工程版本标识严格一致性核验 (0.1.40)
+    // T71: 全工程版本标识严格一致性核验 (0.1.41)
     // ─────────────────────────────────────────────────────────────
-    test('T71: 全工程版本标识严格一致性核验 (manifest, config, index 与各模块头部统一为 0.1.40)', () => {
+    test('T71: 全工程版本标识严格一致性核验 (manifest, config, index 与各模块头部统一为 0.1.41)', () => {
         const currentFile = fileURLToPath(import.meta.url);
         const rootDir = path.resolve(path.dirname(currentFile), '../');
 
         // 1. manifest.json
         const manifestPath = path.join(rootDir, 'manifest.json');
         const manifest = JSON.parse(fs.readFileSync(manifestPath, 'utf8'));
-        assert.strictEqual(manifest.version, '0.1.40', 'manifest.json 版本号应为 0.1.40');
+        assert.strictEqual(manifest.version, '0.1.41', 'manifest.json 版本号应为 0.1.41');
 
         // 2. src/config.js
-        assert.strictEqual(EXTENSION_VERSION, '0.1.40', 'config.js EXTENSION_VERSION 应为 0.1.40');
+        assert.strictEqual(EXTENSION_VERSION, '0.1.41', 'config.js EXTENSION_VERSION 应为 0.1.41');
 
         // 3. index.js
         const indexPath = path.join(rootDir, 'index.js');
         const indexContent = fs.readFileSync(indexPath, 'utf8');
-        assert.ok(indexContent.includes('v0.1.40'), 'index.js 头部必须标注 v0.1.40');
-        assert.ok(!indexContent.includes('v0.1.39'), 'index.js 严禁残留旧版本 v0.1.39 版本头');
+        assert.ok(indexContent.includes('v0.1.41'), 'index.js 头部必须标注 v0.1.41');
+        assert.ok(!indexContent.includes('v0.1.40'), 'index.js 严禁残留旧版本 v0.1.40 版本头');
 
-        // 4. 各核心模块头部注释版本检查 (16 个核心模块)
+        // 4. 各核心模块头部注释版本检查 (16 个核心模块 + 5 个 UI 子模块 = 21 个模块)
         const checkModules = [
             'src/acl.js',
             'src/api.js',
@@ -3113,7 +3139,12 @@ Intermediate analysis details...
             'src/prompt.js',
             'src/injector.js',
             'src/semantic.js',
-            'src/ui.js'
+            'src/ui.js',
+            'src/ui/common.js',
+            'src/ui/cards.js',
+            'src/ui/modal.js',
+            'src/ui/bubble.js',
+            'src/ui/drawer.js'
         ];
 
         for (const relPath of checkModules) {
@@ -3121,12 +3152,12 @@ Intermediate analysis details...
             const content = fs.readFileSync(filePath, 'utf8');
             const first10Lines = content.split('\n').slice(0, 10).join('\n');
             assert.ok(
-                first10Lines.includes('v0.1.40') || first10Lines.includes('0.1.40'),
-                `${relPath} 头部注释必须包含 0.1.40 版本标识`
+                first10Lines.includes('v0.1.41') || first10Lines.includes('0.1.41'),
+                `${relPath} 头部注释必须包含 0.1.41 版本标识`
             );
             assert.ok(
-                !first10Lines.includes('0.1.39') && !first10Lines.includes('v0.1.39'),
-                `${relPath} 头部注释严禁残留旧版本 0.1.39`
+                !first10Lines.includes('0.1.40') && !first10Lines.includes('v0.1.40'),
+                `${relPath} 头部注释严禁残留旧版本 0.1.40`
             );
         }
     });
@@ -4694,6 +4725,165 @@ Intermediate analysis details...
         c.characterId = 0;
         c.this_chid = 0;
         c.name2 = '角色A';
+    });
+
+    // ─────────────────────────────────────────────────────────────
+    // T101: UI 组件化解耦契约与渲染一致性测试 (UI Component Decoupling Contracts)
+    // ─────────────────────────────────────────────────────────────
+    test('T101: UI 组件化解耦契约与渲染一致性测试 (子模块透明重导出、XSS转义防御、卡片与模态框渲染完整性)', () => {
+        // 1. UI 门面 (src/ui.js) 兼容性契约与子模块透明重导出验证
+        assert.strictEqual(renderMemoryCard, cardsRenderMemoryCard, 'src/ui.js 的 renderMemoryCard 必须同源透明重导出 cards.js');
+        assert.strictEqual(showPromoteLoreModal, modalShowPromoteLoreModal, 'src/ui.js 的 showPromoteLoreModal 必须同源透明重导出 modal.js');
+        assert.strictEqual(API_PRESETS, commonApiPresets, 'src/ui.js 的 API_PRESETS 必须同源透明重导出 common.js');
+        assert.strictEqual(resetBubblePosition, bubbleResetBubblePosition, 'src/ui.js 的 resetBubblePosition 必须同源透明重导出 bubble.js');
+        assert.strictEqual(importSillyTavernApiConfig, drawerImportSillyTavernApiConfig, 'src/ui.js 的 importSillyTavernApiConfig 必须同源透明重导出 drawer.js');
+        assert.strictEqual(typeof initUI, 'function', 'initUI 必须作为函数导出');
+        assert.strictEqual(typeof togglePanel, 'function', 'togglePanel 必须作为函数导出');
+
+        // 2. src/ui/common.js 基础工具契约测试
+        // 2.1 escapeHtml XSS 转义防御测试
+        assert.strictEqual(escapeHtml(null), '', 'escapeHtml 对 null 应返回空字符串');
+        assert.strictEqual(escapeHtml(undefined), '', 'escapeHtml 对 undefined 应返回空字符串');
+        assert.strictEqual(escapeHtml(123), '', 'escapeHtml 对非字符串类型应防御性返回空字符串');
+        const dangerousHtml = `<script>alert('XSS & "Hack"');</script>`;
+        const safeHtml = escapeHtml(dangerousHtml);
+        assert.ok(!safeHtml.includes('<') && !safeHtml.includes('>'), 'escapeHtml 必须转义尖括号');
+        assert.strictEqual(safeHtml, '&lt;script&gt;alert(&#039;XSS &amp; &quot;Hack&quot;&#039;);&lt;/script&gt;');
+
+        // 2.2 estimateTokens 启发式 Token 快速估算验证
+        assert.strictEqual(commonEstimateTokens(''), 0, '空字符串估算 token 必须为 0');
+        assert.strictEqual(commonEstimateTokens(null), 0, 'null 估算 token 必须为 0');
+        const cjkTokens = commonEstimateTokens('持续记忆插件系统'); // 8 个中文字符 -> Math.ceil(8 * 1.0 + 0 * 1.3) = 8
+        assert.strictEqual(cjkTokens, 8, '8个纯CJK字符估算应为 8');
+        const enTokens = commonEstimateTokens('Hello world test token'); // 4 个英文单词 -> Math.ceil(0 + 4 * 1.3) = Math.ceil(5.2) = 6
+        assert.strictEqual(enTokens, 6, '4个英文单词估算应为 6');
+
+        // 2.3 API_PRESETS 预设结构核验
+        const expectedPresets = ['deepseek', 'siliconflow', 'ollama', 'openai', 'openrouter'];
+        for (const pKey of expectedPresets) {
+            assert.ok(API_PRESETS[pKey], `预设中必须包含 ${pKey}`);
+            assert.ok(typeof API_PRESETS[pKey].url === 'string' && API_PRESETS[pKey].url.startsWith('http'), `${pKey} 必须配置合法的 url`);
+            assert.ok(typeof API_PRESETS[pKey].model === 'string' && API_PRESETS[pKey].model.length > 0, `${pKey} 必须配置合法的 model`);
+            assert.ok(typeof API_PRESETS[pKey].name === 'string', `${pKey} 必须配置 name`);
+        }
+
+        // 3. src/ui/cards.js 记忆卡片视图渲染器契约测试
+        // 3.1 异常入参防御
+        assert.strictEqual(renderMemoryCard(null), '', '无效入参返回空字符串');
+        assert.strictEqual(renderMemoryCard(undefined), '', '无效入参返回空字符串');
+
+        // 3.2 完整卡片模板结构、徽章与安全渲染核验
+        const cardMem = {
+            id: 'mem_card_001',
+            type: 'statement',
+            scope: 'shared',
+            known_by: ['玩家', '角色A'],
+            status: 'pinned',
+            lifecycle: 'completed',
+            content: '共同守护秘密水晶<script>alert(1)</script>',
+            trigger_keys: ['秘密', '水晶'],
+            lorebook_ref: {
+                book: '魔法大陆世界书',
+                entry_name: '秘密水晶',
+                entry_uid: 42
+            },
+            synced_to_world_info: true,
+            embedding: [0.1, 0.2, 0.3],
+            embedding_provider: 'local'
+        };
+
+        const cardHtml = renderMemoryCard(cardMem, new Set(['mem_card_001']));
+        assert.ok(cardHtml.includes('pm-card-selected'), '选中集合包含该ID时必须渲染 pm-card-selected 类名');
+        assert.ok(cardHtml.includes('checked'), '选中复选框必须处于 checked 状态');
+        assert.ok(cardHtml.includes('data-id="mem_card_001"'), '卡片根节点必须包含正确的 data-id');
+        assert.ok(cardHtml.includes('pm-chip-pinned') && cardHtml.includes('常驻置顶'), '常驻置顶徽章必须正确渲染');
+        assert.ok(cardHtml.includes('pm-type-statement') && cardHtml.includes('约定'), '约定类型徽章必须正确渲染');
+        assert.ok(cardHtml.includes('pm-scope-shared') && cardHtml.includes('共享 (玩家, 角色A)'), '共享知情徽章必须正确渲染');
+        assert.ok(cardHtml.includes('pm-life-completed') && cardHtml.includes('履约'), '履约生命周期徽章必须正确渲染');
+        assert.ok(!cardHtml.includes('<script>alert(1)</script>'), '卡片正文中的 HTML 必须被严格转义');
+        assert.ok(cardHtml.includes('&lt;script&gt;alert(1)&lt;/script&gt;'), '卡片正文转义内容正确输出');
+        assert.ok(cardHtml.includes('pm-lorebook-tag') && cardHtml.includes('秘密水晶'), '关联世界书设定标签必须正确渲染');
+        assert.ok(cardHtml.includes('pm-synced') && cardHtml.includes('已入册'), '已同步状态按钮必须正确显示已入册');
+        assert.ok(cardHtml.includes('pm-embedding-tag'), '具备嵌入向量的记忆必须显示语义大脑徽章');
+        assert.ok(cardHtml.includes('pm-card-edit-box'), '行内即时编辑表单必须内建在卡片骨架中');
+
+        // 3.3 类型枚举安全防御：非预定义类型或注入尝试必须安全降级为 fact
+        const evilTypeMem = {
+            id: 'mem_evil_type',
+            type: '"><script>alert("xss")</script><div class="',
+            scope: 'world',
+            content: '测试恶意类型',
+            status: 'active'
+        };
+        const evilCardHtml = renderMemoryCard(evilTypeMem);
+        assert.ok(evilCardHtml.includes('pm-type-fact'), '非白名单类型必须降级为 fact');
+        assert.ok(!evilCardHtml.includes('alert("xss")'), '恶意类型属性注入必须被防御');
+
+        // 4. src/ui/modal.js 世界书交互模态框契约测试
+        let modalInsertedHtml = '';
+        const modalListeners = {};
+        const mockModalNode = {
+            remove: () => {},
+            querySelector: (sel) => {
+                if (sel === '#pm-sync-mark-completed') return { checked: true };
+                return {
+                    addEventListener: (ev, cb) => {
+                        modalListeners[sel] = cb;
+                    }
+                };
+            }
+        };
+        const origDoc = global.document;
+        global.document = {
+            querySelectorAll: () => [],
+            getElementById: (id) => id === 'pm-lore-sync-modal' ? mockModalNode : null,
+            body: {
+                insertAdjacentHTML: (pos, html) => {
+                    modalInsertedHtml = html;
+                }
+            }
+        };
+
+        try {
+            let syncConfirmed = false;
+            modalShowSyncLoreModal({
+                bookName: '世界书A',
+                entryName: '圣剑',
+                entryUid: 101,
+                appendedText: '更新设定差量'
+            }, (markCompleted) => {
+                syncConfirmed = markCompleted;
+            });
+
+            assert.ok(modalInsertedHtml.includes('pm-lore-sync-modal'), '差量写回模态框必须插入 DOM');
+            assert.ok(modalInsertedHtml.includes('圣剑'), '模态框必须显示目标条目名称');
+            assert.ok(modalInsertedHtml.includes('更新设定差量'), '模态框必须显示待写回差量文本');
+
+            // 触发确认回调
+            if (modalListeners['#pm-lore-modal-confirm']) {
+                modalListeners['#pm-lore-modal-confirm']();
+                assert.strictEqual(syncConfirmed, true, '点击确认写回必须执行回调并传递 markCompleted 状态');
+            }
+        } finally {
+            global.document = origDoc;
+        }
+
+        // 5. src/ui/bubble.js 坐标重置契约测试
+        mockLocalStorage['pm_bubble_pos'] = '{"left": 100, "top": 200}';
+        mockLocalStorage['pm_bubble_pos_mobile'] = '{"left": 50, "top": 100}';
+        bubbleResetBubblePosition();
+        assert.strictEqual(mockLocalStorage['pm_bubble_pos'], undefined, '重置气泡后桌面坐标缓存必须清除');
+        assert.strictEqual(mockLocalStorage['pm_bubble_pos_mobile'], undefined, '重置气泡后手机坐标缓存必须清除');
+
+        // 6. src/ui/drawer.js API 配置同步契约测试
+        mockContext.chatCompletionSettings = {
+            custom_url: 'https://api.openai.test/v1',
+            custom_model: 'test-model-turbo'
+        };
+        const importedApi = drawerImportSillyTavernApiConfig();
+        assert.strictEqual(importedApi.url, 'https://api.openai.test/v1', '从酒馆配置导入 API url 应正确解析');
+        assert.strictEqual(importedApi.model, 'test-model-turbo', '从酒馆配置导入 API model 应正确解析');
+        delete mockContext.chatCompletionSettings;
     });
 
     console.log(`\n======================================================`);

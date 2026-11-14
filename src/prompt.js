@@ -1,5 +1,5 @@
 /**
- * 持续记忆提示词模板与元指令编排模块 (Prompt Templates & Meta-Instructions, v0.1.40)
+ * 持续记忆提示词模板与元指令编排模块 (Prompt Templates & Meta-Instructions, v0.1.41)
  * 职责：
  * 1. 异步提炼提示词模板组装 (buildDigestPrompt)
  * 2. 历史全量回溯分批提炼提示词组装 (buildBacklogDigestPrompt)

@@ -1,5 +1,5 @@
 /**
- * ST-Persistent-Memory - 现场状态管理与快照时光机服务 (Scene Management & Time-Machine, v0.1.40)
+ * ST-Persistent-Memory - 现场状态管理与快照时光机服务 (Scene Management & Time-Machine, v0.1.41)
  *
  * 核心职责：
  * 1. 领域解耦：将 L0 实时现场状态 (location, time, action, tension, unresolved, in_scene_characters)

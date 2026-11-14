@@ -1,6 +1,6 @@
 # SillyTavern 持续记忆插件 (ST-Persistent-Memory)
 
-[![Version](https://img.shields.io/badge/version-v0.1.40-blue.svg)](https://github.com/dayuseless/ST-Persistent-Memory)
+[![Version](https://img.shields.io/badge/version-v0.1.41-blue.svg)](https://github.com/dayuseless/ST-Persistent-Memory)
 [![SillyTavern](https://img.shields.io/badge/SillyTavern-1.12.0+-purple.svg)](https://github.com/SillyTavern/SillyTavern)
 [![License](https://img.shields.io/badge/license-MIT-green.svg)](LICENSE)
 
@@ -77,7 +77,7 @@
 
 ### 方式二：手动离线包安装
 
-1. 从 [Releases 页面](https://github.com/dayuseless/ST-Persistent-Memory/releases) 下载 `ST-Persistent-Memory-v0.1.40.zip`。
+1. 从 [Releases 页面](https://github.com/dayuseless/ST-Persistent-Memory/releases) 下载 `ST-Persistent-Memory-v0.1.41.zip`。
 2. 解压到 SillyTavern 的扩展目录中：
    ```text
    SillyTavern/public/scripts/extensions/third-party/ST-Persistent-Memory/
@@ -158,6 +158,19 @@ window.__persistentMemory.digestNow();
 ---
 
 ## 📝 版本历史
+
+### v0.1.41 (UI 界面层全组件化架构解耦：拆分出 5 大独立 UI 模块)
+
+- **UI 界面层组件化解耦重构**：
+  - 将庞大臃肿的 `src/ui.js`（近 2,900 行）彻底拆解为模块化组件体系，代码体积净减近 1,000 行：
+    1. **`src/ui/common.js`**：跨组件统一 HTML 字符转义 (`escapeHtml`)、全语种 Token 快速估算 (`estimateTokens`)、API 预设与一键切换；
+    2. **`src/ui/cards.js`**：记忆卡片结构渲染引擎 (`renderMemoryCard`)，严防存储型 XSS，集成状态徽标、知情范围与行内原位即时编辑；
+    3. **`src/ui/modal.js`**：世界书差量写回 (`showSyncLoreModal`) 与记忆升格新词条 (`showPromoteLoreModal`) 模态框，落实权限扩大显式二次确认防线；
+    4. **`src/ui/bubble.js`**：屏幕快捷悬浮按钮与拖拽持久化 (`createFloatingButton` / `resetBubblePosition`)，实现双端屏幕安全边缘算法；
+    5. **`src/ui/drawer.js`**：SillyTavern 原生扩展抽屉与顶部菜单入口集成 (`createNativeExtensionDrawer` / `importSillyTavernApiConfig`)；
+  - `src/ui.js` 专注于 HUD 控制台主面板渲染与事件流组装调度，并保持 100% 同源代理重导出，外部集成零改动、零破坏。
+- **测试矩阵扩展至 101 项 (101/101 全绿通过)**：
+  - 新增 **T101: UI 组件化解耦契约与渲染一致性测试**，全面覆盖 5 大 UI 子组件的同源性、HTML 安全转义、卡片模板渲染与模态框构造。
 
 ### v0.1.40 (测试矩阵突破 100 项大关：全链路解耦架构总成契约金标验收)
 
