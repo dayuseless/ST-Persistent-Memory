@@ -14,7 +14,7 @@ import { MODULE_NAME } from '../config.js';
 import { getState, getSettings, updateSettings, saveSettingsImmediately } from '../state.js';
 import { triggerAsyncDigest, testCustomApiConnection } from '../extractor.js';
 import { escapeHtml, applyApiPreset, restoreRecommendedDefaults } from './common.js';
-import { showAdvancedSettingsModal } from './modal.js';
+import { showAdvancedSettingsModal, showInjectionInspectorModal } from './modal.js';
 
 /**
  * 一键提取并同步 SillyTavern 原生连接设置中的 Custom / OpenAI API 端点、密钥与模型
@@ -207,6 +207,9 @@ export function renderNativeDrawerContent(onToggleHUD, onRenderPanel) {
                 <button type="button" id="pm-native-open-adv-btn" class="pm-btn-primary" style="width: 100%; margin-bottom: 6px; padding: 7px 10px; font-size: 12px; background: #2563eb; border-color: #1d4ed8;">
                     <i class="fa-solid fa-sliders"></i> 打开详细与高级参数设置 (弹出面板)
                 </button>
+                <button type="button" id="pm-native-open-inspector-btn" class="pm-btn-secondary" style="width: 100%; margin-bottom: 6px; padding: 6px 10px; font-size: 11px;" title="查看当前轮次真实注入给大模型的完整提示词与记忆召回得分诊断">
+                    <i class="fa-solid fa-eye"></i> 即时注入透视镜 (Prompt & Memory Inspector)
+                </button>
                 <button type="button" id="pm-native-restore-btn" class="pm-btn-secondary" style="width: 100%; padding: 6px 10px; font-size: 11px;" title="重置除 API 之外的所有底层微调参数为官方最优默认值">
                     <i class="fa-solid fa-rotate-left"></i> 一键恢复推荐默认参数 (保持API)
                 </button>
@@ -301,6 +304,10 @@ export function renderNativeDrawerContent(onToggleHUD, onRenderPanel) {
                 renderNativeDrawerContent(onToggleHUD, onRenderPanel);
             }
         });
+    });
+
+    content.querySelector('#pm-native-open-inspector-btn')?.addEventListener('click', () => {
+        showInjectionInspectorModal();
     });
 
     content.querySelector('#pm-native-restore-btn')?.addEventListener('click', () => {

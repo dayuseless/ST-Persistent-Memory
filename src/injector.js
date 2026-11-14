@@ -217,10 +217,27 @@ export function assembleSceneLines(location, time, action, tension, unresolved, 
     return lines;
 }
 
+let lastInjectionSnapshot = null;
+
+/**
+ * 获取最近一轮真实提示词注入快照与归因诊断数据 (Prompt & Memory Inspection Snapshot)
+ * @param {boolean} [forceRefresh=false] - 是否按当前最新上下文与状态强制执行一次实时 dryRun 重新测算
+ * @returns {object|null}
+ */
+export function getLastInjectionSnapshot(forceRefresh = false) {
+    if (forceRefresh || !lastInjectionSnapshot) {
+        buildAndInjectMemoryPrompt({ dryRun: true });
+    }
+    return lastInjectionSnapshot;
+}
+
 /**
  * 组装并注入当前上下文记忆 (带严格 Token 预算与原子化防撑爆截断)
+ * @param {object} [options={}]
+ * @param {boolean} [options.dryRun=false] - 是否仅执行测算与快照记录而不真正向 SillyTavern 注入
  */
-export function buildAndInjectMemoryPrompt() {
+export function buildAndInjectMemoryPrompt(options = {}) {
+    const isDryRun = Boolean(options && options.dryRun);
     const c = getContext();
     const settings = getSettings();
 
@@ -228,7 +245,20 @@ export function buildAndInjectMemoryPrompt() {
     const depth = Number(settings.injectionDepth !== undefined ? settings.injectionDepth : 2);
 
     if (!c || !settings.enabled) {
-        c?.setExtensionPrompt?.(INJECT_KEY, '', position, depth);
+        if (!isDryRun) {
+            c?.setExtensionPrompt?.(INJECT_KEY, '', position, depth);
+        }
+        lastInjectionSnapshot = {
+            timestamp: new Date().toISOString(),
+            chatId: c?.chatId || 'default',
+            dryRun: isDryRun,
+            enabled: false,
+            reason: !c ? '未检测到 SillyTavern 会话上下文' : '持续记忆全局总开关未开启',
+            totalInjectedTokens: 0,
+            fullPromptBlock: '',
+            recalledMemories: [],
+            suppressedMemories: []
+        };
         return '';
     }
 
@@ -363,19 +393,23 @@ export function buildAndInjectMemoryPrompt() {
 
     const pinnedCandidates = [];
     const triggeredCandidates = [];
+    const suppressedCandidates = [];
     const VALID_SCOPES = new Set(Object.values(MEMORY_SCOPE));
     const currentTurn = Array.isArray(c?.chat) ? c.chat.filter(m => !m.is_user).length : 0;
 
     for (const mem of memories) {
         // 规则 A：生命周期过滤——已完成、已被取代、已被证伪的条目绝不主动注入
         if (mem.lifecycle && mem.lifecycle !== MEMORY_LIFECYCLE.ACTIVE) {
+            const lcLabel = mem.lifecycle === 'completed' ? '已办结' : (mem.lifecycle === 'superseded' ? '已迭代' : (mem.lifecycle === 'refuted' ? '已证伪' : mem.lifecycle));
+            suppressedCandidates.push({ mem, reason: `生命周期非活跃 (${lcLabel})`, score: 0 });
             continue;
         }
 
         // 规则 B：归档状态绝不常规注入 (除非处于活跃生命周期且启用沉睡唤醒)
-        const isArchived = mem.status === MEMORY_STATUS.ARCHIVED;
+        const isArchived = mem.status === MEMORY_STATUS.ARCHIVED || mem.status === 'dormant';
         const allowDormantRecall = settings.autoSleepEnabled !== false && isArchived && (!mem.lifecycle || mem.lifecycle === MEMORY_LIFECYCLE.ACTIVE);
         if (isArchived && !allowDormantRecall) {
+            suppressedCandidates.push({ mem, reason: '处于归档休眠状态 (未开启沉睡唤醒)', score: 0 });
             continue;
         }
 
@@ -386,6 +420,7 @@ export function buildAndInjectMemoryPrompt() {
         });
 
         if (!access.allowed) {
+            suppressedCandidates.push({ mem, reason: `权限隔离: ${access.reason || '当前主体无权获知'}`, score: 0 });
             continue;
         }
 
@@ -399,8 +434,8 @@ export function buildAndInjectMemoryPrompt() {
         const itemTokens = estimateTokens(formattedLine);
 
         // 常驻项 (Pinned)
-        if (mem.status === MEMORY_STATUS.PINNED) {
-            pinnedCandidates.push({ mem, line: formattedLine, tokens: itemTokens });
+        if (mem.status === MEMORY_STATUS.PINNED || mem.is_pinned === true) {
+            pinnedCandidates.push({ mem, line: formattedLine, tokens: itemTokens, extraWarning });
             continue;
         }
 
@@ -414,8 +449,22 @@ export function buildAndInjectMemoryPrompt() {
                 : 0.60;
             const minScore = isArchived ? wakeThreshold : 0;
             if (score > minScore) {
-                triggeredCandidates.push({ mem, score, line: formattedLine, tokens: itemTokens, wasArchived: isArchived });
+                triggeredCandidates.push({ mem, score, line: formattedLine, tokens: itemTokens, wasArchived: isArchived, extraWarning });
+            } else {
+                suppressedCandidates.push({
+                    mem,
+                    reason: isArchived
+                        ? `沉睡记忆得分 (${score.toFixed(2)}) 未达唤醒门槛 (${wakeThreshold.toFixed(2)})`
+                        : `相关度得分 (${score.toFixed(2)}) 低于激活门槛`,
+                    score
+                });
             }
+        } else {
+            suppressedCandidates.push({
+                mem,
+                reason: `非检索状态 (${mem.status || '未设定'})`,
+                score: 0
+            });
         }
     }
 
@@ -426,19 +475,25 @@ export function buildAndInjectMemoryPrompt() {
     const maxPinned = (!isNaN(configuredMaxPinned) && configuredMaxPinned > 5)
         ? configuredMaxPinned
         : Math.max(configuredMaxPinned || 5, autoScaledPinned);
-    const selectedPinnedLines = [];
+    const selectedPinnedItems = [];
 
     pinnedCandidates.sort((a, b) => new Date(b.mem.updated_at || 0) - new Date(a.mem.updated_at || 0));
 
     for (const item of pinnedCandidates) {
-        if (selectedPinnedLines.length >= maxPinned) break;
+        if (selectedPinnedItems.length >= maxPinned) {
+            suppressedCandidates.push({ mem: item.mem, reason: `超出常驻记忆条数上限 (已达 ${maxPinned} 条)`, score: 1.0 });
+            continue;
+        }
         const requiredTokens = item.tokens + (memorySectionReserved ? 0 : memorySectionHeaderTokens);
         if (remainingTokens >= requiredTokens) {
-            selectedPinnedLines.push(item.line);
+            selectedPinnedItems.push(item);
             remainingTokens -= requiredTokens;
             memorySectionReserved = true;
+        } else {
+            suppressedCandidates.push({ mem: item.mem, reason: `Token 预算不足截断 (需 ${requiredTokens} tok, 结余 ${remainingTokens} tok)`, score: 1.0 });
         }
     }
+    const selectedPinnedLines = selectedPinnedItems.map(item => item.line);
 
     // 6. 激活项装载 (按相关度打分降序，在剩余 remainingTokens 下原子装载，遇满即停，严禁腰斩单条记忆)
     // 动态弹性上限：若用户上调总 Token 预算至 800~2000，自动弹性扩容激活容量 (5~30条)，杜绝因硬编码5条导致预算闲置
@@ -447,7 +502,7 @@ export function buildAndInjectMemoryPrompt() {
     const maxTriggered = (!isNaN(configuredMaxTriggered) && configuredMaxTriggered > 5)
         ? configuredMaxTriggered
         : Math.max(configuredMaxTriggered || 5, autoScaledTriggered);
-    const selectedTriggeredLines = [];
+    const selectedTriggeredItems = [];
     let hasMemoryStateMutated = false;
 
     triggeredCandidates.sort((a, b) => {
@@ -456,30 +511,37 @@ export function buildAndInjectMemoryPrompt() {
     });
 
     for (const item of triggeredCandidates) {
-        if (selectedTriggeredLines.length >= maxTriggered) break;
+        if (selectedTriggeredItems.length >= maxTriggered) {
+            suppressedCandidates.push({ mem: item.mem, reason: `超出动态激活条数上限 (已达 ${maxTriggered} 条)`, score: item.score });
+            continue;
+        }
         const requiredTokens = item.tokens + (memorySectionReserved ? 0 : memorySectionHeaderTokens);
         if (remainingTokens >= requiredTokens) {
-            selectedTriggeredLines.push(item.line);
+            selectedTriggeredItems.push(item);
             remainingTokens -= requiredTokens;
             memorySectionReserved = true;
 
             // 活跃度刷新与沉睡唤醒 (Wake Up)
             if (item.wasArchived) {
-                item.mem.status = MEMORY_STATUS.TRIGGERED;
-                hasMemoryStateMutated = true;
+                if (!isDryRun) {
+                    item.mem.status = MEMORY_STATUS.TRIGGERED;
+                    hasMemoryStateMutated = true;
+                }
                 console.log(`[${MODULE_NAME}] [Wake-Up] 沉睡记忆 [${item.mem.id}] 被高匹配度重新唤醒: "${item.mem.content}"`);
             }
             if (currentTurn > 0 && item.mem.last_activated_floor !== currentTurn) {
-                item.mem.last_activated_floor = currentTurn;
-                hasMemoryStateMutated = true;
+                if (!isDryRun) {
+                    item.mem.last_activated_floor = currentTurn;
+                    hasMemoryStateMutated = true;
+                }
             }
         } else {
-            // 预算已满，整条截断，不再塞入不完整的后文
-            break;
+            suppressedCandidates.push({ mem: item.mem, reason: `Token 预算已满截断 (需 ${requiredTokens} tok, 结余 ${remainingTokens} tok)`, score: item.score });
         }
     }
+    const selectedTriggeredLines = selectedTriggeredItems.map(item => item.line);
 
-    if (hasMemoryStateMutated) {
+    if (hasMemoryStateMutated && !isDryRun) {
         saveCurrentState();
     }
 
@@ -494,7 +556,46 @@ export function buildAndInjectMemoryPrompt() {
 
     // 8. 组合成最终注入块 (若处于伴随标签模式，需附带输出协议)
     if (sceneLines.length === 0 && memLines.length === 0 && !syncProtocol) {
-        c.setExtensionPrompt?.(INJECT_KEY, '', position, depth);
+        if (!isDryRun) {
+            c.setExtensionPrompt?.(INJECT_KEY, '', position, depth);
+        }
+        lastInjectionSnapshot = {
+            timestamp: new Date().toISOString(),
+            chatId: c?.chatId || 'default',
+            dryRun: isDryRun,
+            generatingEntity: generatingEntity || (c?.name2 || '未知'),
+            inSceneCharacters: Array.isArray(inScene) ? inScene : [],
+            mode: settings.mode,
+            positionText: position === 0 ? 'System Prompt' : `In-Chat @ 深度 ${depth}`,
+            position,
+            depth,
+            template,
+            maxTotalTokens,
+            maxSceneTokens,
+            sceneTokenCost: 0,
+            totalInjectedTokens: 0,
+            budgetRemaining: maxAvailableForContent,
+            fullPromptBlock: '',
+            syncProtocolIncluded: false,
+            sceneSnapshot: {
+                location: scene.location || '',
+                time: scene.time || '',
+                action: scene.action || '',
+                tension: scene.tension || '',
+                unresolved: scene.unresolved || '',
+                lines: []
+            },
+            recalledMemories: [],
+            suppressedMemories: suppressedCandidates.map(item => ({
+                id: item.mem?.id || '',
+                content: item.mem?.content || '',
+                type: item.mem?.type || '',
+                scope: item.mem?.scope || '',
+                character: item.mem?.character || '',
+                reason: item.reason,
+                score: typeof item.score === 'number' ? item.score : 0
+            }))
+        };
         return '';
     }
 
@@ -514,20 +615,90 @@ export function buildAndInjectMemoryPrompt() {
 
     const fullPromptBlock = promptParts.join('\n');
 
-    // 9. 执行注入
-    c.setExtensionPrompt?.(
-        INJECT_KEY,
-        fullPromptBlock,
+    // 9. 执行注入 (非 dryRun 模式下真正提交给 SillyTavern)
+    if (!isDryRun) {
+        c.setExtensionPrompt?.(
+            INJECT_KEY,
+            fullPromptBlock,
+            position,
+            depth,
+            false,
+            0
+        );
+    }
+
+    // 10. 记录全量注入透视快照 (Prompt & Memory Inspection Snapshot)
+    lastInjectionSnapshot = {
+        timestamp: new Date().toISOString(),
+        chatId: c?.chatId || 'default',
+        dryRun: isDryRun,
+        generatingEntity: generatingEntity || (c?.name2 || '未知'),
+        inSceneCharacters: Array.isArray(inScene) ? inScene : [],
+        mode: settings.mode,
+        positionText: position === 0 ? 'System Prompt' : `In-Chat @ 深度 ${depth}`,
         position,
         depth,
-        false,
-        0
-    );
+        template,
+        maxTotalTokens,
+        maxSceneTokens,
+        sceneTokenCost,
+        totalInjectedTokens: estimateTokens(fullPromptBlock),
+        budgetRemaining: remainingTokens,
+        fullPromptBlock,
+        syncProtocolIncluded: Boolean(syncProtocol),
+        sceneSnapshot: {
+            location: scene.location || '',
+            time: scene.time || '',
+            action: scene.action || '',
+            tension: scene.tension || '',
+            unresolved: scene.unresolved || '',
+            lines: sceneLines
+        },
+        recalledMemories: [
+            ...selectedPinnedItems.map(item => ({
+                id: item.mem.id,
+                content: item.mem.content,
+                type: item.mem.type,
+                scope: item.mem.scope,
+                character: item.mem.character,
+                known_by: item.mem.known_by,
+                status: item.mem.status,
+                tokens: item.tokens,
+                extraWarning: item.extraWarning || '',
+                reason: '常驻置顶 (Pinned)',
+                score: 1.0
+            })),
+            ...selectedTriggeredItems.map(item => ({
+                id: item.mem.id,
+                content: item.mem.content,
+                type: item.mem.type,
+                scope: item.mem.scope,
+                character: item.mem.character,
+                known_by: item.mem.known_by,
+                status: item.mem.status,
+                tokens: item.tokens,
+                extraWarning: item.extraWarning || '',
+                reason: item.wasArchived ? '沉睡唤醒 (Wake-Up)' : '动态匹配激活 (Triggered)',
+                score: item.score
+            }))
+        ],
+        suppressedMemories: suppressedCandidates.map(item => ({
+            id: item.mem?.id || '',
+            content: item.mem?.content || '',
+            type: item.mem?.type || '',
+            scope: item.mem?.scope || '',
+            character: item.mem?.character || '',
+            reason: item.reason,
+            score: typeof item.score === 'number' ? item.score : 0
+        }))
+    };
 
-    console.log(`[${MODULE_NAME}] [Injector] 成功注入提示词 (模式: ${settings.mode}, 位置: ${position === 0 ? 'System Prompt' : 'In-Chat @ 深度 ' + depth}, 长度: ${fullPromptBlock.length} 字符, 伴随协议: ${syncProtocol ? '已包含' : '未开启'})`);
+    if (!isDryRun) {
+        console.log(`[${MODULE_NAME}] [Injector] 成功注入提示词 (模式: ${settings.mode}, 位置: ${position === 0 ? 'System Prompt' : 'In-Chat @ 深度 ' + depth}, 长度: ${fullPromptBlock.length} 字符, 伴随协议: ${syncProtocol ? '已包含' : '未开启'})`);
 
-    if (settings.logVerbose) {
-        console.log(`[${INJECT_KEY}] 预算控制：注入 L0 快照 (~${sceneTokenCost} tok, 硬上限 ${maxSceneTokens}) + ${selectedPinnedLines.length} 条常驻 + ${selectedTriggeredLines.length} 条激活记忆，结余预算 ~${remainingTokens} tok`);
+        if (settings.logVerbose) {
+            console.log(`[${INJECT_KEY}] 预算控制：注入 L0 快照 (~${sceneTokenCost} tok, 硬上限 ${maxSceneTokens}) + ${selectedPinnedLines.length} 条常驻 + ${selectedTriggeredLines.length} 条激活记忆，结余预算 ~${remainingTokens} tok`);
+        }
     }
 
     return fullPromptBlock;

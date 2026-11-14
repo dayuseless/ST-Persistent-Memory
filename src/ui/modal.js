@@ -12,6 +12,7 @@
 import { MEMORY_SCOPE, DEFAULT_SETTINGS } from '../config.js';
 import { getSettings, updateSettings, saveSettingsImmediately, reindexAllMemories } from '../state.js';
 import { testEmbeddingApiConnection } from '../semantic.js';
+import { getLastInjectionSnapshot } from '../injector.js';
 import { escapeHtml } from './common.js';
 
 /**
@@ -705,5 +706,233 @@ export function showAdvancedSettingsModal(options = {}) {
         } else {
             window.toastr?.error?.('保存配置失败，请检查浏览器控制台', '持续记忆');
         }
+    });
+}
+
+/**
+ * 弹出即时注入透视镜模态对话框 (Live Injection Inspector)
+ * 实时展现当前轮次实际注入给大模型的完整提示词文本、Token 预算拆解、记忆激活评分细则与拦截归因审计
+ * 
+ * @param {object} [customSnapshot=null] - 可选直接传入快照，留空则自动从 injector 获取
+ */
+export function showInjectionInspectorModal(customSnapshot = null) {
+    if (typeof document === 'undefined') return;
+
+    // 清理已有模态框
+    document.querySelectorAll('#pm-injection-inspector-modal').forEach(el => el.remove());
+
+    const snapshot = customSnapshot || getLastInjectionSnapshot(false);
+
+    if (!snapshot) {
+        window.toastr?.warning?.('尚未产生提示词注入数据，请先与 AI 发起一轮对话', '持续记忆');
+        return;
+    }
+
+    const formatScopeBadge = (scope, character, knownBy) => {
+        if (scope === 'character') {
+            return `<span class="pm-filter-pill" style="background: #fdf2f8; color: #be185d; border-color: #fbcfe8;"><i class="fa-solid fa-lock"></i> 私知 · ${escapeHtml(character || '某角色')}</span>`;
+        }
+        if (scope === 'shared') {
+            const kbText = Array.isArray(knownBy) ? knownBy.join(', ') : '共知';
+            return `<span class="pm-filter-pill" style="background: #eff6ff; color: #1d4ed8; border-color: #bfdbfe;"><i class="fa-solid fa-users"></i> 共享 · ${escapeHtml(kbText)}</span>`;
+        }
+        return `<span class="pm-filter-pill" style="background: #f0fdf4; color: #15803d; border-color: #bbf7d0;"><i class="fa-solid fa-globe"></i> 世界常识</span>`;
+    };
+
+    const recalledMemories = Array.isArray(snapshot.recalledMemories) ? snapshot.recalledMemories : [];
+    const suppressedMemories = Array.isArray(snapshot.suppressedMemories) ? snapshot.suppressedMemories : [];
+
+    const modalHtml = `
+        <div class="pm-modal-backdrop" id="pm-injection-inspector-modal" style="z-index: 9999999;">
+            <div class="pm-modal-card" style="width: 95%; max-width: 740px; max-height: 90vh; display: flex; flex-direction: column; padding: 16px 20px; box-sizing: border-box; background: #ffffff; border-radius: 10px; border: 1px solid #cbd5e1; box-shadow: 0 20px 25px -5px rgba(0, 0, 0, 0.25);">
+                <!-- 头部 -->
+                <div class="pm-modal-header" style="display: flex; justify-content: space-between; align-items: center; border-bottom: 1px solid #e2e8f0; padding-bottom: 10px;">
+                    <div>
+                        <div style="font-weight: 700; color: #0f172a; font-size: 14px; display: flex; align-items: center; gap: 8px;">
+                            <i class="fa-solid fa-eye" style="color: #0284c7;"></i> 即时注入透视镜 (Live Injection Inspector)
+                        </div>
+                        <div style="font-size: 11px; color: #64748b; margin-top: 3px; display: flex; gap: 10px; align-items: center; flex-wrap: wrap;">
+                            <span>POV 主体: <b style="color: #0f172a;">${escapeHtml(snapshot.generatingEntity || '未知')}</b></span>
+                            <span>模式: <b>${snapshot.mode === 'sync' ? '伴随模式 (Sync)' : '异步独立 (Async)'}</b></span>
+                            <span>位置: <b>${escapeHtml(snapshot.positionText || 'In-Chat')}</b></span>
+                            <span>时间: <b>${snapshot.timestamp ? snapshot.timestamp.split('T')[1].split('.')[0] : '实时测算'}</b></span>
+                        </div>
+                    </div>
+                    <button class="pm-modal-close" id="pm-inspect-modal-close" style="background: none; border: none; font-size: 22px; cursor: pointer; color: #94a3b8; line-height: 1;" title="关闭">&times;</button>
+                </div>
+
+                <!-- 核心指标摘要横幅 (4 宫格) -->
+                <div style="display: grid; grid-template-columns: repeat(4, 1fr); gap: 8px; margin: 10px 0;">
+                    <div style="background: #f8fafc; border: 1px solid #e2e8f0; border-radius: 6px; padding: 6px 10px; text-align: center;">
+                        <div style="font-size: 10px; color: #64748b;">Token 预算消耗</div>
+                        <div style="font-size: 13px; font-weight: 700; color: #0284c7; margin-top: 2px;">~${snapshot.totalInjectedTokens || 0} <span style="font-size: 10px; color: #94a3b8; font-weight: 500;">/ ${snapshot.maxTotalTokens || 450}T</span></div>
+                    </div>
+                    <div style="background: #f8fafc; border: 1px solid #e2e8f0; border-radius: 6px; padding: 6px 10px; text-align: center;">
+                        <div style="font-size: 10px; color: #64748b;">L0 现场快照占用</div>
+                        <div style="font-size: 13px; font-weight: 700; color: #0f172a; margin-top: 2px;">~${snapshot.sceneTokenCost || 0} <span style="font-size: 10px; color: #94a3b8; font-weight: 500;">/ ${snapshot.maxSceneTokens || 150}T</span></div>
+                    </div>
+                    <div style="background: #f8fafc; border: 1px solid #e2e8f0; border-radius: 6px; padding: 6px 10px; text-align: center;">
+                        <div style="font-size: 10px; color: #64748b;">已装载记忆条数</div>
+                        <div style="font-size: 13px; font-weight: 700; color: #059669; margin-top: 2px;">${recalledMemories.length} 条</div>
+                    </div>
+                    <div style="background: #f8fafc; border: 1px solid #e2e8f0; border-radius: 6px; padding: 6px 10px; text-align: center;">
+                        <div style="font-size: 10px; color: #64748b;">未召回 / 拦截归因</div>
+                        <div style="font-size: 13px; font-weight: 700; color: #dc2626; margin-top: 2px;">${suppressedMemories.length} 条</div>
+                    </div>
+                </div>
+
+                <!-- 选项卡切换头 -->
+                <div style="display: flex; gap: 8px; border-bottom: 1px solid #e2e8f0; margin-bottom: 10px;">
+                    <button class="pm-filter-pill pm-filter-active" id="pm-inspect-tab-btn-raw" data-tab="raw" style="border-radius: 4px 4px 0 0; border-bottom: none; cursor: pointer; padding: 6px 14px; font-size: 12px; font-weight: 600;">
+                        <i class="fa-solid fa-file-code"></i> 真实注入 Prompt (${snapshot.totalInjectedTokens || 0} tok)
+                    </button>
+                    <button class="pm-filter-pill" id="pm-inspect-tab-btn-recalled" data-tab="recalled" style="border-radius: 4px 4px 0 0; border-bottom: none; cursor: pointer; padding: 6px 14px; font-size: 12px; font-weight: 600;">
+                        <i class="fa-solid fa-bolt"></i> 激活记忆与召回评分 (${recalledMemories.length})
+                    </button>
+                    <button class="pm-filter-pill" id="pm-inspect-tab-btn-suppressed" data-tab="suppressed" style="border-radius: 4px 4px 0 0; border-bottom: none; cursor: pointer; padding: 6px 14px; font-size: 12px; font-weight: 600;">
+                        <i class="fa-solid fa-shield-halved"></i> 未召回与拦截归因 (${suppressedMemories.length})
+                    </button>
+                </div>
+
+                <!-- 选项卡主体 -->
+                <div class="pm-modal-body" style="overflow-y: auto; flex: 1; padding: 4px 2px;">
+                    <!-- TAB 1: 真实注入文本 -->
+                    <div id="pm-inspect-panel-raw">
+                        <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 6px;">
+                            <span style="font-size: 11px; color: #64748b;">
+                                💡 以下文本为本轮真正向 SillyTavern 提示词管道注入的完整块（包含 L0 现场快照、高频记忆条目与伴随协议）：
+                            </span>
+                            <button type="button" id="pm-inspect-copy-btn" class="pm-btn-test" style="font-size: 11px; padding: 3px 8px; cursor: pointer;">
+                                <i class="fa-solid fa-copy"></i> 复制完整文本
+                            </button>
+                        </div>
+                        <pre style="background: #0f172a; color: #f8fafc; padding: 12px 14px; border-radius: 6px; font-family: Consolas, Monaco, monospace; font-size: 11px; line-height: 1.5; white-space: pre-wrap; word-break: break-all; max-height: 380px; overflow-y: auto; margin: 0; border: 1px solid #1e293b;">${escapeHtml(snapshot.fullPromptBlock || '（当前轮次未注入任何提示词内容）')}</pre>
+                    </div>
+
+                    <!-- TAB 2: 激活记忆细则 -->
+                    <div id="pm-inspect-panel-recalled" style="display: none;">
+                        ${recalledMemories.length === 0 ? `
+                            <div style="text-align: center; color: #94a3b8; padding: 30px 0; font-size: 12px;">
+                                <i class="fa-solid fa-box-open" style="font-size: 28px; margin-bottom: 8px; display: block;"></i>
+                                本轮对话无记忆被装载注入（可能原因为：无匹配触发词、预算不足或现场角色权限限制）
+                            </div>
+                        ` : `
+                            <div style="display: flex; flex-direction: column; gap: 8px;">
+                                ${recalledMemories.map((m, idx) => `
+                                    <div style="background: #f8fafc; border: 1px solid #e2e8f0; border-left: 3px solid #059669; border-radius: 6px; padding: 8px 12px;">
+                                        <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 4px; flex-wrap: wrap; gap: 6px;">
+                                            <div style="display: flex; align-items: center; gap: 6px;">
+                                                <span style="font-weight: 700; color: #0f172a; font-size: 12px;">#${idx + 1}</span>
+                                                ${formatScopeBadge(m.scope, m.character, m.known_by)}
+                                                <span class="pm-filter-pill" style="font-size: 10px;">${escapeHtml(m.type || 'fact')}</span>
+                                                <span class="pm-filter-pill" style="background: ${m.reason?.includes('常驻') ? '#fef3c7; color: #b45309; border-color: #fde68a;' : (m.reason?.includes('唤醒') ? '#ecfdf5; color: #047857; border-color: #a7f3d0;' : '#e0e7ff; color: #4338ca; border-color: #c7d2fe;')}; font-weight: 600;">
+                                                    ${escapeHtml(m.reason || '已激活')}
+                                                </span>
+                                            </div>
+                                            <div style="font-size: 11px; color: #64748b;">
+                                                消耗: <b>~${m.tokens || 0} tok</b>
+                                                ${m.score !== undefined ? ` | 评分: <b style="color: #0284c7;">${Number(m.score).toFixed(2)}</b>` : ''}
+                                            </div>
+                                        </div>
+                                        <div style="font-size: 12px; color: #1e293b; line-height: 1.4;">${escapeHtml(m.content)}</div>
+                                        ${m.extraWarning ? `
+                                            <div style="margin-top: 6px; background: #fffbeb; border: 1px solid #fde68a; border-radius: 4px; padding: 4px 8px; font-size: 11px; color: #b45309;">
+                                                <i class="fa-solid fa-shield-halved"></i> <b>现场保密约束</b>: ${escapeHtml(m.extraWarning)}
+                                            </div>
+                                        ` : ''}
+                                    </div>
+                                `).join('')}
+                            </div>
+                        `}
+                    </div>
+
+                    <!-- TAB 3: 未召回与拦截归因审计 -->
+                    <div id="pm-inspect-panel-suppressed" style="display: none;">
+                        ${suppressedMemories.length === 0 ? `
+                            <div style="text-align: center; color: #059669; padding: 30px 0; font-size: 12px;">
+                                <i class="fa-solid fa-circle-check" style="font-size: 28px; margin-bottom: 8px; display: block;"></i>
+                                记忆库中所有条目均已成功装载进入本轮提示词中！
+                            </div>
+                        ` : `
+                            <div style="display: flex; flex-direction: column; gap: 8px;">
+                                ${suppressedMemories.map(m => `
+                                    <div style="background: #fafafa; border: 1px solid #e5e5e5; border-left: 3px solid #94a3b8; border-radius: 6px; padding: 8px 12px;">
+                                        <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 4px; flex-wrap: wrap; gap: 6px;">
+                                            <div style="display: flex; align-items: center; gap: 6px;">
+                                                <span class="pm-filter-pill" style="font-size: 10px;">${escapeHtml(m.type || 'fact')}</span>
+                                                ${formatScopeBadge(m.scope, m.character, m.known_by)}
+                                            </div>
+                                            <div style="display: flex; align-items: center; gap: 6px;">
+                                                <span class="pm-filter-pill" style="background: #fef2f2; color: #dc2626; border-color: #fecaca; font-weight: 600;">
+                                                    <i class="fa-solid fa-ban"></i> ${escapeHtml(m.reason || '未命中')}
+                                                </span>
+                                            </div>
+                                        </div>
+                                        <div style="font-size: 11px; color: #64748b; line-height: 1.4;">${escapeHtml(m.content || '（无正文）')}</div>
+                                    </div>
+                                `).join('')}
+                            </div>
+                        `}
+                    </div>
+                </div>
+
+                <!-- 底部操作栏 -->
+                <div class="pm-modal-footer" style="display: flex; justify-content: space-between; align-items: center; border-top: 1px solid #e2e8f0; padding-top: 10px; margin-top: 8px;">
+                    <button type="button" id="pm-inspect-refresh-btn" class="pm-btn-secondary" style="font-size: 12px; padding: 5px 12px; cursor: pointer;">
+                        <i class="fa-solid fa-arrows-rotate"></i> 重新测算并刷新 (Dry-Run)
+                    </button>
+                    <button type="button" id="pm-inspect-close-btn" class="pm-btn-primary" style="font-size: 12px; padding: 5px 16px; background: #0284c7; border-color: #0369a1; cursor: pointer;">
+                        关闭
+                    </button>
+                </div>
+            </div>
+        </div>
+    `;
+
+    document.body.insertAdjacentHTML('beforeend', modalHtml);
+    const modalEl = document.getElementById('pm-injection-inspector-modal');
+
+    const closeModal = () => modalEl?.remove();
+    modalEl.querySelector('#pm-inspect-modal-close')?.addEventListener('click', closeModal);
+    modalEl.querySelector('#pm-inspect-close-btn')?.addEventListener('click', closeModal);
+
+    // 复制按钮
+    modalEl.querySelector('#pm-inspect-copy-btn')?.addEventListener('click', async () => {
+        try {
+            await navigator.clipboard.writeText(snapshot.fullPromptBlock || '');
+            window.toastr?.success?.('已将完整提示词复制到剪贴板！', '持续记忆');
+        } catch {
+            window.toastr?.info?.('复制失败，请手动选中文本复制', '持续记忆');
+        }
+    });
+
+    // 选项卡切换
+    const tabBtns = modalEl.querySelectorAll('[data-tab]');
+    const panels = {
+        raw: modalEl.querySelector('#pm-inspect-panel-raw'),
+        recalled: modalEl.querySelector('#pm-inspect-panel-recalled'),
+        suppressed: modalEl.querySelector('#pm-inspect-panel-suppressed')
+    };
+
+    tabBtns.forEach(btn => {
+        btn.addEventListener('click', () => {
+            const targetTab = btn.getAttribute('data-tab');
+            tabBtns.forEach(b => {
+                b.classList.toggle('pm-filter-active', b === btn);
+            });
+            Object.keys(panels).forEach(k => {
+                if (panels[k]) {
+                    panels[k].style.display = (k === targetTab) ? 'block' : 'none';
+                }
+            });
+        });
+    });
+
+    // 刷新按钮 (强制 dryRun 重新测算)
+    modalEl.querySelector('#pm-inspect-refresh-btn')?.addEventListener('click', () => {
+        const freshSnapshot = getLastInjectionSnapshot(true);
+        closeModal();
+        showInjectionInspectorModal(freshSnapshot);
+        window.toastr?.info?.('已按最新会话状态重新执行注入测算', '持续记忆');
     });
 }

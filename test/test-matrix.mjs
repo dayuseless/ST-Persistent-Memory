@@ -104,6 +104,7 @@ import {
     estimateTokens,
     getGeneratingEntity,
     buildAndInjectMemoryPrompt,
+    getLastInjectionSnapshot,
     SYNC_PROTOCOL_TEXT
 } from '../src/injector.js';
 
@@ -223,7 +224,8 @@ import {
     renderMemoryCard,
     showPromoteLoreModal,
     showAdvancedSettingsModal,
-    restoreRecommendedDefaults
+    restoreRecommendedDefaults,
+    showInjectionInspectorModal
 } from '../src/ui.js';
 
 import {
@@ -239,7 +241,8 @@ import { renderMemoryCard as cardsRenderMemoryCard } from '../src/ui/cards.js';
 import {
     showSyncLoreModal as modalShowSyncLoreModal,
     showPromoteLoreModal as modalShowPromoteLoreModal,
-    showAdvancedSettingsModal as modalShowAdvancedModal
+    showAdvancedSettingsModal as modalShowAdvancedModal,
+    showInjectionInspectorModal as modalShowInjectionInspectorModal
 } from '../src/ui/modal.js';
 import { createFloatingButton as bubbleCreateFloatingButton, resetBubblePosition as bubbleResetBubblePosition } from '../src/ui/bubble.js';
 import {
@@ -5837,6 +5840,247 @@ Intermediate analysis details...
             assert.strictEqual(updatedMem.synced_to_world_info, true);
         } finally {
             Object.assign(mockContext, origCtx);
+            clearStateCache();
+            loadCurrentState();
+        }
+    });
+
+    // ─────────────────────────────────────────────────────────────
+    // T113: 即时注入透视镜 (Prompt & Memory Inspector) 架构与归因诊断契约测试
+    // ─────────────────────────────────────────────────────────────
+    await testAsync('T113: 即时注入透视镜 (Live Inspector) 架构与归因诊断契约测试 (同源导出、Dry-Run 无副作用快照测算、召回评分诊断、拦截归因审计与模态交互)', async () => {
+        // 1. 同源导出核验
+        assert.strictEqual(typeof getLastInjectionSnapshot, 'function');
+        assert.strictEqual(typeof showInjectionInspectorModal, 'function');
+        assert.strictEqual(showInjectionInspectorModal, modalShowInjectionInspectorModal, 'showInjectionInspectorModal 必须物理同源');
+
+        const origCtx = { ...mockContext };
+        const origSettings = { ...getSettings() };
+        clearStateCache();
+        const state = loadCurrentState();
+
+        try {
+            // 2. 配置准备：设定测试角色环境
+            mockContext.name1 = '玩家';
+            mockContext.name2 = '角色A';
+            mockContext.characters = [{ name: '角色A' }, { name: '角色B' }];
+            mockContext._injectedPrompt = null;
+            mockContext._injectedKey = null;
+
+            // 现场快照
+            state.scene = {
+                location: '王城圆桌厅堂',
+                in_scene_characters: ['角色A', '角色C', '玩家'],
+                key_events: ['召开远征战略会议']
+            };
+
+            // 构建多样态记忆条目，检验透视镜的召回分类与拦截归因
+            state.memories = [
+                // (1) 常驻公知记忆 -> 应被召回，标记常驻
+                {
+                    id: 'mem_pinned_pub',
+                    type: 'fact',
+                    scope: 'world',
+                    content: '大卢恩能够修复破碎的法环。',
+                    status: 'pinned',
+                    lifecycle: 'active',
+                    is_pinned: true,
+                    trigger_keys: ['法环']
+                },
+                // (2) 角色A 与玩家的共享机密，现场有不知情者角色C -> 应被召回，且生成保密约束
+                {
+                    id: 'mem_shared_secret',
+                    type: 'fact',
+                    scope: 'shared',
+                    known_by: ['角色A', '玩家'],
+                    content: '角色A暗中保留了一块禁忌的死之卢恩碎片。',
+                    status: 'pinned',
+                    lifecycle: 'active',
+                    is_pinned: true
+                },
+                // (3) 角色B 私知记忆，但当前主体为角色A -> 应被拦截，归因为 ACL 隔离
+                {
+                    id: 'mem_private_b',
+                    type: 'fact',
+                    scope: 'character',
+                    character: '角色B',
+                    content: '角色B拥有刺杀玛莉卡的黑刀秘籍。',
+                    status: 'pinned',
+                    lifecycle: 'active',
+                    is_pinned: true
+                },
+                // (4) 沉睡记忆，但相关性极低 -> 应被拦截，归因为沉睡唤醒阈值未达到
+                {
+                    id: 'mem_dormant_low',
+                    type: 'fact',
+                    scope: 'world',
+                    content: '雪山深处的冰霜巨龙陷入了长达百年的沉睡。',
+                    status: 'archived',
+                    lifecycle: 'active',
+                    trigger_keys: ['巨龙', '雪山']
+                },
+                // (5) 已归档/已完成记忆 -> 应被拦截，归因为非活跃生命周期
+                {
+                    id: 'mem_lifecycle_done',
+                    type: 'fact',
+                    scope: 'world',
+                    content: '旧的历史主线任务已经全部彻底终结。',
+                    status: 'triggered',
+                    lifecycle: 'completed'
+                }
+            ];
+
+            updateSettings({
+                enabled: true,
+                maxSceneTokens: 150,
+                maxTotalMemoryTokens: 600,
+                autoSleepEnabled: true,
+                autoSleepWakeThreshold: 0.70
+            });
+
+            // 3. 运行 Dry-Run 注入测算
+            const fullPromptResult = buildAndInjectMemoryPrompt({ dryRun: true });
+
+            // 断言 A: Dry-Run 绝不对 SillyTavern 宿主注入实际提示词 (无副作用)
+            assert.strictEqual(mockContext._injectedPrompt, null, 'Dry-Run 不得向宿主写入提示词');
+            assert.ok(typeof fullPromptResult === 'string' && fullPromptResult.includes('王城圆桌厅堂'), 'Dry-Run 必须生成完整的待注入提示词文本');
+
+            // 断言 B: 快照数据完整性检验
+            const snapshot = getLastInjectionSnapshot(false);
+            assert.ok(snapshot !== null, '快照必须被成功生成并缓存');
+            assert.strictEqual(snapshot.dryRun, true);
+            assert.strictEqual(snapshot.generatingEntity, '角色A');
+            assert.strictEqual(snapshot.sceneSnapshot?.location, '王城圆桌厅堂');
+            assert.ok(snapshot.totalInjectedTokens > 0, '总 Token 消耗必须大于 0');
+            assert.ok(snapshot.fullPromptBlock.includes('大卢恩能够修复破碎的法环'));
+
+            // 断言 C: 召回记忆诊断核验 (Recalled)
+            assert.ok(Array.isArray(snapshot.recalledMemories), 'recalledMemories 必须为数组');
+            const recalledIds = snapshot.recalledMemories.map(m => m.id);
+            assert.ok(recalledIds.includes('mem_pinned_pub'), '常驻公知记忆必须在召回列表中');
+            assert.ok(recalledIds.includes('mem_shared_secret'), '共享机密记忆必须在召回列表中');
+            assert.ok(!recalledIds.includes('mem_private_b'), '角色B的私密记忆绝对不能被召回');
+
+            // 验证共享机密记忆附带保密提示约束 (现场存在不知情者角色C)
+            const recalledShared = snapshot.recalledMemories.find(m => m.id === 'mem_shared_secret');
+            assert.ok(recalledShared.extraWarning.includes('角色C'), '现场存在不知情者角色C时必须具有保密警告');
+            assert.ok(recalledShared.tokens > 0, '必须提供 Token 估算值');
+
+            // 断言 D: 未召回与拦截归因审计核验 (Suppressed)
+            assert.ok(Array.isArray(snapshot.suppressedMemories), 'suppressedMemories 必须为数组');
+            const suppressedIds = snapshot.suppressedMemories.map(m => m.id);
+            assert.ok(suppressedIds.includes('mem_private_b'), '角色B的私密记忆必须记录在拦截归因中');
+            assert.ok(suppressedIds.includes('mem_dormant_low'), '低分沉睡记忆必须记录在拦截归因中');
+            assert.ok(suppressedIds.includes('mem_lifecycle_done'), '已完成生命周期记忆必须记录在拦截归因中');
+
+            const suppPrivB = snapshot.suppressedMemories.find(m => m.id === 'mem_private_b');
+            assert.ok(suppPrivB.reason.includes('ACL') || suppPrivB.reason.includes('隔离'), `拦截归因必须明确指示 ACL: ${suppPrivB.reason}`);
+
+            const suppDormant = snapshot.suppressedMemories.find(m => m.id === 'mem_dormant_low');
+            assert.ok(suppDormant.reason.includes('沉睡') || suppDormant.reason.includes('阈值'), `拦截归因必须明确指示沉睡阈值: ${suppDormant.reason}`);
+
+            const suppLifecycle = snapshot.suppressedMemories.find(m => m.id === 'mem_lifecycle_done');
+            assert.ok(suppLifecycle.reason.includes('生命周期') || suppLifecycle.reason.includes('非活跃'), `拦截归因必须明确指示生命周期: ${suppLifecycle.reason}`);
+
+            // 4. UI 弹窗与 Tab 切换测试
+            let insertedModalHtml = '';
+            let modalRemoved = false;
+            const listeners = {};
+            const mockTabBtns = [
+                {
+                    attr: 'raw',
+                    getAttribute: () => 'raw',
+                    classList: {
+                        toggle: () => {},
+                        contains: (cls) => cls === 'pm-filter-active'
+                    },
+                    addEventListener: (ev, cb) => { listeners['tab_raw_' + ev] = cb; }
+                },
+                {
+                    attr: 'recalled',
+                    getAttribute: () => 'recalled',
+                    classList: {
+                        toggle: () => {},
+                        contains: () => false
+                    },
+                    addEventListener: (ev, cb) => { listeners['tab_recalled_' + ev] = cb; }
+                },
+                {
+                    attr: 'suppressed',
+                    getAttribute: () => 'suppressed',
+                    classList: {
+                        toggle: () => {},
+                        contains: () => false
+                    },
+                    addEventListener: (ev, cb) => { listeners['tab_suppressed_' + ev] = cb; }
+                }
+            ];
+
+            const mockPanels = {
+                raw: { style: { display: 'block' } },
+                recalled: { style: { display: 'none' } },
+                suppressed: { style: { display: 'none' } }
+            };
+
+            const mockInspectorModalEl = {
+                remove: () => { modalRemoved = true; insertedModalHtml = ''; },
+                addEventListener: (ev, cb) => { listeners['backdrop_' + ev] = cb; },
+                querySelector: (sel) => {
+                    if (sel === '#pm-inspect-panel-raw') return mockPanels.raw;
+                    if (sel === '#pm-inspect-panel-recalled') return mockPanels.recalled;
+                    if (sel === '#pm-inspect-panel-suppressed') return mockPanels.suppressed;
+                    return {
+                        addEventListener: (ev, cb) => { listeners[sel + '_' + ev] = cb; }
+                    };
+                },
+                querySelectorAll: (sel) => {
+                    if (sel === '[data-tab]') return mockTabBtns;
+                    return [];
+                }
+            };
+
+            const prevDoc = global.document;
+            global.document = {
+                querySelectorAll: () => [],
+                getElementById: (id) => id === 'pm-injection-inspector-modal' ? mockInspectorModalEl : null,
+                body: {
+                    insertAdjacentHTML: (pos, html) => {
+                        insertedModalHtml = html;
+                    }
+                }
+            };
+
+            try {
+                showInjectionInspectorModal();
+
+                assert.ok(insertedModalHtml.includes('pm-injection-inspector-modal'), '透视镜模态框必须插入 DOM');
+                assert.ok(insertedModalHtml.includes('即时注入透视镜 (Live Injection Inspector)'), '必须渲染标准标题');
+                assert.ok(insertedModalHtml.includes('真实注入 Prompt'), '必须包含 Tab 1: 真实注入 Prompt');
+                assert.ok(insertedModalHtml.includes('激活记忆与召回评分'), '必须包含 Tab 2: 激活记忆与召回评分');
+                assert.ok(insertedModalHtml.includes('未召回与拦截归因'), '必须包含 Tab 3: 未召回与拦截归因');
+                assert.ok(insertedModalHtml.includes('重新测算并刷新 (Dry-Run)'), '必须提供重新测算按钮');
+                assert.ok(insertedModalHtml.includes('大卢恩能够修复破碎的法环'), 'Tab 1 中应渲染包含的提示词内容');
+
+                // 模拟点击 Tab 2 (recalled)
+                listeners['tab_recalled_click']?.();
+                assert.strictEqual(mockPanels.recalled.style.display, 'block', '点击召回 Tab 后 panel 必须显示');
+                assert.strictEqual(mockPanels.raw.style.display, 'none', '其他 panel 必须隐藏');
+
+                // 模拟点击 Tab 3 (suppressed)
+                listeners['tab_suppressed_click']?.();
+                assert.strictEqual(mockPanels.suppressed.style.display, 'block', '点击拦截 Tab 后 panel 必须显示');
+                assert.strictEqual(mockPanels.recalled.style.display, 'none', '其他 panel 必须隐藏');
+
+                // 模拟关闭
+                listeners['#pm-inspect-close-btn_click']?.();
+                assert.strictEqual(modalRemoved, true, '关闭按钮必须成功移除模态框');
+            } finally {
+                global.document = prevDoc;
+            }
+
+        } finally {
+            Object.assign(mockContext, origCtx);
+            updateSettings(origSettings);
             clearStateCache();
             loadCurrentState();
         }

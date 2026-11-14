@@ -10,7 +10,8 @@ import { testEmbeddingApiConnection } from './semantic.js';
 
 import { API_PRESETS, applyApiPreset, getContext, escapeHtml, estimateTokens, restoreRecommendedDefaults } from './ui/common.js';
 import { renderMemoryCard } from './ui/cards.js';
-import { showSyncLoreModal, showPromoteLoreModal, showAdvancedSettingsModal } from './ui/modal.js';
+import { showSyncLoreModal, showPromoteLoreModal, showAdvancedSettingsModal, showInjectionInspectorModal } from './ui/modal.js';
+import { getLastInjectionSnapshot } from './injector.js';
 import { createFloatingButton, resetBubblePosition } from './ui/bubble.js';
 import { createNativeExtensionDrawer, registerExtensionsMenuEntry, renderNativeDrawerContent, importSillyTavernApiConfig } from './ui/drawer.js';
 
@@ -69,6 +70,7 @@ function createPanelDOM() {
                 </div>
             </div>
             <div class="pm-header-actions">
+                <button id="pm-open-inspector-btn" class="pm-btn-icon" title="即时注入透视镜 (查看当前轮次实际注入给 AI 的完整提示词与记忆得分)"><i class="fa-solid fa-eye"></i></button>
                 <button id="pm-manual-digest-btn" class="pm-btn-icon" title="立即触发后台提炼"><i class="fa-solid fa-bolt"></i></button>
                 <button id="pm-close-btn" class="pm-btn-icon" title="关闭"><i class="fa-solid fa-xmark"></i></button>
             </div>
@@ -227,8 +229,8 @@ function renderPanelContent() {
                     <span class="pm-stat-label"><i class="fa-solid fa-bolt"></i> 动态触发</span>
                     <span class="pm-stat-value pm-text-emerald">${triggeredCount} <span style="font-size: 11px; font-weight: 500; color: #64748b;">/ ${settings.maxTriggeredCount || 5}</span></span>
                 </div>
-                <div class="pm-stat-box">
-                    <span class="pm-stat-label"><i class="fa-solid fa-gauge-high"></i> 估算占用</span>
+                <div class="pm-stat-box" id="pm-stat-token-inspect" style="cursor: pointer;" title="点击打开即时注入透视镜 (查看完整 Prompt 与各条记忆得分细则)">
+                    <span class="pm-stat-label"><i class="fa-solid fa-gauge-high"></i> 估算占用 (点击透视)</span>
                     <span class="pm-stat-value pm-text-sky">~${activeTokenEstimate} <span style="font-size: 11px; font-weight: 500; color: #64748b;">/ ${settings.maxTotalMemoryTokens || 450}T</span></span>
                 </div>
             </div>
@@ -956,6 +958,14 @@ function bindPanelEvents(container) {
         }
     });
 
+    // 打开即时注入透视镜模态对话框
+    container.querySelector('#pm-open-inspector-btn')?.addEventListener('click', () => {
+        showInjectionInspectorModal();
+    });
+    container.querySelector('#pm-stat-token-inspect')?.addEventListener('click', () => {
+        showInjectionInspectorModal();
+    });
+
     // 打开详细与高级参数设置模态面板
     container.querySelector('#pm-open-advanced-modal-btn')?.addEventListener('click', () => {
         showAdvancedSettingsModal({
@@ -1604,5 +1614,7 @@ export {
     renderMemoryCard,
     showPromoteLoreModal,
     showAdvancedSettingsModal,
+    showInjectionInspectorModal,
+    getLastInjectionSnapshot,
     restoreRecommendedDefaults
 };
