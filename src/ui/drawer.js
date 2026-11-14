@@ -13,7 +13,7 @@
 import { MODULE_NAME } from '../config.js';
 import { getState, getSettings, updateSettings, saveSettingsImmediately } from '../state.js';
 import { triggerAsyncDigest, testCustomApiConnection } from '../extractor.js';
-import { escapeHtml, applyApiPreset, restoreRecommendedDefaults } from './common.js';
+import { escapeHtml, applyApiPreset, restoreRecommendedDefaults, GAMEPLAY_PRESETS, applyGameplayPreset } from './common.js';
 import { showAdvancedSettingsModal, showInjectionInspectorModal } from './modal.js';
 
 /**
@@ -204,6 +204,19 @@ export function renderNativeDrawerContent(onToggleHUD, onRenderPanel) {
                 <div style="font-size: 11px; color: #64748b; line-height: 1.4; margin-bottom: 10px;">
                     已自动编排自适应提炼、Token 硬预算与混合语义检索。如需微调底层参数，可随时打开详细面板。
                 </div>
+                <div style="background: #ffffff; border: 1px solid #e2e8f0; border-radius: 8px; padding: 8px 10px; margin-bottom: 8px;">
+                    <div style="font-size: 11px; font-weight: 700; color: #0f172a; margin-bottom: 4px; display: flex; align-items: center; justify-content: space-between;">
+                        <span><i class="fa-solid fa-gamepad" style="color: #6366f1;"></i> 玩法流派预设</span>
+                        <span style="font-size: 10px; color: #64748b;">点击一键调优</span>
+                    </div>
+                    <div class="pm-preset-row">
+                        ${Object.values(GAMEPLAY_PRESETS).map(gp => `
+                            <button type="button" class="pm-gameplay-pill ${(settings.activeGameplayPreset || '') === gp.id ? 'pm-gameplay-active' : ''}" data-gameplay="${gp.id}" title="${escapeHtml(gp.desc)}">
+                                <i class="fa-solid ${gp.icon}" style="color: ${gp.color};"></i> ${escapeHtml(gp.name)}
+                            </button>
+                        `).join('')}
+                    </div>
+                </div>
                 <button type="button" id="pm-native-open-adv-btn" class="pm-btn-primary" style="width: 100%; margin-bottom: 6px; padding: 7px 10px; font-size: 12px; background: #2563eb; border-color: #1d4ed8;">
                     <i class="fa-solid fa-sliders"></i> 打开详细与高级参数设置 (弹出面板)
                 </button>
@@ -314,6 +327,17 @@ export function renderNativeDrawerContent(onToggleHUD, onRenderPanel) {
         restoreRecommendedDefaults();
         if (typeof onRenderPanel === 'function') onRenderPanel();
         renderNativeDrawerContent(onToggleHUD, onRenderPanel);
+    });
+
+    content.querySelectorAll('.pm-gameplay-pill').forEach(btn => {
+        btn.addEventListener('click', () => {
+            const gpId = btn.getAttribute('data-gameplay');
+            if (gpId) {
+                applyGameplayPreset(gpId);
+                if (typeof onRenderPanel === 'function') onRenderPanel();
+                renderNativeDrawerContent(onToggleHUD, onRenderPanel);
+            }
+        });
     });
 
     content.querySelector('#pm-native-custom-api-enabled')?.addEventListener('change', (e) => {

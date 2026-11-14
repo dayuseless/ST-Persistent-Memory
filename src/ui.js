@@ -8,11 +8,11 @@ import { getState, getSettings, updateSettings, saveSettingsImmediately, updateS
 import { triggerAsyncDigest, triggerMemoryConsolidation, testCustomApiConnection, triggerBacklogDigest, abortBacklogDigest, isBacklogDigestRunning } from './extractor.js';
 import { testEmbeddingApiConnection } from './semantic.js';
 
-import { API_PRESETS, applyApiPreset, getContext, escapeHtml, estimateTokens, restoreRecommendedDefaults } from './ui/common.js';
+import { API_PRESETS, GAMEPLAY_PRESETS, applyApiPreset, applyGameplayPreset, getContext, escapeHtml, estimateTokens, restoreRecommendedDefaults } from './ui/common.js';
 import { renderMemoryCard } from './ui/cards.js';
 import { showSyncLoreModal, showPromoteLoreModal, showAdvancedSettingsModal, showInjectionInspectorModal } from './ui/modal.js';
 import { getLastInjectionSnapshot } from './injector.js';
-import { createFloatingButton, resetBubblePosition } from './ui/bubble.js';
+import { createFloatingButton, resetBubblePosition, setBubbleState, getBubbleState } from './ui/bubble.js';
 import { createNativeExtensionDrawer, registerExtensionsMenuEntry, renderNativeDrawerContent, importSillyTavernApiConfig } from './ui/drawer.js';
 import {
     registerSlashCommands,
@@ -21,6 +21,7 @@ import {
     executeInspectCommand,
     executeDigestCommand,
     executeForgetCommand,
+    executePresetCommand,
     parseCommandArgs,
     SLASH_COMMAND_DEFINITIONS
 } from './commands.js';
@@ -633,6 +634,21 @@ function renderPanelContent() {
                 </div>
                 <div style="font-size: 12px; color: #475569; margin-bottom: 12px; line-height: 1.5;">
                     无需繁杂调试，系统已根据酒馆最佳实践预置黄金调控参数。记忆提炼、Token 硬预算隔离、混合语义检索与长程归并全自动无感运行。
+                </div>
+
+                <!-- 四大 RP 玩法流派专属一键预设 -->
+                <div style="background: #ffffff; border: 1px solid #e2e8f0; border-radius: 8px; padding: 10px 12px; margin-bottom: 12px;">
+                    <div style="font-size: 11px; font-weight: 700; color: #0f172a; margin-bottom: 4px; display: flex; align-items: center; justify-content: space-between;">
+                        <span><i class="fa-solid fa-gamepad" style="color: #6366f1;"></i> 玩法流派一键预设</span>
+                        <span style="font-size: 10px; color: #64748b; font-weight: normal;">点击即刻按题材自动调优</span>
+                    </div>
+                    <div class="pm-preset-row">
+                        ${Object.values(GAMEPLAY_PRESETS).map(gp => `
+                            <button type="button" class="pm-gameplay-pill ${(settings.activeGameplayPreset || '') === gp.id ? 'pm-gameplay-active' : ''}" data-gameplay="${gp.id}" title="${escapeHtml(gp.desc)}">
+                                <i class="fa-solid ${gp.icon}" style="color: ${gp.color};"></i> ${escapeHtml(gp.name)}
+                            </button>
+                        `).join('')}
+                    </div>
                 </div>
 
                 <!-- 4 宫格全托管规则简报 -->
@@ -1441,6 +1457,17 @@ function bindPanelEvents(container) {
         });
     });
 
+    // 玩法流派专属一键预设快速切换
+    container.querySelectorAll('.pm-gameplay-pill').forEach(btn => {
+        btn.addEventListener('click', () => {
+            const gpId = btn.getAttribute('data-gameplay');
+            if (gpId) {
+                applyGameplayPreset(gpId);
+                renderPanelContent();
+            }
+        });
+    });
+
     // 关联世界书条目筛选
     container.querySelector('#pm-filter-lorebook')?.addEventListener('change', (e) => {
         lorebookFilter = e.target.value;
@@ -1617,6 +1644,8 @@ function bindPanelEvents(container) {
 
 export {
     API_PRESETS,
+    GAMEPLAY_PRESETS,
+    applyGameplayPreset,
     initUI,
     resetBubblePosition,
     importSillyTavernApiConfig,
@@ -1632,7 +1661,10 @@ export {
     executeSceneCommand,
     executeInspectCommand,
     executeDigestCommand,
+    setBubbleState,
+    getBubbleState,
     executeForgetCommand,
+    executePresetCommand,
     parseCommandArgs,
     SLASH_COMMAND_DEFINITIONS
 };

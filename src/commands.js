@@ -15,6 +15,7 @@ import { MODULE_NAME, MEMORY_TYPES, MEMORY_STATUS, MEMORY_SCOPE, MEMORY_LIFECYCL
 import { addMemory, updateScene, getState, updateMemory, saveCurrentState } from './state.js';
 import { showInjectionInspectorModal } from './ui/modal.js';
 import { triggerAsyncDigest } from './extractor.js';
+import { GAMEPLAY_PRESETS, applyGameplayPreset } from './ui/common.js';
 
 /**
  * 解析用户输入的命令行参数与标志位
@@ -212,6 +213,57 @@ export function executeForgetCommand(argsText = '', namedArgs = {}) {
 }
 
 /**
+ * 执行 /preset 指令
+ * @param {string} argsText 
+ * @param {object} [namedArgs={}] 
+ * @returns {string}
+ */
+export function executePresetCommand(argsText = '', namedArgs = {}) {
+    const parsed = parseCommandArgs(argsText);
+    const rawTarget = (parsed.positional || namedArgs.preset || namedArgs.name || '').trim().toLowerCase();
+
+    // 智能别名映射
+    const ALIASES = {
+        'romance': 'romance',
+        '纯爱': 'romance',
+        '恋爱': 'romance',
+        '情感': 'romance',
+        'fantasy': 'fantasy_ttrpg',
+        'fantasy_ttrpg': 'fantasy_ttrpg',
+        'ttrpg': 'fantasy_ttrpg',
+        '西幻': 'fantasy_ttrpg',
+        '跑团': 'fantasy_ttrpg',
+        '奇幻': 'fantasy_ttrpg',
+        'ensemble': 'ensemble_drama',
+        'ensemble_drama': 'ensemble_drama',
+        'drama': 'ensemble_drama',
+        '群像': 'ensemble_drama',
+        '修罗场': 'ensemble_drama',
+        'mystery': 'mystery_detective',
+        'mystery_detective': 'mystery_detective',
+        'detective': 'mystery_detective',
+        '推理': 'mystery_detective',
+        '悬疑': 'mystery_detective'
+    };
+
+    const targetId = ALIASES[rawTarget];
+
+    if (!targetId || !GAMEPLAY_PRESETS[targetId]) {
+        const available = Object.values(GAMEPLAY_PRESETS).map(gp => `• ${gp.id} (${gp.name}): ${gp.desc}`).join('\n');
+        const help = `[持续记忆] 可用玩法流派预设:\n${available}\n用法: /preset <romance|fantasy|ensemble|mystery>`;
+        if (typeof window !== 'undefined') {
+            window.toastr?.info?.('请指定玩法预设名称，如 /preset romance', '持续记忆');
+        }
+        return help;
+    }
+
+    const preset = GAMEPLAY_PRESETS[targetId];
+    applyGameplayPreset(targetId);
+    const msg = `[持续记忆] 已成功切换至【${preset.name}】玩法预设！(${preset.desc})`;
+    return msg;
+}
+
+/**
  * 原生斜杠指令清单定义
  */
 export const SLASH_COMMAND_DEFINITIONS = [
@@ -252,6 +304,15 @@ export const SLASH_COMMAND_DEFINITIONS = [
         callback: (named, unnamed) => {
             const raw = Array.isArray(unnamed) ? unnamed.join(' ') : String(unnamed || '');
             return executeForgetCommand(raw, named);
+        }
+    },
+    {
+        name: 'preset',
+        aliases: ['pm-preset'],
+        helpString: '一键套用玩法流派预设。用法: /preset <romance|fantasy|ensemble|mystery|list>',
+        callback: (named, unnamed) => {
+            const raw = Array.isArray(unnamed) ? unnamed.join(' ') : String(unnamed || '');
+            return executePresetCommand(raw, named);
         }
     }
 ];
@@ -300,6 +361,6 @@ export async function registerSlashCommands(customParser = null, customCommandCl
         }
     }
 
-    console.log(`[${MODULE_NAME}] [Commands] 成功注册 5 大原生斜杠指令 (/remember, /scene, /inspect, /digest, /forget)`);
+    console.log(`[${MODULE_NAME}] [Commands] 成功注册 6 大原生斜杠指令 (/remember, /scene, /inspect, /digest, /forget, /preset)`);
     return true;
 }

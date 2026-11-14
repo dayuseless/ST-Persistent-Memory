@@ -59,6 +59,71 @@ export function resetBubblePosition() {
     }
 }
 
+let currentBubbleState = 'idle';
+let bubbleStateTimeout = null;
+
+/**
+ * 设置悬浮球的实时运行反馈状态 (提供有呼吸感的视觉交互)
+ * @param {'idle' | 'digesting' | 'success' | 'error'} state
+ * @param {object} [info={}]
+ * @param {string} [info.title]
+ * @param {string|number} [info.badge]
+ * @param {number} [info.duration]
+ */
+export function setBubbleState(state, info = {}) {
+    currentBubbleState = state;
+    if (typeof document === 'undefined') {
+        return;
+    }
+
+    const bubble = document.getElementById('pm-floating-bubble');
+    if (!bubble) return;
+
+    if (bubbleStateTimeout) {
+        clearTimeout(bubbleStateTimeout);
+        bubbleStateTimeout = null;
+    }
+
+    bubble.classList.remove('pm-bubble-digesting', 'pm-bubble-success', 'pm-bubble-error');
+
+    // 清理角标
+    const oldBadge = bubble.querySelector('.pm-bubble-badge');
+    if (oldBadge) oldBadge.remove();
+
+    if (state === 'digesting') {
+        bubble.classList.add('pm-bubble-digesting');
+        bubble.title = info.title || '持续记忆系统 (正在后台提炼中...)';
+        bubble.innerHTML = '<i class="fa-solid fa-wand-magic-sparkles fa-spin"></i>';
+    } else if (state === 'success') {
+        bubble.classList.add('pm-bubble-success');
+        bubble.title = info.title || '持续记忆系统 (记忆提炼成功并沉淀)';
+        bubble.innerHTML = '<i class="fa-solid fa-circle-check"></i>';
+        if (info.badge) {
+            const badgeEl = document.createElement('div');
+            badgeEl.className = 'pm-bubble-badge';
+            badgeEl.textContent = String(info.badge);
+            bubble.appendChild(badgeEl);
+        }
+        bubbleStateTimeout = setTimeout(() => {
+            setBubbleState('idle');
+        }, info.duration || 2600);
+    } else if (state === 'error') {
+        bubble.classList.add('pm-bubble-error');
+        bubble.title = info.title || '持续记忆系统 (提炼遇到异常，点击查看)';
+        bubble.innerHTML = '<i class="fa-solid fa-triangle-exclamation"></i>';
+    } else {
+        bubble.title = '持续记忆系统 (可拖拽，点击打开 HUD 面板)';
+        bubble.innerHTML = '<i class="fa-solid fa-brain"></i>';
+    }
+}
+
+/**
+ * 获取当前悬浮球视觉状态
+ */
+export function getBubbleState() {
+    return currentBubbleState;
+}
+
 /**
  * 拖拽核心算法：手机触控与桌面鼠标双端适配、防遮挡安全边缘、坐标隔离持久化
  */

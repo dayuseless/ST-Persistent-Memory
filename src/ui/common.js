@@ -41,6 +41,121 @@ export const API_PRESETS = {
     }
 };
 
+/**
+ * 四大 RP 玩法流派专属一键调优预设 (Gameplay Presets)
+ * 免去玩家在二十多项参数中摸索，针对不同故事类型一键切入黄金参数组合
+ */
+export const GAMEPLAY_PRESETS = {
+    romance: {
+        id: 'romance',
+        name: '纯爱日常',
+        icon: 'fa-heart',
+        color: '#ec4899',
+        desc: '聚焦情绪羁绊、言行承诺与二人私语；高向量语义联想，宽松沉睡唤醒',
+        settings: {
+            asyncFrequency: 2,
+            digestSliceCount: 6,
+            maxSceneTokens: 120,
+            maxTotalMemoryTokens: 400,
+            maxPinnedCount: 4,
+            maxTriggeredCount: 6,
+            semanticWeight: 0.75,
+            semanticThreshold: 0.20,
+            autoSleepWakeThreshold: 0.50,
+            autoSleepTurns: 30,
+            worldBookBoostScore: 0.20,
+            injectionTemplate: 'standard'
+        }
+    },
+    fantasy_ttrpg: {
+        id: 'fantasy_ttrpg',
+        name: '西幻跑团',
+        icon: 'fa-shield-halved',
+        color: '#6366f1',
+        desc: '聚焦客观物理事实、严苛地理场景与世界书设定深度联动；高预算与强力归并',
+        settings: {
+            asyncFrequency: 4,
+            digestSliceCount: 8,
+            maxSceneTokens: 200,
+            maxTotalMemoryTokens: 650,
+            maxPinnedCount: 6,
+            maxTriggeredCount: 10,
+            semanticWeight: 0.60,
+            semanticThreshold: 0.25,
+            autoSleepWakeThreshold: 0.65,
+            autoSleepTurns: 20,
+            worldBookIntegrationEnabled: true,
+            worldBookContextToExtractor: true,
+            worldBookBoostScore: 0.40,
+            autoConsolidate: true,
+            consolidateThreshold: 10,
+            injectionTemplate: 'standard'
+        }
+    },
+    ensemble_drama: {
+        id: 'ensemble_drama',
+        name: '群像修罗场',
+        icon: 'fa-users-viewfinder',
+        color: '#f59e0b',
+        desc: '极致知情范围与 POV 权限隔离，严格在场保密约束，杜绝多角色串味读心',
+        settings: {
+            asyncFrequency: 3,
+            digestSliceCount: 6,
+            maxSceneTokens: 180,
+            maxTotalMemoryTokens: 500,
+            maxPinnedCount: 5,
+            maxTriggeredCount: 8,
+            semanticWeight: 0.65,
+            semanticThreshold: 0.30,
+            autoSleepWakeThreshold: 0.60,
+            autoSleepTurns: 25,
+            worldBookBoostScore: 0.30,
+            injectionTemplate: 'xml'
+        }
+    },
+    mystery_detective: {
+        id: 'mystery_detective',
+        name: '推理悬疑',
+        icon: 'fa-magnifying-glass',
+        color: '#059669',
+        desc: '线索物证一字不漏，停用模糊归并以保全原话证据；高词法权重，长效不休眠',
+        settings: {
+            asyncFrequency: 2,
+            digestSliceCount: 6,
+            maxSceneTokens: 180,
+            maxTotalMemoryTokens: 600,
+            maxPinnedCount: 8,
+            maxTriggeredCount: 10,
+            semanticWeight: 0.40,
+            semanticThreshold: 0.30,
+            autoSleepWakeThreshold: 0.70,
+            autoSleepTurns: 40,
+            autoConsolidate: false,
+            injectionTemplate: 'standard'
+        }
+    }
+};
+
+/**
+ * 一键应用玩法流派预设 (100% 安全保留 API 凭据与基础总开关)
+ * @param {string} presetId
+ * @returns {boolean}
+ */
+export function applyGameplayPreset(presetId) {
+    const preset = GAMEPLAY_PRESETS[presetId];
+    if (!preset) return false;
+
+    updateSettings({
+        ...preset.settings,
+        activeGameplayPreset: presetId
+    });
+    saveSettingsImmediately();
+    if (typeof window !== 'undefined') {
+        window.toastr?.success?.(`已切换为【${preset.name}】玩法预设！`, '持续记忆');
+    }
+    return true;
+}
+
 export function getContext() {
     return (typeof window !== 'undefined' && window.SillyTavern?.getContext) ? window.SillyTavern.getContext() : null;
 }

@@ -217,6 +217,11 @@ import {
 } from '../src/migration.js';
 import {
     API_PRESETS,
+    GAMEPLAY_PRESETS as uiGameplayPresets,
+    applyGameplayPreset as uiApplyGameplayPreset,
+    executePresetCommand as uiExecutePresetCommand,
+    setBubbleState as uiSetBubbleState,
+    getBubbleState as uiGetBubbleState,
     initUI,
     resetBubblePosition,
     importSillyTavernApiConfig,
@@ -238,12 +243,15 @@ import {
     executeInspectCommand,
     executeDigestCommand,
     executeForgetCommand,
+    executePresetCommand,
     parseCommandArgs,
     SLASH_COMMAND_DEFINITIONS
 } from '../src/commands.js';
 
 import {
     API_PRESETS as commonApiPresets,
+    GAMEPLAY_PRESETS,
+    applyGameplayPreset,
     applyApiPreset,
     getContext,
     escapeHtml,
@@ -258,7 +266,12 @@ import {
     showAdvancedSettingsModal as modalShowAdvancedModal,
     showInjectionInspectorModal as modalShowInjectionInspectorModal
 } from '../src/ui/modal.js';
-import { createFloatingButton as bubbleCreateFloatingButton, resetBubblePosition as bubbleResetBubblePosition } from '../src/ui/bubble.js';
+import {
+    createFloatingButton as bubbleCreateFloatingButton,
+    resetBubblePosition as bubbleResetBubblePosition,
+    setBubbleState,
+    getBubbleState
+} from '../src/ui/bubble.js';
 import {
     createNativeExtensionDrawer as drawerCreateNativeExtensionDrawer,
     registerExtensionsMenuEntry as drawerRegisterExtensionsMenuEntry,
@@ -6220,7 +6233,7 @@ Intermediate analysis details...
 
             const regSuccess = await registerSlashCommands(mockParser, mockCommandClass);
             assert.strictEqual(regSuccess, true);
-            assert.strictEqual(registeredCommands.length, 5);
+            assert.strictEqual(registeredCommands.length, 6);
 
             const cmdNames = registeredCommands.map(c => c.name);
             assert.ok(cmdNames.includes('remember'));
@@ -6228,6 +6241,7 @@ Intermediate analysis details...
             assert.ok(cmdNames.includes('inspect'));
             assert.ok(cmdNames.includes('digest'));
             assert.ok(cmdNames.includes('forget'));
+            assert.ok(cmdNames.includes('preset'));
 
             // 验证 remember command 的 callback 正常运转
             const rememberCmd = registeredCommands.find(c => c.name === 'remember');
@@ -6259,6 +6273,145 @@ Intermediate analysis details...
             assert.strictEqual(searchPool.filter(item => matchQuery(item, 'a')).length, 1);
             // 空结果
             assert.strictEqual(searchPool.filter(item => matchQuery(item, '无缘之空')).length, 0);
+
+        } finally {
+            Object.assign(mockContext, origCtx);
+            updateSettings(origSettings);
+            clearStateCache();
+            loadCurrentState();
+        }
+    });
+
+    // ─────────────────────────────────────────────────────────────
+    // T115: 四大玩法流派预设 (Gameplay Presets) 与悬浮球实时反馈状态契约测试 (Phase 2)
+    // ─────────────────────────────────────────────────────────────
+    await testAsync('T115: 四大玩法流派预设 (Gameplay Presets) 与悬浮球实时反馈状态契约测试 (Phase 2)', async () => {
+        const origCtx = JSON.parse(JSON.stringify(mockContext));
+        const origSettings = JSON.parse(JSON.stringify(getSettings()));
+
+        try {
+            // 1. 同源引用契约验证 (common.js ↔ ui.js ↔ commands.js ↔ bubble.js)
+            assert.strictEqual(applyGameplayPreset, uiApplyGameplayPreset, 'applyGameplayPreset 必须在 ui.js 与 common.js 保持同源引用');
+            assert.strictEqual(executePresetCommand, uiExecutePresetCommand, 'executePresetCommand 必须在 ui.js 与 commands.js 保持同源引用');
+            assert.strictEqual(setBubbleState, uiSetBubbleState, 'setBubbleState 必须在 ui.js 与 bubble.js 保持同源引用');
+            assert.strictEqual(getBubbleState, uiGetBubbleState, 'getBubbleState 必须在 ui.js 与 bubble.js 保持同源引用');
+            assert.deepStrictEqual(GAMEPLAY_PRESETS, uiGameplayPresets, 'GAMEPLAY_PRESETS 配置字典必须全等');
+
+            // 2. 四大流派定义与参数矩阵完备性验证
+            const expectedGenres = ['romance', 'fantasy_ttrpg', 'ensemble_drama', 'mystery_detective'];
+            assert.deepStrictEqual(Object.keys(GAMEPLAY_PRESETS), expectedGenres, '预设包必须严格包含四大流派');
+
+            for (const gid of expectedGenres) {
+                const g = GAMEPLAY_PRESETS[gid];
+                assert.ok(g.id && g.name && g.icon && g.color && g.desc, `流派 ${gid} 必须具备完备元数据`);
+                assert.ok(g.settings && typeof g.settings === 'object', `流派 ${gid} 必须具有 settings 载荷`);
+                assert.ok(g.settings.maxSceneTokens > 0, `流派 ${gid} 现场预算必须合法`);
+                assert.ok(g.settings.maxTotalMemoryTokens > 0, `流派 ${gid} 记忆总预算必须合法`);
+                assert.ok(typeof g.settings.semanticWeight === 'number', `流派 ${gid} 语义权重必须为数值`);
+            }
+
+            // 3. 预设套用与凭据防丢失隔离性验证 (applyGameplayPreset)
+            // 模拟用户预先配置了私有 API 密钥与端点
+            updateSettings({
+                customApiUrl: 'https://my-custom-proxy.internal/v1',
+                customApiKey: 'sk-secret-do-not-overwrite-12345',
+                customModel: 'deepseek-chat',
+                embeddingApiUrl: 'https://my-embedding-proxy.internal/v1',
+                embeddingApiKey: 'sk-emb-secret-99999',
+                enabled: true,
+                showFloatingBubble: true
+            });
+
+            // 3.1 套用恋爱模式 (romance)
+            const resRomance = applyGameplayPreset('romance');
+            assert.strictEqual(resRomance, true);
+            let curSettings = getSettings();
+            assert.strictEqual(curSettings.activeGameplayPreset, 'romance');
+            assert.strictEqual(curSettings.asyncFrequency, 2);
+            assert.strictEqual(curSettings.maxTotalMemoryTokens, 400);
+            assert.strictEqual(curSettings.semanticWeight, 0.75);
+            // 验证用户 API 凭据 100% 完整保留未受侵害
+            assert.strictEqual(curSettings.customApiUrl, 'https://my-custom-proxy.internal/v1');
+            assert.strictEqual(curSettings.customApiKey, 'sk-secret-do-not-overwrite-12345');
+            assert.strictEqual(curSettings.customModel, 'deepseek-chat');
+            assert.strictEqual(curSettings.embeddingApiUrl, 'https://my-embedding-proxy.internal/v1');
+            assert.strictEqual(curSettings.embeddingApiKey, 'sk-emb-secret-99999');
+
+            // 3.2 套用奇幻跑团模式 (fantasy_ttrpg)
+            const resFantasy = applyGameplayPreset('fantasy_ttrpg');
+            assert.strictEqual(resFantasy, true);
+            curSettings = getSettings();
+            assert.strictEqual(curSettings.activeGameplayPreset, 'fantasy_ttrpg');
+            assert.strictEqual(curSettings.maxTotalMemoryTokens, 650);
+            assert.strictEqual(curSettings.worldBookIntegrationEnabled, true);
+            assert.strictEqual(curSettings.worldBookBoostScore, 0.40);
+            assert.strictEqual(curSettings.customApiKey, 'sk-secret-do-not-overwrite-12345');
+
+            // 3.3 套用群像修罗场模式 (ensemble_drama)
+            const resEnsemble = applyGameplayPreset('ensemble_drama');
+            assert.strictEqual(resEnsemble, true);
+            curSettings = getSettings();
+            assert.strictEqual(curSettings.activeGameplayPreset, 'ensemble_drama');
+            assert.strictEqual(curSettings.injectionTemplate, 'xml');
+            assert.strictEqual(curSettings.customApiKey, 'sk-secret-do-not-overwrite-12345');
+
+            // 3.4 套用推理悬疑模式 (mystery_detective)
+            const resMystery = applyGameplayPreset('mystery_detective');
+            assert.strictEqual(resMystery, true);
+            curSettings = getSettings();
+            assert.strictEqual(curSettings.activeGameplayPreset, 'mystery_detective');
+            assert.strictEqual(curSettings.autoConsolidate, false, '推理模式必须关闭模糊归并以保护现场物证');
+            assert.strictEqual(curSettings.semanticWeight, 0.40, '推理模式必须提高词法权重准确命中物证');
+            assert.strictEqual(curSettings.customApiKey, 'sk-secret-do-not-overwrite-12345');
+
+            // 3.5 非法预设安全拦截
+            assert.strictEqual(applyGameplayPreset('non_existent_preset'), false);
+
+            // 4. /preset 斜杠指令与智能别名匹配验证 (executePresetCommand)
+            // 4.1 空参数或 list 提示
+            const help1 = executePresetCommand('');
+            assert.ok(help1.includes('可用玩法流派预设'));
+            assert.ok(help1.includes('romance'));
+            const help2 = executePresetCommand('list');
+            assert.ok(help2.includes('可用玩法流派预设'));
+
+            // 4.2 别名匹配: /preset 跑团 -> fantasy_ttrpg
+            const cmdRes1 = executePresetCommand('跑团');
+            assert.ok(cmdRes1.includes('西幻跑团'));
+            assert.strictEqual(getSettings().activeGameplayPreset, 'fantasy_ttrpg');
+
+            // 4.3 别名匹配: /preset mystery -> mystery_detective
+            const cmdRes2 = executePresetCommand('mystery');
+            assert.ok(cmdRes2.includes('推理悬疑'));
+            assert.strictEqual(getSettings().activeGameplayPreset, 'mystery_detective');
+
+            // 4.4 别名匹配: /preset 纯爱 -> romance
+            const cmdRes3 = executePresetCommand('纯爱');
+            assert.ok(cmdRes3.includes('纯爱日常'));
+            assert.strictEqual(getSettings().activeGameplayPreset, 'romance');
+
+            // 4.5 命名参数匹配: /preset --name drama -> ensemble_drama
+            const cmdRes4 = executePresetCommand('', { name: 'drama' });
+            assert.ok(cmdRes4.includes('群像修罗场'));
+            assert.strictEqual(getSettings().activeGameplayPreset, 'ensemble_drama');
+
+            // 5. 悬浮球运行状态机与动效契约测试 (setBubbleState / getBubbleState)
+            // 验证在 Node 环境与模拟 DOM 下状态切换稳健
+            setBubbleState('idle');
+            assert.strictEqual(getBubbleState(), 'idle');
+
+            setBubbleState('digesting', { label: '提炼中...' });
+            assert.strictEqual(getBubbleState(), 'digesting');
+
+            setBubbleState('success', { label: '已同步' });
+            assert.strictEqual(getBubbleState(), 'success');
+
+            setBubbleState('error', { label: '请求异常' });
+            assert.strictEqual(getBubbleState(), 'error');
+
+            // 恢复 idle
+            setBubbleState('idle');
+            assert.strictEqual(getBubbleState(), 'idle');
 
         } finally {
             Object.assign(mockContext, origCtx);

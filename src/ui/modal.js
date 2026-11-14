@@ -13,7 +13,7 @@ import { MEMORY_SCOPE, DEFAULT_SETTINGS } from '../config.js';
 import { getSettings, updateSettings, saveSettingsImmediately, reindexAllMemories } from '../state.js';
 import { testEmbeddingApiConnection } from '../semantic.js';
 import { getLastInjectionSnapshot } from '../injector.js';
-import { escapeHtml } from './common.js';
+import { escapeHtml, GAMEPLAY_PRESETS, applyGameplayPreset } from './common.js';
 
 /**
  * 弹出记忆差量写回世界书条目的确认预览对话框
@@ -215,6 +215,21 @@ export function showAdvancedSettingsModal(options = {}) {
                 <div class="pm-modal-body" style="overflow-y: auto; flex: 1; padding: 12px 2px; margin: 4px 0;">
                     <div style="background: #eff6ff; border: 1px solid #bfdbfe; border-radius: 6px; padding: 8px 12px; margin-bottom: 12px; font-size: 11px; color: #1e40af; line-height: 1.4;">
                         💡 <b>傻瓜式默认设想</b>：平时使用无需改动，系统默认已调优至黄金状态。若有特殊需求（如超长文本、自定义注入深度、特定模型 XML 模板、高阶语义权重），可在此微调底层指标。
+                    </div>
+
+                    <!-- 快捷流派预设 -->
+                    <div style="background: #f8fafc; border: 1px solid #cbd5e1; border-radius: 8px; padding: 8px 12px; margin-bottom: 12px;">
+                        <div style="font-size: 11px; font-weight: 700; color: #0f172a; margin-bottom: 6px; display: flex; align-items: center; justify-content: space-between;">
+                            <span><i class="fa-solid fa-gamepad" style="color: #6366f1;"></i> 一键套用玩法流派预设 (Gameplay Presets)</span>
+                            <span style="font-size: 10px; color: #64748b;">点击自动填入推荐参数</span>
+                        </div>
+                        <div class="pm-preset-row">
+                            ${Object.values(GAMEPLAY_PRESETS).map(gp => `
+                                <button type="button" class="pm-gameplay-pill ${(settings.activeGameplayPreset || '') === gp.id ? 'pm-gameplay-active' : ''}" data-gameplay="${gp.id}" title="${escapeHtml(gp.desc)}">
+                                    <i class="fa-solid ${gp.icon}" style="color: ${gp.color};"></i> ${escapeHtml(gp.name)}
+                                </button>
+                            `).join('')}
+                        </div>
                     </div>
 
                     <!-- 模块 1：提炼运行模式与节律编排 -->
@@ -485,6 +500,18 @@ export function showAdvancedSettingsModal(options = {}) {
     // 点击背景遮罩关闭
     modalEl.addEventListener('click', (e) => {
         if (e.target === modalEl) closeModal();
+    });
+
+    // 玩法流派快捷预设一键套用
+    modalEl.querySelectorAll('.pm-gameplay-pill').forEach(btn => {
+        btn.addEventListener('click', () => {
+            const gpId = btn.getAttribute('data-gameplay');
+            if (gpId) {
+                applyGameplayPreset(gpId);
+                closeModal();
+                showAdvancedSettingsModal(options);
+            }
+        });
     });
 
     // 滑块联动展示

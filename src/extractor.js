@@ -47,6 +47,7 @@ import {
     applyExtractedData,
     extractAndApplySyncTag
 } from './apply.js';
+import { setBubbleState } from './ui/bubble.js';
 
 export {
     filterMemoriesForDigest,
@@ -184,6 +185,7 @@ export async function triggerAsyncDigest(force = false) {
     }
 
     activeChatDigests.add(startChatId);
+    setBubbleState('digesting');
     console.log(`[${MODULE_NAME}] [Async] 启动提炼任务 (会话: ${startChatId}, 修订版本: rev.${startRevision}, 轮次: 第 ${currentTurn} 轮)...`);
 
     let currentState = state;
@@ -309,6 +311,7 @@ export async function triggerAsyncDigest(force = false) {
                 // 执行超期未激活记忆自动沉睡巡检 (同周期原子落盘)
                 applyInactivitySleep(currentTurn, settings);
             });
+            setBubbleState('idle');
             console.log(`[${MODULE_NAME}] [Async] 识别为良性静默提炼 (${quietSummary})，状态保持平稳`);
             return { success: true, summary: quietSummary };
         }
@@ -325,6 +328,7 @@ export async function triggerAsyncDigest(force = false) {
                 // 执行超期未激活记忆自动沉睡巡检 (同周期原子落盘)
                 applyInactivitySleep(currentTurn, settings);
             });
+            setBubbleState('success');
             console.log(`[${MODULE_NAME}] [Async] 提炼原子提交落盘 (会话: ${startChatId}, rev.${currentState.state_revision}): ${currentState.last_digest_summary}`);
 
             // 检查是否达到长程记忆归并阈值 (由后台异步触发，不阻塞当前响应)
@@ -338,6 +342,7 @@ export async function triggerAsyncDigest(force = false) {
 
             return { success: true, summary: currentState.last_digest_summary };
         } else {
+            setBubbleState('error');
             console.warn(`[${MODULE_NAME}] [Async] 提炼内容未通过数据完整性校验，已安全丢弃`);
             const schemaErr = '模型返回字段缺失或记忆知情权限未通过 (Schema 校验未通过)';
             currentState.last_digest_error = schemaErr;
@@ -345,6 +350,7 @@ export async function triggerAsyncDigest(force = false) {
             return { success: false, error: schemaErr };
         }
     } catch (e) {
+        setBubbleState('error');
         console.error(`[${MODULE_NAME}] [Async] 后台提炼异常:`, e);
         const errorMessage = e.message || String(e);
         // 会话已切换时不得将旧请求的失败状态写入新聊天。

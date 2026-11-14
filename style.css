@@ -44,6 +44,111 @@
     transform: scale(1.1);
 }
 
+@keyframes pm-bubble-pulse {
+    0% {
+        box-shadow: 0 0 0 0 rgba(37, 99, 235, 0.6);
+        border-color: #2563eb !important;
+    }
+    70% {
+        box-shadow: 0 0 0 10px rgba(37, 99, 235, 0);
+        border-color: #3b82f6 !important;
+    }
+    100% {
+        box-shadow: 0 0 0 0 rgba(37, 99, 235, 0);
+        border-color: #2563eb !important;
+    }
+}
+
+@keyframes pm-bubble-success-glow {
+    0% {
+        box-shadow: 0 0 0 0 rgba(16, 185, 129, 0.8);
+        border-color: #10b981 !important;
+        transform: scale(1.15);
+    }
+    70% {
+        box-shadow: 0 0 0 12px rgba(16, 185, 129, 0);
+        border-color: #059669 !important;
+    }
+    100% {
+        box-shadow: 0 0 0 0 rgba(16, 185, 129, 0);
+        transform: scale(1);
+    }
+}
+
+.pm-floating-bubble.pm-bubble-digesting {
+    animation: pm-bubble-pulse 1.8s infinite;
+    color: #2563eb !important;
+    background: #eff6ff !important;
+    border-color: #3b82f6 !important;
+}
+
+.pm-floating-bubble.pm-bubble-success {
+    animation: pm-bubble-success-glow 1.2s ease-out;
+    color: #059669 !important;
+    background: #ecfdf5 !important;
+    border-color: #10b981 !important;
+}
+
+.pm-floating-bubble.pm-bubble-error {
+    border-color: #ef4444 !important;
+    color: #dc2626 !important;
+    background: #fef2f2 !important;
+}
+
+.pm-bubble-badge {
+    position: absolute;
+    top: -4px;
+    right: -4px;
+    background: #10b981;
+    color: #ffffff;
+    font-size: 10px;
+    font-weight: 700;
+    min-width: 16px;
+    height: 16px;
+    line-height: 16px;
+    border-radius: 8px;
+    text-align: center;
+    padding: 0 4px;
+    box-shadow: 0 2px 5px rgba(0,0,0,0.25);
+    pointer-events: none;
+}
+
+/* 流派玩法预设胶囊样式 */
+.pm-preset-row {
+    display: flex;
+    gap: 6px;
+    flex-wrap: wrap;
+    margin-top: 6px;
+}
+
+.pm-gameplay-pill {
+    padding: 5px 10px;
+    border-radius: 6px;
+    border: 1px solid #cbd5e1;
+    background: #f8fafc;
+    color: #334155;
+    font-size: 11px;
+    font-weight: 600;
+    cursor: pointer;
+    display: inline-flex;
+    align-items: center;
+    gap: 5px;
+    transition: all 0.15s ease;
+}
+
+.pm-gameplay-pill:hover {
+    background: #ffffff;
+    border-color: #94a3b8;
+    transform: translateY(-1px);
+}
+
+.pm-gameplay-pill.pm-gameplay-active {
+    background: #eff6ff;
+    color: #1d4ed8;
+    border-color: #3b82f6;
+    box-shadow: 0 1px 3px rgba(59, 130, 246, 0.2);
+}
+
 /* ─────────────────────────────────────────────────────────────────────────────
  * 2. 自定义极简滑块开关 (白底黑字适配，极速、清晰、100% 可点)
  * ───────────────────────────────────────────────────────────────────────────── */
