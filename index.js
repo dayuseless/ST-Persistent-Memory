@@ -9,6 +9,7 @@ import { buildAndInjectMemoryPrompt } from './src/injector.js';
 import { extractAndApplySyncTag } from './src/apply.js';
 import { triggerAsyncDigest } from './src/extractor.js';
 import { initUI } from './src/ui.js';
+import { createFloatingButton } from './src/ui/bubble.js';
 import { registerSlashCommands } from './src/commands.js';
 import { registerGlobalApi } from './src/sdk.js';
 
@@ -17,6 +18,32 @@ try {
     registerGlobalApi();
 } catch (e) {
     console.warn(`[${MODULE_NAME}] 全局 SDK 注册异常:`, e);
+}
+
+// 立即在首屏无感知预挂载悬浮球 (0 延迟、0 依赖)，彻底消除等待 SillyTavern 上下文与 APP_READY 的盲区
+if (typeof document !== 'undefined') {
+    const preMountEarlyBubble = () => {
+        try {
+            createFloatingButton(() => {
+                const panel = document.getElementById('pm-drawer-panel');
+                if (panel) {
+                    panel.classList.toggle('pm-show');
+                } else {
+                    init().then(() => {
+                        const p = document.getElementById('pm-drawer-panel');
+                        if (p) p.classList.add('pm-show');
+                    });
+                }
+            });
+        } catch (e) {
+            console.warn(`[${MODULE_NAME}] 早鸟悬浮球初始化降级:`, e);
+        }
+    };
+    if (document.body) {
+        preMountEarlyBubble();
+    } else {
+        document.addEventListener('DOMContentLoaded', preMountEarlyBubble, { once: true });
+    }
 }
 
 const CTX_WAIT_MS = 250;

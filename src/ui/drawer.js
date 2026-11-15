@@ -55,16 +55,22 @@ export function importSillyTavernApiConfig() {
 }
 
 /**
- * 注入 SillyTavern 原生扩展面板 (#extensions_settings)
+ * 注入 SillyTavern 原生扩展面板 (#extensions_settings 或 #extensions_settings2)
  */
 export function createNativeExtensionDrawer(onToggleHUD, onRenderPanel) {
     if (typeof document === 'undefined') return;
-    const container = document.getElementById('extensions_settings');
+    const container = document.getElementById('extensions_settings') || document.getElementById('extensions_settings2');
     if (!container) return;
 
-    if (document.getElementById('pm-native-container')) return;
+    let drawerWrapper = document.getElementById('pm-native-container');
+    if (drawerWrapper) {
+        if (!container.contains(drawerWrapper)) {
+            container.appendChild(drawerWrapper);
+        }
+        return;
+    }
 
-    const drawerWrapper = document.createElement('div');
+    drawerWrapper = document.createElement('div');
     drawerWrapper.id = 'pm-native-container';
     drawerWrapper.className = 'extension_container inline-drawer';
     drawerWrapper.innerHTML = `
@@ -88,9 +94,17 @@ export function createNativeExtensionDrawer(onToggleHUD, onRenderPanel) {
 export function registerExtensionsMenuEntry(onToggleHUD) {
     if (typeof document === 'undefined') return;
     const menu = document.getElementById('extensionsMenu');
-    if (!menu || document.getElementById('pm-menu-entry')) return;
+    if (!menu) return;
 
-    const item = document.createElement('div');
+    let item = document.getElementById('pm-menu-entry');
+    if (item) {
+        if (!menu.contains(item)) {
+            menu.appendChild(item);
+        }
+        return;
+    }
+
+    item = document.createElement('div');
     item.id = 'pm-menu-entry';
     item.className = 'list-group-item flex-container flexGap5 interactable';
     item.innerHTML = '<i class="fa-solid fa-brain" style="color: #2563eb;"></i><span>持续记忆</span>';

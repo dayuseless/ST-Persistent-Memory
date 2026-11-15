@@ -44,17 +44,34 @@ function initUI() {
     createNativeExtensionDrawer((show) => togglePanel(show), () => renderPanelContent());
     registerExtensionsMenuEntry((show) => togglePanel(show));
 
-    // 针对酒馆模板异步延迟生成与 DOM 动态挂载，进行多轮对齐补全
-    setTimeout(() => {
+    // 针对酒馆模板异步延迟生成与 DOM 动态挂载，进行多轮对齐补全与 MutationObserver 监听
+    const alignAll = () => {
         createFloatingButton(() => togglePanel());
         createNativeExtensionDrawer((show) => togglePanel(show), () => renderPanelContent());
         registerExtensionsMenuEntry((show) => togglePanel(show));
-    }, 500);
-    setTimeout(() => {
-        createFloatingButton(() => togglePanel());
-        createNativeExtensionDrawer((show) => togglePanel(show), () => renderPanelContent());
-        registerExtensionsMenuEntry((show) => togglePanel(show));
-    }, 2000);
+    };
+
+    setTimeout(alignAll, 300);
+    setTimeout(alignAll, 1000);
+    setTimeout(alignAll, 3000);
+
+    if (typeof MutationObserver !== 'undefined' && typeof document !== 'undefined' && document.body) {
+        let alignCount = 0;
+        const observer = new MutationObserver(() => {
+            const hasBubble = !!document.getElementById('pm-floating-bubble');
+            const hasDrawer = !!document.getElementById('pm-native-container');
+            const hasMenu = !!document.getElementById('pm-menu-entry');
+            if (!hasBubble || !hasDrawer || !hasMenu) {
+                alignAll();
+                alignCount++;
+                if (alignCount > 25) {
+                    observer.disconnect();
+                }
+            }
+        });
+        observer.observe(document.body, { childList: true, subtree: true });
+        setTimeout(() => observer.disconnect(), 15000);
+    }
 
     onStateChange(() => {
         renderPanelContent();

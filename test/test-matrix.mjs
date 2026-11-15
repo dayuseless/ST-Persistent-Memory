@@ -7463,6 +7463,127 @@ Intermediate analysis details...
         }
     });
 
+    // ─────────────────────────────────────────────────────────────
+    // T125: 屏幕快捷悬浮球双端零瞬态闪烁、样式内联防御、脏坐标自愈与重置契约测试
+    // ─────────────────────────────────────────────────────────────
+    test('T125: 悬浮球双端零延迟防御 (零 top-left 瞬态闪烁、脏坐标自愈纠偏、双端响应式保底重置)', () => {
+        const origDoc = global.document;
+        const origWin = global.window;
+        let createdElement = null;
+
+        const createMockDOMElement = (id = '') => {
+            const styles = {};
+            const el = {
+                id,
+                className: '',
+                title: '',
+                innerHTML: '',
+                offsetWidth: 46,
+                offsetHeight: 46,
+                style: {
+                    setProperty: (k, v) => { styles[k] = String(v); },
+                    getPropertyValue: (k) => styles[k] || '',
+                    get position() { return styles['position'] || ''; },
+                    set position(v) { styles['position'] = v; },
+                    get zIndex() { return styles['z-index'] || ''; },
+                    set zIndex(v) { styles['z-index'] = v; },
+                    get background() { return styles['background'] || ''; },
+                    set background(v) { styles['background'] = v; },
+                    get color() { return styles['color'] || ''; },
+                    set color(v) { styles['color'] = v; },
+                    get border() { return styles['border'] || ''; },
+                    set border(v) { styles['border'] = v; },
+                    get left() { return styles['left'] || ''; },
+                    set left(v) { styles['left'] = v; },
+                    get top() { return styles['top'] || ''; },
+                    set top(v) { styles['top'] = v; },
+                    get right() { return styles['right'] || ''; },
+                    set right(v) { styles['right'] = v; },
+                    get bottom() { return styles['bottom'] || ''; },
+                    set bottom(v) { styles['bottom'] = v; },
+                    get display() { return styles['display'] || ''; },
+                    set display(v) { styles['display'] = v; }
+                },
+                classList: {
+                    add: () => {},
+                    remove: () => {},
+                    contains: () => false
+                },
+                addEventListener: () => {},
+                removeEventListener: () => {},
+                getBoundingClientRect: () => ({ left: 200, top: 300, width: 46, height: 46 })
+            };
+            return el;
+        };
+
+        const mockBody = {
+            contains: (node) => node === createdElement,
+            appendChild: (node) => { createdElement = node; return node; }
+        };
+
+        try {
+            global.window = Object.assign({}, origWin, {
+                innerWidth: 1920,
+                innerHeight: 1080,
+                addEventListener: () => {},
+                removeEventListener: () => {}
+            });
+
+            global.document = {
+                body: mockBody,
+                getElementById: (id) => (createdElement && createdElement.id === id ? createdElement : null),
+                createElement: (tag) => {
+                    const el = createMockDOMElement();
+                    return el;
+                }
+            };
+
+            // 1. 验证 PC 大屏端初次挂载（无任何缓存时）的内联样式完整性与右下定位
+            mockLocalStorage['pm_bubble_pos'] = null;
+            bubbleCreateFloatingButton();
+            assert.ok(createdElement, '悬浮球必须成功加入 DOM');
+            assert.strictEqual(createdElement.style.position, 'fixed', '内联样式必须包含 fixed 定位');
+            assert.strictEqual(createdElement.style.zIndex, '2147483647', '内联层级必须置顶');
+            assert.strictEqual(createdElement.style.background, '#ffffff', '内联背景必须为白色');
+            assert.strictEqual(createdElement.style.color, '#2563eb', '内联图标颜色必须为系统蓝');
+            assert.ok(createdElement.style.border.includes('#2563eb'), '内联边框必须清晰醒目');
+            assert.strictEqual(createdElement.style.left, 'auto', '默认 left 必须为 auto，绝不可为 0 或空');
+            assert.strictEqual(createdElement.style.top, 'auto', '默认 top 必须为 auto，绝不可为 0 或空');
+            assert.strictEqual(createdElement.style.right, '20px', '桌面端默认靠右 20px');
+            assert.strictEqual(createdElement.style.bottom, '85px', '桌面端默认靠底 85px');
+
+            // 2. 验证脏坐标自愈 (旧版本误记录落在左上角死区 x<=25 && y<=60 时，自动丢弃并重置回底右)
+            createdElement = null;
+            mockLocalStorage['pm_bubble_pos'] = JSON.stringify({ x: 5, y: 10 });
+            bubbleCreateFloatingButton();
+            assert.strictEqual(createdElement.style.left, 'auto', '检测到左上角死区脏数据时，left 必须被强制修复回 auto');
+            assert.strictEqual(createdElement.style.top, 'auto', '检测到左上角死区脏数据时，top 必须被强制修复回 auto');
+            assert.strictEqual(createdElement.style.right, '20px', '脏坐标自愈后必须恢复桌面底右安全坐标');
+            assert.strictEqual(createdElement.style.bottom, '85px');
+
+            // 3. 验证合法自定义拖拽坐标能正常恢复
+            createdElement = null;
+            mockLocalStorage['pm_bubble_pos'] = JSON.stringify({ x: 450, y: 350 });
+            bubbleCreateFloatingButton();
+            assert.strictEqual(createdElement.style.left, '450px', '合法坐标正常还原');
+            assert.strictEqual(createdElement.style.top, '350px');
+            assert.strictEqual(createdElement.style.right, 'auto');
+            assert.strictEqual(createdElement.style.bottom, 'auto');
+
+            // 4. 验证移动端重置与安全坐标切换 (window.innerWidth <= 768)
+            global.window.innerWidth = 390;
+            global.window.innerHeight = 844;
+            bubbleResetBubblePosition();
+            assert.strictEqual(createdElement.style.right, '16px', '手机端重置后必须靠右 16px');
+            assert.strictEqual(createdElement.style.bottom, '120px', '手机端重置后必须靠底 120px，完全避开手机输入法与底栏');
+            assert.strictEqual(mockLocalStorage['pm_bubble_pos'], undefined, '重置后必须清除桌面坐标缓存');
+            assert.strictEqual(mockLocalStorage['pm_bubble_pos_mobile'], undefined, '重置后必须清除手机坐标缓存');
+        } finally {
+            global.document = origDoc;
+            global.window = origWin;
+        }
+    });
+
     console.log(`\n======================================================`);
     console.log(`  测试结果: 共 ${passed + failed} 项 | \x1b[32m${passed} 通过\x1b[0m | \x1b[31m${failed} 失败\x1b[0m`);
     console.log(`======================================================\n`);

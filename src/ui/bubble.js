@@ -28,6 +28,7 @@ export function createFloatingButton(onToggle) {
         return;
     }
 
+    const isMobileDevice = typeof window !== 'undefined' && window.innerWidth <= 768;
     btn = document.createElement('div');
     btn.id = 'pm-floating-bubble';
     btn.className = 'pm-floating-bubble';
@@ -37,12 +38,12 @@ export function createFloatingButton(onToggle) {
     // 核心内联高可用防御样式：确保无论外部 CSS 载入延迟或样式冲突，悬浮球在双端均清晰可见且层级最高
     btn.style.position = 'fixed';
     btn.style.zIndex = '2147483647';
-    btn.style.width = '46px';
-    btn.style.height = '46px';
+    btn.style.width = isMobileDevice ? '48px' : '46px';
+    btn.style.height = isMobileDevice ? '48px' : '46px';
     btn.style.borderRadius = '50%';
     btn.style.alignItems = 'center';
     btn.style.justifyContent = 'center';
-    btn.style.fontSize = '20px';
+    btn.style.fontSize = isMobileDevice ? '20px' : '19px';
     btn.style.cursor = 'pointer';
     btn.style.userSelect = 'none';
     btn.style.webkitUserSelect = 'none';
@@ -51,6 +52,16 @@ export function createFloatingButton(onToggle) {
     btn.style.pointerEvents = 'auto';
     btn.style.visibility = 'visible';
     btn.style.opacity = '1';
+    btn.style.background = '#ffffff';
+    btn.style.color = '#2563eb';
+    btn.style.border = '2px solid #2563eb';
+    btn.style.boxShadow = '0 4px 16px rgba(0, 0, 0, 0.22), 0 1px 3px rgba(0, 0, 0, 0.12)';
+
+    // 关键定位：从创建第 0 毫秒起即赋予明确的底右安全坐标，绝不依赖外部 CSS 下载完成，绝不出现在 (0, 0) 左上角！
+    btn.style.setProperty('left', 'auto', 'important');
+    btn.style.setProperty('top', 'auto', 'important');
+    btn.style.setProperty('right', isMobileDevice ? '16px' : '20px', 'important');
+    btn.style.setProperty('bottom', isMobileDevice ? '120px' : '85px', 'important');
 
     const shouldShow = getSettings().showFloatingBubble !== false;
     btn.style.setProperty('display', shouldShow ? 'flex' : 'none', 'important');
@@ -81,11 +92,11 @@ export function resetBubblePosition() {
     if (typeof document !== 'undefined') {
         const bubble = document.getElementById('pm-floating-bubble');
         if (bubble) {
-            const isMobile = window.innerWidth <= 768;
-            bubble.style.left = 'auto';
-            bubble.style.top = 'auto';
-            bubble.style.setProperty('right', isMobile() ? '16px' : '20px', 'important');
-            bubble.style.setProperty('bottom', isMobile() ? '120px' : '85px', 'important');
+            const isMobileDevice = typeof window !== 'undefined' && window.innerWidth <= 768;
+            bubble.style.setProperty('left', 'auto', 'important');
+            bubble.style.setProperty('top', 'auto', 'important');
+            bubble.style.setProperty('right', isMobileDevice ? '16px' : '20px', 'important');
+            bubble.style.setProperty('bottom', isMobileDevice ? '120px' : '85px', 'important');
             bubble.style.setProperty('display', 'flex', 'important');
         }
     }
@@ -181,23 +192,26 @@ export function makeDraggable(el, onClickCallback) {
             if (saved) {
                 const { x, y } = JSON.parse(saved);
                 if (typeof x === 'number' && typeof y === 'number' && Number.isFinite(x) && Number.isFinite(y)) {
-                    const maxX = Math.max(10, window.innerWidth - (el.offsetWidth || 48) - 10);
-                    const maxY = Math.max(10, window.innerHeight - (el.offsetHeight || 48) - 10);
-                    const clampedX = Math.min(Math.max(10, x), maxX);
-                    const clampedY = Math.min(Math.max(10, y), maxY);
-                    el.style.left = `${clampedX}px`;
-                    el.style.top = `${clampedY}px`;
-                    el.style.setProperty('right', 'auto', 'important');
-                    el.style.setProperty('bottom', 'auto', 'important');
-                    restored = true;
+                    // 防御修复：过滤旧版本因无样式瞬态落入左上角死区 (x<=25 && y<=60) 的脏坐标，直接废弃并自愈回到底右安全位
+                    if (x > 25 || y > 60) {
+                        const maxX = Math.max(10, window.innerWidth - (el.offsetWidth || 48) - 10);
+                        const maxY = Math.max(10, window.innerHeight - (el.offsetHeight || 48) - 10);
+                        const clampedX = Math.min(Math.max(10, x), maxX);
+                        const clampedY = Math.min(Math.max(10, y), maxY);
+                        el.style.left = `${clampedX}px`;
+                        el.style.top = `${clampedY}px`;
+                        el.style.setProperty('right', 'auto', 'important');
+                        el.style.setProperty('bottom', 'auto', 'important');
+                        restored = true;
+                    }
                 }
             }
         } catch {}
 
         if (!restored) {
-            // 未保存自定义位置时，赋予安全保底坐标 (手机端避开右下输入框与发送按钮)
-            el.style.left = 'auto';
-            el.style.top = 'auto';
+            // 未保存自定义位置或历史坐标异常时，赋予安全保底坐标 (手机端避开右下输入框与发送按钮)
+            el.style.setProperty('left', 'auto', 'important');
+            el.style.setProperty('top', 'auto', 'important');
             el.style.setProperty('right', isMobile() ? '16px' : '20px', 'important');
             el.style.setProperty('bottom', isMobile() ? '120px' : '85px', 'important');
         }
