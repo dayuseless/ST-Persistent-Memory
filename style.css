@@ -11,19 +11,19 @@
     position: fixed;
     bottom: 85px;
     right: 20px;
-    width: 42px;
-    height: 42px;
+    width: 44px;
+    height: 44px;
     background: #ffffff !important;
-    color: #0f172a !important;
+    color: #2563eb !important;
     border-radius: 50%;
     display: flex;
     align-items: center;
     justify-content: center;
-    font-size: 18px;
-    box-shadow: 0 4px 16px rgba(0, 0, 0, 0.18), 0 1px 3px rgba(0, 0, 0, 0.1);
-    border: 1.5px solid #cbd5e1 !important;
+    font-size: 19px;
+    box-shadow: 0 4px 16px rgba(0, 0, 0, 0.22), 0 1px 3px rgba(0, 0, 0, 0.12) !important;
+    border: 2px solid #2563eb !important;
     cursor: pointer !important;
-    z-index: 999999 !important;
+    z-index: 2147483647 !important;
     user-select: none;
     touch-action: none;
     -webkit-tap-highlight-color: transparent;
@@ -1059,12 +1059,12 @@
  * ───────────────────────────────────────────────────────────────────────────── */
 @media screen and (max-width: 768px) {
     .pm-floating-bubble {
-        bottom: 140px !important; /* 避开手机端底栏与输入法 */
-        right: 14px !important;
-        width: 44px !important;
-        height: 44px !important;
-        font-size: 19px !important;
-        z-index: 999999 !important;
+        bottom: 120px; /* 避开手机端底栏与输入法，去除 !important 保证 JS 拖拽与重置自由覆盖 */
+        right: 16px;
+        width: 46px !important;
+        height: 46px !important;
+        font-size: 20px !important;
+        z-index: 2147483647 !important;
     }
 
     .pm-panel-container {

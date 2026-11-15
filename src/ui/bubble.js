@@ -16,19 +16,49 @@ import { getSettings } from '../state.js';
  */
 export function createFloatingButton(onToggle) {
     if (typeof document === 'undefined') return;
-    if (document.getElementById('pm-floating-bubble')) return;
 
-    const btn = document.createElement('div');
+    let btn = document.getElementById('pm-floating-bubble');
+    if (btn) {
+        // 保证悬浮球在宿主 DOM 异步重建后始终处于 document.body 内
+        if (!document.body.contains(btn)) {
+            document.body.appendChild(btn);
+        }
+        const shouldShow = getSettings().showFloatingBubble !== false;
+        btn.style.setProperty('display', shouldShow ? 'flex' : 'none', 'important');
+        return;
+    }
+
+    btn = document.createElement('div');
     btn.id = 'pm-floating-bubble';
     btn.className = 'pm-floating-bubble';
     btn.title = '持续记忆系统 (可拖拽，点击打开 HUD 面板)';
     btn.innerHTML = '<i class="fa-solid fa-brain"></i>';
 
-    if (getSettings().showFloatingBubble === false) {
-        btn.style.display = 'none';
+    // 核心内联高可用防御样式：确保无论外部 CSS 载入延迟或样式冲突，悬浮球在双端均清晰可见且层级最高
+    btn.style.position = 'fixed';
+    btn.style.zIndex = '2147483647';
+    btn.style.width = '46px';
+    btn.style.height = '46px';
+    btn.style.borderRadius = '50%';
+    btn.style.alignItems = 'center';
+    btn.style.justifyContent = 'center';
+    btn.style.fontSize = '20px';
+    btn.style.cursor = 'pointer';
+    btn.style.userSelect = 'none';
+    btn.style.webkitUserSelect = 'none';
+    btn.style.touchAction = 'none';
+    btn.style.boxSizing = 'border-box';
+    btn.style.pointerEvents = 'auto';
+    btn.style.visibility = 'visible';
+    btn.style.opacity = '1';
+
+    const shouldShow = getSettings().showFloatingBubble !== false;
+    btn.style.setProperty('display', shouldShow ? 'flex' : 'none', 'important');
+    if (!shouldShow) {
+        console.log('[st_persistent_memory] 悬浮球配置为隐藏状态 (showFloatingBubble: false，可在顶部扩展菜单打开面板重新开启)');
     }
 
-    // 绑定拖拽逻辑
+    // 绑定拖拽与响应式坐标记忆逻辑
     makeDraggable(btn, () => {
         if (typeof onToggle === 'function') {
             onToggle();
@@ -51,10 +81,12 @@ export function resetBubblePosition() {
     if (typeof document !== 'undefined') {
         const bubble = document.getElementById('pm-floating-bubble');
         if (bubble) {
-            bubble.style.left = '';
-            bubble.style.top = '';
-            bubble.style.right = '';
-            bubble.style.bottom = '';
+            const isMobile = window.innerWidth <= 768;
+            bubble.style.left = 'auto';
+            bubble.style.top = 'auto';
+            bubble.style.setProperty('right', isMobile() ? '16px' : '20px', 'important');
+            bubble.style.setProperty('bottom', isMobile() ? '120px' : '85px', 'important');
+            bubble.style.setProperty('display', 'flex', 'important');
         }
     }
 }
@@ -134,36 +166,65 @@ export function makeDraggable(el, onClickCallback) {
     let hasMoved = false;
     let startX = 0, startY = 0;
     let initialX = 0, initialY = 0;
+    let touchStartTime = 0;
+    let lastTriggerTime = 0;
 
     const isMobile = () => window.innerWidth <= 768;
     const getStorageKey = () => isMobile() ? 'pm_bubble_pos_mobile' : 'pm_bubble_pos';
 
     // 恢复历史记忆位置 (手机端与桌面端分别记忆，避免桌面大屏坐标导致手机端飞出屏幕)
-    try {
-        const key = getStorageKey();
-        const saved = localStorage.getItem(key);
-        if (saved) {
-            const { x, y } = JSON.parse(saved);
-            const maxX = Math.max(10, window.innerWidth - 50);
-            const maxY = Math.max(10, window.innerHeight - 50);
-            const clampedX = Math.min(Math.max(10, x), maxX);
-            const clampedY = Math.min(Math.max(10, y), maxY);
-            el.style.left = `${clampedX}px`;
-            el.style.top = `${clampedY}px`;
-            el.style.right = 'auto';
-            el.style.bottom = 'auto';
-        } else {
-            // 未保存过自定义位置时，清空 inline 样式，严格使用 CSS 优雅响应式默认定位
-            el.style.left = '';
-            el.style.top = '';
-            el.style.right = '';
-            el.style.bottom = '';
+    const applyPosition = () => {
+        let restored = false;
+        try {
+            const key = getStorageKey();
+            const saved = localStorage.getItem(key);
+            if (saved) {
+                const { x, y } = JSON.parse(saved);
+                if (typeof x === 'number' && typeof y === 'number' && Number.isFinite(x) && Number.isFinite(y)) {
+                    const maxX = Math.max(10, window.innerWidth - (el.offsetWidth || 48) - 10);
+                    const maxY = Math.max(10, window.innerHeight - (el.offsetHeight || 48) - 10);
+                    const clampedX = Math.min(Math.max(10, x), maxX);
+                    const clampedY = Math.min(Math.max(10, y), maxY);
+                    el.style.left = `${clampedX}px`;
+                    el.style.top = `${clampedY}px`;
+                    el.style.setProperty('right', 'auto', 'important');
+                    el.style.setProperty('bottom', 'auto', 'important');
+                    restored = true;
+                }
+            }
+        } catch {}
+
+        if (!restored) {
+            // 未保存自定义位置时，赋予安全保底坐标 (手机端避开右下输入框与发送按钮)
+            el.style.left = 'auto';
+            el.style.top = 'auto';
+            el.style.setProperty('right', isMobile() ? '16px' : '20px', 'important');
+            el.style.setProperty('bottom', isMobile() ? '120px' : '85px', 'important');
         }
-    } catch {}
+    };
+
+    applyPosition();
+
+    // 屏幕尺寸或横竖屏改变时，自动重新校准边缘安全范围
+    const handleResize = () => {
+        if (el.style.left && el.style.left !== 'auto') {
+            const currentX = parseFloat(el.style.left);
+            const currentY = parseFloat(el.style.top);
+            if (Number.isFinite(currentX) && Number.isFinite(currentY)) {
+                const maxX = Math.max(10, window.innerWidth - (el.offsetWidth || 48) - 10);
+                const maxY = Math.max(10, window.innerHeight - (el.offsetHeight || 48) - 10);
+                el.style.left = `${Math.min(Math.max(10, currentX), maxX)}px`;
+                el.style.top = `${Math.min(Math.max(10, currentY), maxY)}px`;
+            }
+        }
+    };
+    window.addEventListener('resize', handleResize);
+    window.addEventListener('orientationchange', handleResize);
 
     const onStart = (e) => {
         isDragging = true;
         hasMoved = false;
+        touchStartTime = Date.now();
         const clientX = e.touches ? e.touches[0].clientX : e.clientX;
         const clientY = e.touches ? e.touches[0].clientY : e.clientY;
         startX = clientX;
@@ -180,6 +241,7 @@ export function makeDraggable(el, onClickCallback) {
         window.addEventListener('mouseup', onEnd);
         window.addEventListener('touchmove', onMove, { passive: false });
         window.addEventListener('touchend', onEnd);
+        window.addEventListener('touchcancel', onEnd);
     };
 
     const onMove = (e) => {
@@ -189,7 +251,8 @@ export function makeDraggable(el, onClickCallback) {
         const dx = clientX - startX;
         const dy = clientY - startY;
 
-        if (Math.hypot(dx, dy) > 5) {
+        // 触控防抖门限提升至 10px，避免高精度移动端触屏微小抖动误触发拖拽判定
+        if (Math.hypot(dx, dy) > 10) {
             hasMoved = true;
             if (e.cancelable) e.preventDefault();
         }
@@ -199,15 +262,15 @@ export function makeDraggable(el, onClickCallback) {
         let newX = initialX + dx;
         let newY = initialY + dy;
 
-        const maxX = window.innerWidth - el.offsetWidth;
-        const maxY = window.innerHeight - el.offsetHeight;
+        const maxX = Math.max(0, window.innerWidth - (el.offsetWidth || 48));
+        const maxY = Math.max(0, window.innerHeight - (el.offsetHeight || 48));
         newX = Math.min(Math.max(0, newX), maxX);
         newY = Math.min(Math.max(0, newY), maxY);
 
         el.style.left = `${newX}px`;
         el.style.top = `${newY}px`;
-        el.style.right = 'auto';
-        el.style.bottom = 'auto';
+        el.style.setProperty('right', 'auto', 'important');
+        el.style.setProperty('bottom', 'auto', 'important');
     };
 
     const onEnd = () => {
@@ -220,12 +283,23 @@ export function makeDraggable(el, onClickCallback) {
         window.removeEventListener('mouseup', onEnd);
         window.removeEventListener('touchmove', onMove);
         window.removeEventListener('touchend', onEnd);
+        window.removeEventListener('touchcancel', onEnd);
 
         if (hasMoved) {
             const rect = el.getBoundingClientRect();
             try {
                 localStorage.setItem(getStorageKey(), JSON.stringify({ x: rect.left, y: rect.top }));
             } catch {}
+        } else {
+            // 触屏轻触 Tap 兜底：快速点击直接响应
+            const duration = Date.now() - touchStartTime;
+            if (duration < 450) {
+                const now = Date.now();
+                if (now - lastTriggerTime > 300) {
+                    lastTriggerTime = now;
+                    onClickCallback?.();
+                }
+            }
         }
     };
 
@@ -239,6 +313,10 @@ export function makeDraggable(el, onClickCallback) {
             hasMoved = false;
             return;
         }
-        onClickCallback?.();
+        const now = Date.now();
+        if (now - lastTriggerTime > 300) {
+            lastTriggerTime = now;
+            onClickCallback?.();
+        }
     });
 }

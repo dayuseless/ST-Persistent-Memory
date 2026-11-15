@@ -44,12 +44,14 @@ function initUI() {
     createNativeExtensionDrawer((show) => togglePanel(show), () => renderPanelContent());
     registerExtensionsMenuEntry((show) => togglePanel(show));
 
-    // 针对酒馆模板异步延迟生成，进行多轮对齐挂载
+    // 针对酒馆模板异步延迟生成与 DOM 动态挂载，进行多轮对齐补全
     setTimeout(() => {
+        createFloatingButton(() => togglePanel());
         createNativeExtensionDrawer((show) => togglePanel(show), () => renderPanelContent());
         registerExtensionsMenuEntry((show) => togglePanel(show));
     }, 500);
     setTimeout(() => {
+        createFloatingButton(() => togglePanel());
         createNativeExtensionDrawer((show) => togglePanel(show), () => renderPanelContent());
         registerExtensionsMenuEntry((show) => togglePanel(show));
     }, 2000);
@@ -57,6 +59,10 @@ function initUI() {
     onStateChange(() => {
         renderPanelContent();
         renderNativeDrawerContent((show) => togglePanel(show), () => renderPanelContent());
+        const bubble = document.getElementById('pm-floating-bubble');
+        if (bubble) {
+            bubble.style.setProperty('display', (getSettings().showFloatingBubble !== false) ? 'flex' : 'none', 'important');
+        }
     });
 }
 
