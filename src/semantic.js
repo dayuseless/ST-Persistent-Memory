@@ -1,5 +1,5 @@
 /**
- * 语义检索与向量基建核心模块 (v0.1.43)
+ * 语义检索与向量基建核心模块 (v0.1.44)
  * 
  * 核心能力：
  * 1. 向量数学运算：高精度余弦相似度计算与 L2 归一化，具备零模长、维度不符与异常数据防御。
@@ -48,16 +48,20 @@ export function hashString(str) {
  */
 export function cosineSimilarity(vecA, vecB) {
     if (!Array.isArray(vecA) || !Array.isArray(vecB)) return 0;
-    const len = Math.min(vecA.length, vecB.length);
-    if (len === 0) return 0;
+    // 严格维度校验：严禁异构维度对比 (防止截断导致不同模型向量被错误比较)
+    if (vecA.length !== vecB.length || vecA.length === 0) return 0;
 
+    const len = vecA.length;
     let dot = 0;
     let normA = 0;
     let normB = 0;
 
     for (let i = 0; i < len; i++) {
-        const a = Number(vecA[i]) || 0;
-        const b = Number(vecB[i]) || 0;
+        const a = Number(vecA[i]);
+        const b = Number(vecB[i]);
+        // 有限数值守门：拦截 NaN 与 Infinity
+        if (!Number.isFinite(a) || !Number.isFinite(b)) return 0;
+
         dot += a * b;
         normA += a * a;
         normB += b * b;
@@ -66,7 +70,7 @@ export function cosineSimilarity(vecA, vecB) {
     if (normA <= 0 || normB <= 0) return 0;
 
     const denominator = Math.sqrt(normA) * Math.sqrt(normB);
-    if (denominator <= 0) return 0;
+    if (denominator <= 0 || !Number.isFinite(denominator)) return 0;
 
     const sim = dot / denominator;
     // 浮点数误差与非负截断保护
@@ -746,9 +750,15 @@ export function reciprocalRankFusion(rankedLists, k = 60) {
             const entry = list[rank];
             if (!entry) continue;
 
-            const id = typeof entry === 'string'
+            // 严格实体身份校验：严禁使用榜单位置 String(rank) 充当实体 ID 兜底以防身份碰撞
+            const rawId = typeof entry === 'string'
                 ? entry
-                : (entry.id || entry.mem?.id || String(rank));
+                : (entry.id || entry.mem?.id || null);
+            const id = (typeof rawId === 'string' && rawId.trim()) ? rawId.trim() : null;
+
+            if (!id) {
+                continue; // 拒绝无 ID、空 ID 或纯空白字符 ID 实体
+            }
             const item = typeof entry === 'object' ? entry : { id };
 
             const rank1Based = rank + 1; // 1-indexed rank
@@ -792,43 +802,80 @@ export function reciprocalRankFusion(rankedLists, k = 60) {
  * @param {number} [k=60] RRF 阻尼常数
  * @returns {Array<object>} 经 RRF 融合重排序的候选条目列表 (带详细排名归因)
  */
-export function rankCandidatesWithRRF(candidates, queryContext, settings = {}, k = 60) {
+export function rankCandidatesWithRRF(candidates, queryContext, settings = {}, k = 60, options = {}) {
     if (!Array.isArray(candidates) || candidates.length === 0) {
         return [];
     }
 
-    const items = candidates.map(c => {
+    // 规范化候选对象统一封装并确保具备有效 ID (严厉拒绝无 ID 实体)
+    const validItems = [];
+    for (const c of candidates) {
         const mem = (c && c.mem) ? c.mem : c;
-        return {
-            id: mem.id || `mem-${Math.random().toString(36).slice(2, 8)}`,
+        if (!mem) continue;
+        const id = (typeof mem.id === 'string' && mem.id.trim()) 
+            ? mem.id.trim() 
+            : (typeof c.id === 'string' && c.id.trim() ? c.id.trim() : null);
+        if (!id) continue; // 坚决丢弃无合法 ID 实体，杜绝身份碰撞
+        validItems.push({
+            id,
             mem,
             rawItem: c
-        };
-    });
+        });
+    }
+
+    if (validItems.length === 0) return [];
+
+    const semanticThreshold = typeof settings.semanticThreshold === 'number'
+        ? settings.semanticThreshold
+        : 0.20;
+
+    const filterZeroScores = (options && typeof options.filterZeroScores === 'boolean')
+        ? options.filterZeroScores
+        : (settings.filterZeroScores !== false && settings.includeZeroScores !== true);
 
     // 1. 稠密语义通道打分与排序
-    const semanticScored = items.map(item => ({
+    const semanticScored = validItems.map(item => ({
         ...item,
         score: calculateRawSemanticScore(item.mem, queryContext)
     }));
-    semanticScored.sort((a, b) => b.score - a.score);
 
     // 2. 离散词法通道打分与排序
-    const lexicalScored = items.map(item => ({
+    const lexicalScored = validItems.map(item => ({
         ...item,
         score: calculateRawLexicalScore(item.mem, queryContext, settings)
     }));
-    lexicalScored.sort((a, b) => b.score - a.score);
 
-    // 3. RRF 双路榜单融合
-    const fused = reciprocalRankFusion([semanticScored, lexicalScored], k);
+    let rankedSemanticList;
+    let rankedLexicalList;
 
-    // 4. 组装归因输出
+    if (filterZeroScores) {
+        // 3. 双通道零分杂音候选过滤：若记忆词法完全无命中且语义相似度低于噪音门槛，严禁进入排名榜单
+        rankedSemanticList = semanticScored
+            .filter(item => item.score >= semanticThreshold)
+            .sort((a, b) => b.score - a.score);
+
+        rankedLexicalList = lexicalScored
+            .filter(item => item.score > 0)
+            .sort((a, b) => b.score - a.score);
+
+        // 若双通道均无任何条目达标，返回空
+        if (rankedSemanticList.length === 0 && rankedLexicalList.length === 0) {
+            return [];
+        }
+    } else {
+        rankedSemanticList = [...semanticScored].sort((a, b) => b.score - a.score);
+        rankedLexicalList = [...lexicalScored].sort((a, b) => b.score - a.score);
+    }
+
+    // 4. RRF 双路榜单融合
+    const fused = reciprocalRankFusion([rankedSemanticList, rankedLexicalList], k);
+
+    // 5. 组装归因输出
     const semanticScoreMap = new Map(semanticScored.map(s => [s.id, s.score]));
     const lexicalScoreMap = new Map(lexicalScored.map(s => [s.id, s.score]));
 
     return fused.map(f => {
-        const original = items.find(it => it.id === f.id);
+        const original = validItems.find(it => it.id === f.id);
         const mem = original ? original.mem : (f.item.mem || f.item);
         return {
             id: f.id,

@@ -1,5 +1,5 @@
 /**
- * 注入引擎 (v0.1.43)
+ * 注入引擎 (v0.1.44)
  * 严格落实：
  * 1. P0 统一 ACL 准出端 (Egress) 访问控制与 POV 知情范围路由
  * 2. P1-01 角色级知情范围严格路由 (生成主体 POV 与现场角色集合严格解耦)
@@ -10,7 +10,7 @@
 
 import { MODULE_NAME, INJECT_KEY, MEMORY_STATUS, MEMORY_LIFECYCLE, MEMORY_SCOPE, MEMORY_TYPES, INJECTION_TEMPLATES } from './config.js';
 import { getState, getSettings, saveCurrentState } from './state.js';
-import { buildQueryContext, calculateHybridMemoryScore } from './semantic.js';
+import { buildQueryContext, calculateHybridMemoryScore, rankCandidatesWithRRF } from './semantic.js';
 import { canRecipientAccessMemory } from './acl.js';
 
 function getContext() {
@@ -392,6 +392,7 @@ export function buildAndInjectMemoryPrompt(options = {}) {
     const generatingEntity = getGeneratingEntity(c);
 
     const pinnedCandidates = [];
+    const eligibleTriggeredPool = [];
     const triggeredCandidates = [];
     const suppressedCandidates = [];
     const VALID_SCOPES = new Set(Object.values(MEMORY_SCOPE));
@@ -400,6 +401,12 @@ export function buildAndInjectMemoryPrompt(options = {}) {
         : (Array.isArray(c?.chat) ? (c.chat.filter(m => !m.is_user).length || c.chat.length) : 0);
 
     for (const mem of memories) {
+        // 规则 0：血缘墓碑条目仅用于维系演化拓扑图谱，严禁参与任何阶段检索与提示词装载
+        if (mem.is_tombstone) {
+            suppressedCandidates.push({ mem, reason: '结项墓碑条目 (仅维系血缘拓扑)', score: 0 });
+            continue;
+        }
+
         // 规则 A：生命周期过滤——已完成、已被取代、已被证伪的条目绝不主动注入
         if (mem.lifecycle && mem.lifecycle !== MEMORY_LIFECYCLE.ACTIVE) {
             const lcLabel = mem.lifecycle === 'completed' ? '已办结' : (mem.lifecycle === 'superseded' ? '已迭代' : (mem.lifecycle === 'refuted' ? '已证伪' : mem.lifecycle));
@@ -443,30 +450,85 @@ export function buildAndInjectMemoryPrompt(options = {}) {
 
         // 条件激活项 (Triggered) 与 沉睡记忆联想唤醒 (Dormant Recall)
         if (mem.status === MEMORY_STATUS.TRIGGERED || allowDormantRecall) {
-            const score = calculateHybridMemoryScore(mem, queryContext, settings);
-            // 沉睡记忆需要更高的相关性门槛才被联想唤醒 (防止被低分杂音惊醒，支持自定义微调)
-            const configuredWakeThreshold = Number(settings.autoSleepWakeThreshold);
-            const wakeThreshold = (!isNaN(configuredWakeThreshold) && configuredWakeThreshold > 0)
-                ? configuredWakeThreshold
-                : 0.60;
-            const minScore = isArchived ? wakeThreshold : 0;
-            if (score > minScore) {
-                triggeredCandidates.push({ mem, score, line: formattedLine, tokens: itemTokens, wasArchived: isArchived, extraWarning });
-            } else {
-                suppressedCandidates.push({
-                    mem,
-                    reason: isArchived
-                        ? `沉睡记忆得分 (${score.toFixed(2)}) 未达唤醒门槛 (${wakeThreshold.toFixed(2)})`
-                        : `相关度得分 (${score.toFixed(2)}) 低于激活门槛`,
-                    score
-                });
-            }
+            eligibleTriggeredPool.push({ mem, line: formattedLine, tokens: itemTokens, wasArchived: isArchived, extraWarning });
         } else {
             suppressedCandidates.push({
                 mem,
                 reason: `非检索状态 (${mem.status || '未设定'})`,
                 score: 0
             });
+        }
+    }
+
+    // 4.1 候选融合排序与激活门槛裁决 (双算法支持：RRF 倒数排名融合 vs Linear 经典加权)
+    const isRrfMode = settings.retrievalFusionMethod === 'rrf';
+    const configuredWakeThreshold = Number(settings.autoSleepWakeThreshold);
+    const wakeThreshold = (!isNaN(configuredWakeThreshold) && configuredWakeThreshold > 0)
+        ? configuredWakeThreshold
+        : 0.60;
+
+    if (isRrfMode && eligibleTriggeredPool.length > 0) {
+        const rrfK = Number(settings.rrfK) || 60;
+        const rankedRrf = rankCandidatesWithRRF(eligibleTriggeredPool, queryContext, settings, rrfK);
+        const rrfMap = new Map(rankedRrf.map(r => [r.id, r]));
+
+        for (const item of eligibleTriggeredPool) {
+            const rrfInfo = rrfMap.get(item.mem.id);
+            if (!rrfInfo) {
+                suppressedCandidates.push({
+                    mem: item.mem,
+                    reason: item.wasArchived ? '沉睡记忆未达有效召回条件' : '双通道无命中，相关度未达激活门槛',
+                    score: 0,
+                    fusionMethod: 'rrf'
+                });
+                continue;
+            }
+
+            // 沉睡记忆唤醒门槛过滤
+            if (item.wasArchived) {
+                const passesWake = rrfInfo.semanticScore >= wakeThreshold || rrfInfo.lexicalScore >= 2.0;
+                if (!passesWake) {
+                    suppressedCandidates.push({
+                        mem: item.mem,
+                        reason: `沉睡记忆得分 (语义:${rrfInfo.semanticScore.toFixed(2)}, 词法:${rrfInfo.lexicalScore.toFixed(2)}) 未达唤醒门槛 (${wakeThreshold.toFixed(2)})`,
+                        score: rrfInfo.rrfScore,
+                        rrfScore: rrfInfo.rrfScore,
+                        semanticRank: rrfInfo.semanticRank,
+                        lexicalRank: rrfInfo.lexicalRank,
+                        fusionMethod: 'rrf'
+                    });
+                    continue;
+                }
+            }
+
+            triggeredCandidates.push({
+                ...item,
+                score: rrfInfo.rrfScore,
+                rrfScore: rrfInfo.rrfScore,
+                semanticRank: rrfInfo.semanticRank,
+                lexicalRank: rrfInfo.lexicalRank,
+                semanticScore: rrfInfo.semanticScore,
+                lexicalScore: rrfInfo.lexicalScore,
+                fusionMethod: 'rrf'
+            });
+        }
+    } else {
+        // 兼容回退模式：经典加权打分 (Linear)
+        for (const item of eligibleTriggeredPool) {
+            const score = calculateHybridMemoryScore(item.mem, queryContext, settings);
+            const minScore = item.wasArchived ? wakeThreshold : 0;
+            if (score > minScore) {
+                triggeredCandidates.push({ ...item, score, fusionMethod: 'linear' });
+            } else {
+                suppressedCandidates.push({
+                    mem: item.mem,
+                    reason: item.wasArchived
+                        ? `沉睡记忆得分 (${score.toFixed(2)}) 未达唤醒门槛 (${wakeThreshold.toFixed(2)})`
+                        : `相关度得分 (${score.toFixed(2)}) 低于激活门槛`,
+                    score,
+                    fusionMethod: 'linear'
+                });
+            }
         }
     }
 
@@ -591,6 +653,7 @@ export function buildAndInjectMemoryPrompt(options = {}) {
             recalledMemories: [],
             suppressedMemories: suppressedCandidates.map(item => ({
                 id: item.mem?.id || '',
+                mem: item.mem,
                 content: item.mem?.content || '',
                 type: item.mem?.type || '',
                 scope: item.mem?.scope || '',
@@ -638,6 +701,7 @@ export function buildAndInjectMemoryPrompt(options = {}) {
         generatingEntity: generatingEntity || (c?.name2 || '未知'),
         inSceneCharacters: Array.isArray(inScene) ? inScene : [],
         mode: settings.mode,
+        fusionMethod: isRrfMode ? 'rrf' : 'linear',
         positionText: position === 0 ? 'System Prompt' : `In-Chat @ 深度 ${depth}`,
         position,
         depth,
@@ -669,7 +733,8 @@ export function buildAndInjectMemoryPrompt(options = {}) {
                 tokens: item.tokens,
                 extraWarning: item.extraWarning || '',
                 reason: '常驻置顶 (Pinned)',
-                score: 1.0
+                score: 1.0,
+                fusionMethod: 'pinned'
             })),
             ...selectedTriggeredItems.map(item => ({
                 id: item.mem.id,
@@ -682,17 +747,28 @@ export function buildAndInjectMemoryPrompt(options = {}) {
                 tokens: item.tokens,
                 extraWarning: item.extraWarning || '',
                 reason: item.wasArchived ? '沉睡唤醒 (Wake-Up)' : '动态匹配激活 (Triggered)',
-                score: item.score
+                score: item.score,
+                rrfScore: item.rrfScore,
+                semanticRank: item.semanticRank,
+                lexicalRank: item.lexicalRank,
+                semanticScore: item.semanticScore,
+                lexicalScore: item.lexicalScore,
+                fusionMethod: item.fusionMethod || (isRrfMode ? 'rrf' : 'linear')
             }))
         ],
         suppressedMemories: suppressedCandidates.map(item => ({
             id: item.mem?.id || '',
+            mem: item.mem,
             content: item.mem?.content || '',
             type: item.mem?.type || '',
             scope: item.mem?.scope || '',
             character: item.mem?.character || '',
             reason: item.reason,
-            score: typeof item.score === 'number' ? item.score : 0
+            score: typeof item.score === 'number' ? item.score : 0,
+            rrfScore: item.rrfScore,
+            semanticRank: item.semanticRank,
+            lexicalRank: item.lexicalRank,
+            fusionMethod: item.fusionMethod || (isRrfMode ? 'rrf' : 'linear')
         }))
     };
 

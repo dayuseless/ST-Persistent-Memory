@@ -1,8 +1,8 @@
 /**
- * 持续记忆插件配置与常量定义 (v0.1.43)
+ * 持续记忆插件配置与常量定义 (v0.1.44)
  */
 
-export const EXTENSION_VERSION = '0.1.43';
+export const EXTENSION_VERSION = '0.1.44';
 export const MODULE_NAME = 'st_persistent_memory';
 export const INJECT_KEY = 'PERSISTENT_MEMORY_INJECT';
 
@@ -74,6 +74,8 @@ export const DEFAULT_SETTINGS = {
 
     // 语义检索基建配置 (Semantic Retrieval Infrastructure)
     semanticRetrievalEnabled: true,       // 是否启用语义向量与混合检索
+    retrievalFusionMethod: 'linear',      // 检索融合算法: 'linear' (经典加权混合) | 'rrf' (工业级倒数排名融合，推荐)
+    rrfK: 60,                             // RRF 平滑阻尼系数 (默认 60)
     embeddingProvider: 'local',           // 'local' (内置轻量向量引擎) | 'custom_api' (OpenAI 兼容端点) | 'disabled'
     embeddingApiUrl: '',                  // 独立 Embedding API 端点 (留空沿用 customApiUrl)
     embeddingApiKey: '',                  // 独立 Embedding API Key (留空沿用 customApiKey)

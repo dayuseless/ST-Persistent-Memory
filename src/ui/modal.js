@@ -6,7 +6,7 @@
  * 3. 私密/共享记忆权限范围变更预警与防越权二次确认 (Escalation Guard)
  * 4. 详细与高级参数设置模态面板 (showAdvancedSettingsModal，支持详细调优与一键恢复默认)
  *
- * @version 0.1.43
+ * @version 0.1.44
  */
 
 import { MEMORY_SCOPE, DEFAULT_SETTINGS } from '../config.js';
@@ -807,6 +807,10 @@ export function showInjectionInspectorModal(customSnapshot = null) {
                         <div style="font-size: 10px; color: #64748b;">未召回 / 拦截归因</div>
                         <div style="font-size: 13px; font-weight: 700; color: #dc2626; margin-top: 2px;">${suppressedMemories.length} 条</div>
                     </div>
+                    <div style="background: #f8fafc; border: 1px solid #e2e8f0; border-radius: 6px; padding: 6px 10px; text-align: center;">
+                        <div style="font-size: 10px; color: #64748b;">检索融合模式</div>
+                        <div style="font-size: 13px; font-weight: 700; color: #2563eb; margin-top: 2px;">${snapshot.fusionMethod === 'rrf' ? 'RRF 倒数融合' : '线性加权'}</div>
+                    </div>
                 </div>
 
                 <!-- 选项卡切换头 -->
@@ -859,7 +863,9 @@ export function showInjectionInspectorModal(customSnapshot = null) {
                                             </div>
                                             <div style="font-size: 11px; color: #64748b;">
                                                 消耗: <b>~${m.tokens || 0} tok</b>
-                                                ${m.score !== undefined ? ` | 评分: <b style="color: #0284c7;">${Number(m.score).toFixed(2)}</b>` : ''}
+                                                ${m.rrfScore !== undefined 
+                                                    ? ` | RRF: <b style="color: #0284c7;">${Number(m.rrfScore).toFixed(4)}</b> <span style="font-size: 10px; color: #64748b;">(稠密#${m.semanticRank ?? '-'}, 词法#${m.lexicalRank ?? '-'})</span>` 
+                                                    : (m.score !== undefined ? ` | 评分: <b style="color: #0284c7;">${Number(m.score).toFixed(2)}</b>` : '')}
                                             </div>
                                         </div>
                                         <div style="font-size: 12px; color: #1e293b; line-height: 1.4;">${escapeHtml(m.content)}</div>
@@ -1004,7 +1010,11 @@ export function showMemoryLineageModal(memoryId) {
                     <div class="pm-lineage-card">
                         <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 3px; font-size: 10px; color: #64748b;">
                             <span style="font-weight: 600; color: #059669;">[${formatType(anc.type)}] 诞生于第 ${anc.floor || 0} 轮</span>
-                            <span style="background: #e2e8f0; padding: 1px 4px; border-radius: 3px;">已被当前事实取代 (superseded)</span>
+                            ${anc.is_tombstone ? `
+                                <span style="background: #f1f5f9; color: #475569; padding: 1px 5px; border-radius: 3px; border: 1px solid #cbd5e1;">🪦 结项墓碑 (拓扑保留)</span>
+                            ` : `
+                                <span style="background: #e2e8f0; padding: 1px 4px; border-radius: 3px;">已被当前事实取代 (superseded)</span>
+                            `}
                         </div>
                         <div style="font-size: 12px; color: #1e293b; line-height: 1.4;">${escapeHtml(anc.content)}</div>
                         ${Array.isArray(anc.trigger_keys) && anc.trigger_keys.length > 0 ? `
@@ -1140,9 +1150,10 @@ export function showHistoricalSliceModal(historyIndex, onRestored) {
     const sliceFloor = item.floor || 0;
     const timeStr = item.timestamp ? new Date(item.timestamp).toLocaleString() : '未知时间';
 
-    // 筛选在该切片楼层时已存在且未被证伪的记忆
+    // 筛选在该切片楼层时已存在且未被证伪的记忆 (排除纯内部墓碑)
     const s = getState();
     const sliceMemories = (s.memories || []).filter(m => {
+        if (m.is_tombstone) return false;
         const memFloor = Number.isInteger(m.floor) ? m.floor : 0;
         return memFloor <= sliceFloor && m.lifecycle !== 'refuted';
     });
@@ -1156,14 +1167,17 @@ export function showHistoricalSliceModal(historyIndex, onRestored) {
             <div class="pm-modal-card" style="max-width: 600px; width: 92vw; max-height: 85vh; display: flex; flex-direction: column;">
                 <div class="pm-modal-header">
                     <span style="font-weight: 700; color: #0284c7; font-size: 13px; display: flex; align-items: center; gap: 6px;">
-                        <i class="fa-solid fa-layer-group"></i> 历史时光切片重放 (第 ${sliceFloor} 轮)
+                        <i class="fa-solid fa-layer-group"></i> 历史时光切片重放 (第 ${sliceFloor} 轮现场快照与事实楼层投影)
                     </span>
                     <button class="pm-modal-close" id="pm-slice-modal-close" style="background: none; border: none; font-size: 18px; cursor: pointer; color: #94a3b8; line-height: 1;">&times;</button>
                 </div>
                 <div class="pm-modal-body" style="padding: 12px 0; overflow-y: auto; flex: 1;">
-                    <div style="font-size: 11px; color: #64748b; margin-bottom: 10px; display: flex; justify-content: space-between; align-items: center;">
+                    <div style="font-size: 11px; color: #64748b; margin-bottom: 8px; display: flex; justify-content: space-between; align-items: center;">
                         <span>快照保存原因: <b style="color: #334155;">${escapeHtml(item.reason || '自动保存')}</b></span>
                         <span>时间: ${escapeHtml(timeStr)}</span>
+                    </div>
+                    <div style="font-size: 11px; color: #64748b; margin-bottom: 10px; background: #f8fafc; border: 1px solid #e2e8f0; border-radius: 4px; padding: 4px 8px;">
+                        💡 <b>切片语义说明</b>：展示第 ${sliceFloor} 轮捕获的 L0 现场快照，以及当前记忆库中不晚于该楼层且未证伪的事实投影。
                     </div>
 
                     <!-- 现场状态切片 (Scene Snapshot) -->

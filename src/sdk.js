@@ -1,5 +1,5 @@
 /**
- * ST-Persistent-Memory - 全局开放 API 接口层 (Global SDK, v0.1.43)
+ * ST-Persistent-Memory - 全局开放 API 接口层 (Global SDK, v0.1.44)
  * 
  * 核心设计目标：
  * 1. 挂载 window.STPersistentMemoryAPI 与 globalThis.STPersistentMemoryAPI，
@@ -50,41 +50,80 @@ import {
 
 /**
  * 组装全局 API 门面对象
+ * 遵循严格的状态所有权隔离：
+ * 1. 凡读取状态/记忆/现场的接口均返回深拷贝快照 (structuredClone)，物理阻断外部恶意变异内部内存；
+ * 2. 凡写入接口严格屏蔽内部可信参数 (bypassAcl, 伪造 participants)，强制由内部统一准入判定层裁决。
  */
 export function buildGlobalApi() {
     return {
         version: EXTENSION_VERSION,
 
-        // 状态与配置
-        getState: () => getState(),
-        getSettings: () => getSettings(),
-        updateSettings: (patch) => updateSettings(patch),
+        // 状态与配置 (返回只读深拷贝快照)
+        getState: () => structuredClone(getState()),
+        getStateSnapshot: () => structuredClone(getState()),
+        getSettings: () => structuredClone(getSettings()),
+        updateSettings: (patch) => {
+            if (!patch || typeof patch !== 'object') return false;
+            return updateSettings(patch);
+        },
         saveSettingsImmediately: () => saveSettingsImmediately(),
 
-        // 记忆 CRUD 与状态流转
-        addMemory: (item, options) => addMemory(item, options),
-        updateMemory: (id, patch) => updateMemory(id, patch),
+        // 记忆 CRUD 与状态流转 (严格锁定所有权与防提权)
+        getMemory: (id) => {
+            if (!id || typeof id !== 'string') return null;
+            const item = (getState()?.memories || []).find(m => m.id === id);
+            return item ? structuredClone(item) : null;
+        },
+        addMemory: (item) => {
+            if (!item || typeof item !== 'object') {
+                throw new TypeError('[STPersistentMemoryAPI] addMemory 要求传入非空对象');
+            }
+            // 权限收敛铁律：强制剔除外部可控的提权与伪造环境参数，严格锁定内部权威判定
+            const cleanItem = structuredClone(item);
+            delete cleanItem.bypassAcl;
+            delete cleanItem.participants;
+            delete cleanItem.context;
+            return addMemory(cleanItem, { bypassAcl: false });
+        },
+        updateMemory: (id, patch) => {
+            if (!id || typeof id !== 'string') return null;
+            if (!patch || typeof patch !== 'object') return null;
+            const cleanPatch = structuredClone(patch);
+            delete cleanPatch.bypassAcl;
+            delete cleanPatch.participants;
+            delete cleanPatch.context;
+            return updateMemory(id, cleanPatch);
+        },
         deleteMemory: (id) => deleteMemory(id),
         setMemoryLifecycle: (id, lifecycle) => setMemoryLifecycle(id, lifecycle),
         cycleMemoryStatus: (id) => cycleMemoryStatus(id),
         cycleMemoryType: (id) => cycleMemoryType(id),
         purgeArchivedMemories: () => purgeArchivedMemories(),
 
-        // 记忆演化血缘追溯
-        getMemoryLineage: (id) => getMemoryLineage(id),
+        // 记忆演化血缘追溯 (返回拓扑克隆快照)
+        getMemoryLineage: (id) => {
+            const lin = getMemoryLineage(id);
+            return lin ? structuredClone(lin) : null;
+        },
 
-        // L0 现场与时光机快照
-        getScene: () => getState()?.scene,
+        // L0 现场与时光机快照 (返回只读深拷贝快照)
+        getScene: () => {
+            const sc = getState()?.scene;
+            return sc ? structuredClone(sc) : null;
+        },
         updateScene: (patch) => updateScene(patch),
-        getSceneHistory: () => getSceneHistory(),
+        getSceneHistory: () => structuredClone(getSceneHistory()),
         restoreSceneSnapshot: (index) => restoreSceneSnapshot(index),
         rollbackScene: () => rollbackScene(),
 
-        // 即时注入透视镜 (Live Inspector)
-        getLiveSnapshot: (forceRefresh = true) => getLastInjectionSnapshot(forceRefresh),
+        // 即时注入透视镜 (Live Inspector 快照)
+        getLiveSnapshot: (forceRefresh = true) => {
+            const snap = getLastInjectionSnapshot(forceRefresh);
+            return snap ? structuredClone(snap) : null;
+        },
 
         // 玩法流派预设
-        getPresets: () => ({ ...GAMEPLAY_PRESETS }),
+        getPresets: () => structuredClone(GAMEPLAY_PRESETS),
         applyPreset: (presetId) => applyGameplayPreset(presetId),
 
         // 纯本地算法套件 (0 API 开销)

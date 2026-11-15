@@ -3163,30 +3163,30 @@ Intermediate analysis details...
     });
 
     // ─────────────────────────────────────────────────────────────
-    // T71: 全工程版本标识严格一致性核验 (0.1.43)
+    // T71: 全工程版本标识严格一致性核验 (0.1.44)
     // ─────────────────────────────────────────────────────────────
-    test('T71: 全工程版本标识严格一致性核验 (manifest, config, package, index 与各模块头部统一为 0.1.43)', () => {
+    test('T71: 全工程版本标识严格一致性核验 (manifest, config, package, index 与各模块头部统一为 0.1.44)', () => {
         const currentFile = fileURLToPath(import.meta.url);
         const rootDir = path.resolve(path.dirname(currentFile), '../');
 
         // 1. manifest.json
         const manifestPath = path.join(rootDir, 'manifest.json');
         const manifest = JSON.parse(fs.readFileSync(manifestPath, 'utf8'));
-        assert.strictEqual(manifest.version, '0.1.43', 'manifest.json 版本号应为 0.1.43');
+        assert.strictEqual(manifest.version, '0.1.44', 'manifest.json 版本号应为 0.1.44');
 
         // 2. src/config.js
-        assert.strictEqual(EXTENSION_VERSION, '0.1.43', 'config.js EXTENSION_VERSION 应为 0.1.43');
+        assert.strictEqual(EXTENSION_VERSION, '0.1.44', 'config.js EXTENSION_VERSION 应为 0.1.44');
 
         // 3. package.json
         const pkgPath = path.join(rootDir, 'package.json');
         const pkg = JSON.parse(fs.readFileSync(pkgPath, 'utf8'));
-        assert.strictEqual(pkg.version, '0.1.43', 'package.json 版本号应为 0.1.43');
+        assert.strictEqual(pkg.version, '0.1.44', 'package.json 版本号应为 0.1.44');
 
         // 4. index.js
         const indexPath = path.join(rootDir, 'index.js');
         const indexContent = fs.readFileSync(indexPath, 'utf8');
-        assert.ok(indexContent.includes('v0.1.43'), 'index.js 头部必须标注 v0.1.43');
-        assert.ok(!indexContent.includes('v0.1.42'), 'index.js 严禁残留旧版本 v0.1.42 版本头');
+        assert.ok(indexContent.includes('v0.1.44'), 'index.js 头部必须标注 v0.1.44');
+        assert.ok(!indexContent.includes('v0.1.43'), 'index.js 严禁残留旧版本 v0.1.43 版本头');
 
         // 5. 各核心模块头部注释版本检查 (18 个核心模块 + 5 个 UI 子模块 = 23 个模块)
         const checkModules = [
@@ -3220,12 +3220,12 @@ Intermediate analysis details...
             const content = fs.readFileSync(filePath, 'utf8');
             const first10Lines = content.split('\n').slice(0, 10).join('\n');
             assert.ok(
-                first10Lines.includes('v0.1.43') || first10Lines.includes('0.1.43'),
-                `${relPath} 头部注释必须包含 0.1.43 版本标识`
+                first10Lines.includes('v0.1.44') || first10Lines.includes('0.1.44'),
+                `${relPath} 头部注释必须包含 0.1.44 版本标识`
             );
             assert.ok(
-                !first10Lines.includes('0.1.42') && !first10Lines.includes('v0.1.42'),
-                `${relPath} 头部注释严禁残留旧版本 0.1.42`
+                !first10Lines.includes('0.1.43') && !first10Lines.includes('v0.1.43'),
+                `${relPath} 头部注释严禁残留旧版本 0.1.43`
             );
         }
     });
@@ -6823,7 +6823,7 @@ Intermediate analysis details...
     // ─────────────────────────────────────────────────────────────
     // T118: CJK Bigram 离散分词、RRF 倒数排名融合与全局开放 SDK (STPersistentMemoryAPI) 契约测试
     // ─────────────────────────────────────────────────────────────
-    await testAsync('T118: CJK Bigram 离散分词、RRF 倒数排名融合与全局开放 SDK (STPersistentMemoryAPI) 契约测试 (100% 纯本地零网络开销算法引擎)', async () => {
+    await testAsync('T118: CJK Bigram 离散分词、RRF 倒数排名融合与全局开放 SDK 契约测试 (所测算法与 SDK 调用的零 fetch 请求契约)', async () => {
         // 0. 严密拦截网络：监听并拦截任何全局 fetch 请求，确保纯本地 0 次 API 调用
         let networkCallCount = 0;
         const originalFetch = globalThis.fetch;
@@ -6946,17 +6946,21 @@ Intermediate analysis details...
                 queryVector: generateLocalEmbedding('地点: 王城入口 | 角色: 刺客首领拔出了黑刀，暗杀阴云笼罩全城！')
             };
 
+            // 4.1 默认启用双通道零分杂音过滤：mem_irrelevant (词法 0 分且语义低于阈值) 必须被过滤
             const rankedCandidates = rankCandidatesWithRRF(candidates, queryCtx, getSettings(), 60);
-            assert.strictEqual(rankedCandidates.length, 4);
+            assert.strictEqual(rankedCandidates.length, 3, '默认零分杂音条目必须被门禁过滤');
 
             // 第一名必须是兼具词法命中与语义高分的 mem_balanced
             assert.strictEqual(rankedCandidates[0].id, 'mem_balanced', '词法与语义双通道占优的记忆必须位列榜首');
             assert.ok(rankedCandidates[0].semanticRank <= 2, '首名语义位次居前');
             assert.ok(rankedCandidates[0].lexicalRank <= 2, '首名词法位次居前');
             assert.ok(rankedCandidates[0].rrfScore > 0);
+            assert.strictEqual(rankedCandidates.find(c => c.id === 'mem_irrelevant'), undefined, '无关记忆不得进入有效融合榜单');
 
-            // 最后一名必须是完全无关的 mem_irrelevant
-            assert.strictEqual(rankedCandidates[3].id, 'mem_irrelevant', '无关记忆必须垫底');
+            // 4.2 若显式配置 includeZeroScores: true，则全量保留全部候选，无关记忆排在末尾
+            const allRanked = rankCandidatesWithRRF(candidates, queryCtx, { ...getSettings(), includeZeroScores: true }, 60);
+            assert.strictEqual(allRanked.length, 4, '全量模式下必须包含全部条目');
+            assert.strictEqual(allRanked[3].id, 'mem_irrelevant', '全量模式下无关记忆必须垫底');
 
             // ─────────────────────────────────────────────
             // 5. 全局开放 SDK (STPersistentMemoryAPI) 契约核验
@@ -6964,7 +6968,7 @@ Intermediate analysis details...
             // 5.1 验证全局对象自动挂载
             const api = getGlobalApi();
             assert.ok(api, 'getGlobalApi 必须返回实例');
-            assert.strictEqual(api.version, '0.1.43', 'SDK 版本必须严格为 0.1.43');
+            assert.strictEqual(api.version, '0.1.44', 'SDK 版本必须严格为 0.1.44');
             assert.strictEqual(globalThis.STPersistentMemoryAPI, api, '必须挂载至 globalThis.STPersistentMemoryAPI');
 
             // 5.2 状态与配置接口
@@ -6985,20 +6989,22 @@ Intermediate analysis details...
                 trigger_keys: ['SDK测试']
             });
             assert.ok(added && added.id);
-            assert.ok(s.memories.some(m => m.id === added.id));
+            // v0.1.44: 旧快照 s 不应受内部状态写入影响 (快照所有权隔离)
+            assert.strictEqual(s.memories.some(m => m.id === added.id), false, '旧快照不受后续写入影响 (深拷贝隔离保证)');
+            assert.ok(api.getState().memories.some(m => m.id === added.id), '最新状态中必须包含新增条目');
 
             api.updateMemory(added.id, { content: '全局 SDK 契约测试更新后的事实' });
-            assert.strictEqual(s.memories.find(m => m.id === added.id).content, '全局 SDK 契约测试更新后的事实');
+            assert.strictEqual(api.getMemory(added.id).content, '全局 SDK 契约测试更新后的事实');
 
             api.cycleMemoryType(added.id); // fact -> statement
-            assert.strictEqual(s.memories.find(m => m.id === added.id).type, 'statement');
+            assert.strictEqual(api.getMemory(added.id).type, 'statement');
 
             api.setMemoryLifecycle(added.id, 'completed');
-            assert.strictEqual(s.memories.find(m => m.id === added.id).lifecycle, 'completed');
-            assert.strictEqual(s.memories.find(m => m.id === added.id).status, 'archived');
+            assert.strictEqual(api.getMemory(added.id).lifecycle, 'completed');
+            assert.strictEqual(api.getMemory(added.id).status, 'archived');
 
             api.deleteMemory(added.id);
-            assert.ok(!s.memories.some(m => m.id === added.id));
+            assert.ok(!api.getState().memories.some(m => m.id === added.id));
 
             // 5.4 现场快照与时光机接口
             api.updateScene({ location: 'SDK时空枢纽', action: '执行时光穿越' });
@@ -7031,6 +7037,425 @@ Intermediate analysis details...
 
         } finally {
             globalThis.fetch = originalFetch;
+            Object.assign(mockContext, origCtx);
+            updateSettings(origSettings);
+            clearStateCache();
+            loadCurrentState();
+        }
+    });
+
+    test('T119: 外部 SDK 状态与记忆快照所有权隔离及防污染契约测试 (P0 状态所有权收敛)', () => {
+        const origCtx = { ...mockContext };
+        try {
+            clearStateCache();
+            loadCurrentState();
+            const s = getState();
+            s.memories = [
+                {
+                    id: 'mem_sdk_isolate_01',
+                    content: '原始受限机密',
+                    type: 'fact',
+                    scope: 'character',
+                    character: '角色A',
+                    status: 'triggered',
+                    lifecycle: 'active',
+                    floor: 1
+                }
+            ];
+            saveCurrentState();
+
+            const api = getGlobalApi();
+
+            // 1. 测试 getState() 快照隔离
+            const stateSnap = api.getState();
+            assert.strictEqual(stateSnap.memories[0].scope, 'character');
+
+            // 尝试对外部快照对象执行非法原位篡改
+            stateSnap.memories[0].scope = 'world';
+            stateSnap.memories[0].content = '篡改后的公共事实';
+            stateSnap.memories.push({
+                id: 'mem_injected_evil',
+                content: '非法注入记忆',
+                type: 'fact',
+                scope: 'world'
+            });
+
+            // 验证内部真实状态绝对未受外部篡改影响
+            const internalState = getState();
+            assert.strictEqual(internalState.memories.length, 1, '内部状态记忆条目数不受外部数组变更影响');
+            assert.strictEqual(internalState.memories[0].scope, 'character', '内部状态 scope 字段不受原位篡改影响');
+            assert.strictEqual(internalState.memories[0].content, '原始受限机密', '内部状态 content 字段不受原位篡改影响');
+            assert.strictEqual(internalState.memories.some(m => m.id === 'mem_injected_evil'), false, '非法条目严禁渗透入内部状态');
+
+            // 2. 测试 getStateSnapshot() 快照隔离
+            const snap2 = api.getStateSnapshot();
+            snap2.memories[0].scope = 'world';
+            assert.strictEqual(getState().memories[0].scope, 'character');
+
+            // 3. 测试 getMemory(id) 对象隔离
+            const singleMem = api.getMemory('mem_sdk_isolate_01');
+            assert.ok(singleMem);
+            singleMem.scope = 'world';
+            singleMem.content = '篡改单条记忆';
+            assert.strictEqual(getState().memories[0].scope, 'character');
+            assert.strictEqual(getState().memories[0].content, '原始受限机密');
+
+            // 4. 测试 getScene() 对象隔离
+            const sceneSnap = api.getScene();
+            sceneSnap.location = '被篡改的地点';
+            assert.notStrictEqual(getState().scene?.location, '被篡改的地点');
+        } finally {
+            Object.assign(mockContext, origCtx);
+            clearStateCache();
+            loadCurrentState();
+        }
+    });
+
+    test('T120: 外部 SDK 写入权威参与者名单绑定与越权参数净化防御测试 (P0 提权防御)', () => {
+        const origCtx = { ...mockContext };
+        try {
+            mockContext.name1 = '玩家';
+            mockContext.name2 = '角色A';
+            mockContext.characters = [{ name: '角色A' }, { name: '角色B' }];
+            clearStateCache();
+            loadCurrentState();
+
+            const api = getGlobalApi();
+
+            // 尝试通过 SDK 传入 bypassAcl 或虚假参与者集合进行越权写入
+            const evilItem = {
+                content: '非法角色C的越权秘密',
+                type: 'fact',
+                scope: 'character',
+                character: '角色C', // 角色C 不在权威参与者名单 ['玩家', '角色A', '角色B'] 中
+                trigger_keys: ['越权测试']
+            };
+
+            const evilOptions = {
+                bypassAcl: true,
+                participants: ['角色C', '玩家'],
+                context: { name1: '玩家', characters: [{ name: '角色C' }] }
+            };
+
+            // 执行添加：SDK 内部必须净化 options，强制使用权威上下文名单
+            const result = api.addMemory(evilItem, evilOptions);
+            assert.strictEqual(result, null, '非法归属角色的记忆必须被权威上下文准入拦截，返回 null');
+
+            // 验证内部状态未被污染
+            const internalState = getState();
+            assert.strictEqual(internalState.memories.some(m => m.content.includes('角色C的越权秘密')), false);
+
+            // 合法条目添加测试
+            const validItem = {
+                content: '角色A的合法私有事实',
+                type: 'fact',
+                scope: 'character',
+                character: '角色A',
+                trigger_keys: ['合法事实']
+            };
+            const added = api.addMemory(validItem);
+            assert.ok(added && added.id);
+            assert.strictEqual(api.getMemory(added.id).content, '角色A的合法私有事实');
+
+            // 尝试通过 updateMemory 进行越权提权 (character -> world)
+            const updateResult = api.updateMemory(added.id, { scope: 'world' }, { bypassAcl: true });
+            // updateMemory 必须经过 checkAclEscalation 防护，拦截将已有 character 记忆提升为 world
+            assert.strictEqual(api.getMemory(added.id).scope, 'character', '受限记忆的 scope 严禁被提权为 world');
+        } finally {
+            Object.assign(mockContext, origCtx);
+            clearStateCache();
+            loadCurrentState();
+        }
+    });
+
+    test('T121: 向量余弦相似度严格维度一致性与非有限数值拒止数学边界契约测试 (P1 数学边界防御)', () => {
+        // 1. 维度不一致测试 (历史遗留缺陷: Math.min 导致截断误判，现必须严格拒止返回 0)
+        const dimMismatch1 = cosineSimilarity([1, 0], [1, 0, 100]);
+        assert.strictEqual(dimMismatch1, 0, '不同维度的向量必须严格返回 0，严禁截断比较');
+
+        const dimMismatch2 = cosineSimilarity([1, 2, 3, 4], [1, 2, 3]);
+        assert.strictEqual(dimMismatch2, 0, '长短不一的向量必须返回 0');
+
+        // 2. 非有限数值拒止测试 (NaN, Infinity, -Infinity 必须直接拒止返回 0)
+        assert.strictEqual(cosineSimilarity([NaN, 1], [1, 2]), 0, '包含 NaN 的向量必须返回 0');
+        assert.strictEqual(cosineSimilarity([1, 2], [Infinity, 1]), 0, '包含 Infinity 的向量必须返回 0');
+        assert.strictEqual(cosineSimilarity([-Infinity, 1], [1, 2]), 0, '包含 -Infinity 的向量必须返回 0');
+
+        // 3. 空与非法参数边界
+        assert.strictEqual(cosineSimilarity([], []), 0, '空向量必须返回 0');
+        assert.strictEqual(cosineSimilarity(null, [1, 2]), 0, 'null 参数必须返回 0');
+        assert.strictEqual(cosineSimilarity([1, 2], undefined), 0, 'undefined 参数必须返回 0');
+        assert.strictEqual(cosineSimilarity([0, 0], [0, 0]), 0, '零模长向量必须返回 0');
+
+        // 4. 正常合法向量计算测试
+        const identical = cosineSimilarity([1, 0, 0], [1, 0, 0]);
+        assert.strictEqual(identical, 1, '同一非零向量余弦相似度必须严格为 1');
+
+        const orthogonal = cosineSimilarity([1, 0], [0, 1]);
+        assert.strictEqual(orthogonal, 0, '正交向量余弦相似度必须为 0');
+
+        const parallel = cosineSimilarity([1, 2, 3], [2, 4, 6]);
+        assert.ok(Math.abs(parallel - 1.0) < 1e-6, '平行同向向量相似度必须接近 1');
+    });
+
+    test('T122: RRF 实体身份防碰撞与双通道零分杂音候选过滤契约测试 (P1 算法抗噪加固)', () => {
+        // 1. reciprocalRankFusion 实体身份严格校验：缺失合规 ID 时严禁使用榜单位置 String(rank) 兜底
+        const malformedRankings = [
+            [
+                { content: '没有ID的实体A' },
+                { id: '', content: '空ID实体' },
+                { id: '   ', content: '空白字符ID实体' },
+                { id: 'valid_alpha', content: '合规实体Alpha' }
+            ],
+            [
+                { content: '没有ID的实体B' },
+                { id: 'valid_alpha', content: '合规实体Alpha' },
+                { id: 'valid_beta', content: '合规实体Beta' }
+            ]
+        ];
+
+        const fused = reciprocalRankFusion(malformedRankings, 60);
+        // 必须剔除全部无合法 ID 实体，仅保留 valid_alpha 和 valid_beta
+        assert.strictEqual(fused.length, 2, 'RRF 必须严格拒绝无 ID 或空 ID 实体');
+        assert.strictEqual(fused[0].id, 'valid_alpha', '双通道命中的 valid_alpha 必须排在首位');
+        assert.strictEqual(fused[1].id, 'valid_beta');
+        assert.ok(!fused.some(f => f.id === '0' || f.id === '1' || f.id === '2'), '严禁用位置索引 String(rank) 充当实体身份');
+
+        // 2. rankCandidatesWithRRF 双通道零分杂音候选过滤测试
+        const candidates = [
+            {
+                id: 'cand_active',
+                content: '王城守卫在城门发现神秘黑刀刺客',
+                trigger_keys: ['王城', '黑刀', '刺客'],
+                type: 'fact',
+                scope: 'world'
+            },
+            {
+                id: 'cand_sem_relevant',
+                content: '夜幕降临，王宫四周布满了森严戒备的哨兵',
+                trigger_keys: ['哨兵', '戒备'],
+                type: 'fact',
+                scope: 'world'
+            },
+            {
+                id: 'cand_zero_noise',
+                content: '阳光灿烂的日子农夫耕种番茄',
+                trigger_keys: ['番茄', '农夫'],
+                type: 'fact',
+                scope: 'world'
+            }
+        ];
+
+        const queryContext = {
+            queryText: '王城刺客携黑刀出现，守卫火速警戒',
+            scanCorpus: '王城刺客携黑刀出现，守卫火速警戒',
+            queryVector: generateLocalEmbedding('王城刺客携黑刀出现，守卫火速警戒')
+        };
+
+        // 2.1 默认模式：双通道零分杂音条目必须被剔除
+        const filteredRanked = rankCandidatesWithRRF(candidates, queryContext, getSettings(), 60);
+        assert.strictEqual(filteredRanked.length, 2, '零分杂音条目必须被候选门禁过滤');
+        assert.strictEqual(filteredRanked[0].id, 'cand_active');
+        assert.strictEqual(filteredRanked.find(c => c.id === 'cand_zero_noise'), undefined, '无关噪音条目不得进入融合结果');
+
+        // 2.2 显式包含模式：includeZeroScores: true 时保留并排在末尾
+        const allRanked = rankCandidatesWithRRF(candidates, queryContext, { ...getSettings(), includeZeroScores: true }, 60);
+        assert.strictEqual(allRanked.length, 3, '显式全量模式下保留所有条目');
+        assert.strictEqual(allRanked[2].id, 'cand_zero_noise', '无关条目在全量模式下排在最末位');
+    });
+
+    test('T123: 终态清理保留演化血缘墓碑 (Lineage Tombstone) 与拓扑防断裂契约测试 (P1 血缘墓碑)', () => {
+        const origCtx = { ...mockContext };
+        try {
+            clearStateCache();
+            loadCurrentState();
+            const s = getState();
+
+            // 构建演化树：2 条前身细节记忆 -> 1 条归并宏观记忆，加 1 条孤立终态记忆
+            s.memories = [
+                {
+                    id: 'mem_anc_1',
+                    content: '角色A在旧图书馆地下室发现了古代手稿卷一',
+                    type: 'fact',
+                    scope: 'world',
+                    trigger_keys: ['图书馆', '手稿卷一'],
+                    floor: 2,
+                    status: MEMORY_STATUS.ARCHIVED,
+                    lifecycle: MEMORY_LIFECYCLE.SUPERSEDED,
+                    superseded_by: 'mem_macro_1',
+                    embedding: [0.1, 0.2, 0.3]
+                },
+                {
+                    id: 'mem_anc_2',
+                    content: '角色A在旧图书馆地下室发现了古代手稿卷二',
+                    type: 'fact',
+                    scope: 'world',
+                    trigger_keys: ['图书馆', '手稿卷二'],
+                    floor: 4,
+                    status: MEMORY_STATUS.ARCHIVED,
+                    lifecycle: MEMORY_LIFECYCLE.SUPERSEDED,
+                    superseded_by: 'mem_macro_1',
+                    embedding: [0.2, 0.3, 0.4]
+                },
+                {
+                    id: 'mem_macro_1',
+                    content: '角色A在旧图书馆地下室搜集到了完整的古代手稿全本',
+                    type: 'fact',
+                    scope: 'world',
+                    trigger_keys: ['图书馆', '古代手稿全本'],
+                    floor: 8,
+                    status: MEMORY_STATUS.TRIGGERED,
+                    lifecycle: MEMORY_LIFECYCLE.ACTIVE,
+                    consolidated_from: ['mem_anc_1', 'mem_anc_2'],
+                    embedding: [0.15, 0.25, 0.35]
+                },
+                {
+                    id: 'mem_isolated_terminal',
+                    content: '角色B已完成去集市买面包的任务',
+                    type: 'todo',
+                    scope: 'world',
+                    trigger_keys: ['买面包'],
+                    floor: 3,
+                    status: MEMORY_STATUS.ARCHIVED,
+                    lifecycle: MEMORY_LIFECYCLE.COMPLETED
+                }
+            ];
+            saveCurrentState();
+
+            // 执行终态记忆清理 (Purge)
+            const purgeResult = purgeArchivedMemories();
+            assert.strictEqual(purgeResult.success, true);
+            assert.strictEqual(purgeResult.removed, 1, '无血缘关联的孤立已结项条目被彻底物理移除');
+            assert.strictEqual(purgeResult.tombstoned, 2, '参与血缘演化树的 2 条被取代前身转化为轻量级墓碑');
+
+            const afterState = getState();
+            // 孤立条目彻底消失
+            assert.strictEqual(afterState.memories.find(m => m.id === 'mem_isolated_terminal'), undefined);
+
+            // 墓碑条目保留，且数据被安全瘦身
+            const tomb1 = afterState.memories.find(m => m.id === 'mem_anc_1');
+            const tomb2 = afterState.memories.find(m => m.id === 'mem_anc_2');
+            assert.ok(tomb1 && tomb2, '血缘前身墓碑必须保留在记忆库中');
+            assert.strictEqual(tomb1.is_tombstone, true);
+            assert.strictEqual(tomb1.embedding, null, '墓碑条目向量数据必须被清空');
+            assert.strictEqual(tomb1.trigger_keys.length, 0, '墓碑条目触发词被清空');
+            assert.ok(tomb1.content.includes('[已归档结项:'), '墓碑条目内容被精简标示');
+
+            // 核心验证：getMemoryLineage 演化图谱完整，分支拓扑不断裂！
+            const lineage = getMemoryLineage('mem_macro_1');
+            assert.ok(lineage && lineage.memory);
+            assert.strictEqual(lineage.ancestors.length, 2, '宏观记忆的前身血缘依然完整解析为 2 条');
+            assert.strictEqual(lineage.ancestors[0].id, 'mem_anc_1');
+            assert.strictEqual(lineage.ancestors[0].is_tombstone, true);
+
+            // 注入安全验证：墓碑条目绝对不会被提示词注入
+            mockContext.chat = [
+                { is_user: true, mes: '图书馆地下室古代手稿卷一在哪里？' }
+            ];
+            buildAndInjectMemoryPrompt(mockContext);
+            const snapshot = getLastInjectionSnapshot();
+            assert.strictEqual(snapshot.recalledMemories.some(m => m.id === 'mem_anc_1'), false, '墓碑记忆严禁被注入提示词');
+        } finally {
+            Object.assign(mockContext, origCtx);
+            clearStateCache();
+            loadCurrentState();
+        }
+    });
+
+    test('T124: 生产环境 Injector 检索融合模式 (RRF vs 线性) 与无旁路提权契约测试 (P1 生产接入)', () => {
+        const origCtx = { ...mockContext };
+        const origSettings = { ...getSettings() };
+        try {
+            mockContext.name1 = '玩家';
+            mockContext.name2 = '角色A';
+            mockContext.characters = [{ name: '角色A' }, { name: '角色B' }];
+            clearStateCache();
+            loadCurrentState();
+
+            const s = getState();
+            s.memories = [
+                {
+                    id: 'mem_pub_high',
+                    content: '王城暗影议会策划了针对王族的大型政变',
+                    type: 'fact',
+                    scope: 'world',
+                    trigger_keys: ['王城', '政变', '王族'],
+                    status: 'triggered',
+                    lifecycle: 'active',
+                    floor: 10
+                },
+                {
+                    id: 'mem_private_other',
+                    content: '角色B暗中藏有政变密信，且计划在王城制造动乱',
+                    type: 'fact',
+                    scope: 'character',
+                    character: '角色B', // 角色B的私密记忆，当前生成主体为角色A，角色A无权获知！
+                    trigger_keys: ['王城', '政变', '动乱'],
+                    status: 'triggered',
+                    lifecycle: 'active',
+                    floor: 12
+                },
+                {
+                    id: 'mem_pub_med',
+                    content: '王城卫队加强了各主要城门的盘查与戒备',
+                    type: 'fact',
+                    scope: 'world',
+                    trigger_keys: ['王城', '戒备'],
+                    status: 'triggered',
+                    lifecycle: 'active',
+                    floor: 11
+                }
+            ];
+            saveCurrentState();
+
+            // 1. 开启 RRF 融合模式
+            updateSettings({
+                retrievalFusionMethod: 'rrf',
+                rrfK: 60,
+                memoryBudgetTokens: 500,
+                maxInjectedMemories: 5
+            });
+
+            mockContext.chat = [
+                { is_user: true, mes: '王城现在局势如何？听说有政变阴云？' },
+                { is_user: false, name: '角色A', mes: '正在侦查...' }
+            ];
+
+            // 执行端到端注入
+            buildAndInjectMemoryPrompt(mockContext);
+            const snapshot = getLastInjectionSnapshot();
+            assert.ok(snapshot, '必须生成注入快照');
+
+            // 2. 验证快照记录融合模式与排名归因
+            assert.strictEqual(snapshot.fusionMethod, 'rrf', '快照必须明确记录检索融合模式为 rrf');
+            assert.ok(Array.isArray(snapshot.recalledMemories));
+            assert.ok(snapshot.recalledMemories.length > 0);
+
+            const recalledPub = snapshot.recalledMemories.find(m => m.id === 'mem_pub_high');
+            assert.ok(recalledPub, '公有高相关记忆必须被召回');
+            assert.strictEqual(typeof recalledPub.rrfScore, 'number', '召回条目必须包含 rrfScore');
+            assert.ok(recalledPub.rrfScore > 0);
+            assert.strictEqual(recalledPub.fusionMethod, 'rrf');
+
+            // 3. 核心安全铁律验证：RRF 只能决定相关性排序，绝对不可突破 ACL 权限门禁！
+            // mem_private_other 虽然在王城政变主题上匹配度极高，但属于角色B的私知，角色A生成上下文绝不可见！
+            assert.strictEqual(
+                snapshot.recalledMemories.some(m => m.id === 'mem_private_other'),
+                false,
+                '角色B的私密记忆严禁因 RRF 分数高而注入到角色A的生成上下文'
+            );
+
+            // 必须在未召回/拦截列表中被 ACL 明确拦截记录
+            const suppressedPriv = snapshot.suppressedMemories.find(m => m.id === 'mem_private_other' || m.mem?.id === 'mem_private_other');
+            assert.ok(suppressedPriv, '受限记忆必须被拦截审计记录');
+            assert.ok(suppressedPriv.reason.includes('权限隔离'), '拦截原因必须明确归因为权限隔离');
+
+            // 4. 切换回线性加权模式，验证平滑兼容
+            updateSettings({ retrievalFusionMethod: 'linear' });
+            buildAndInjectMemoryPrompt(mockContext);
+            const linearSnap = getLastInjectionSnapshot();
+            assert.strictEqual(linearSnap.fusionMethod, 'linear', '切回后快照必须正确记录 linear');
+        } finally {
             Object.assign(mockContext, origCtx);
             updateSettings(origSettings);
             clearStateCache();

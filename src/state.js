@@ -1,5 +1,5 @@
 /**
- * 记忆状态管理器 (v0.1.43)
+ * 记忆状态管理器 (v0.1.44)
  * 严格落实 state_revision 状态修订号、L0 三态 PATCH 语义、真正原子回滚事务、统一ACL判定层介入、数据准入流水线、世界书升格溯源、知情集合隔离、世界书解耦、现场状态时光机解耦 (src/scene.js) 与数据迁移/导入导出解耦 (src/migration.js)
  */
 
@@ -676,21 +676,86 @@ export function deleteMemory(id) {
 
 /**
  * 清理终态记忆 (完成已结项、已迭代或已证伪条目的垃圾回收，保护 active 活跃与常驻记忆)
+ * 具备血缘墓碑机制 (Lineage Tombstone)：对于参与演化树拓扑的条目保留轻量级墓碑，
+ * 剔除文本详情与向量以释放空间，同时确保 getMemoryLineage 血缘图谱不会发生分支断裂。
  */
 export function purgeArchivedMemories() {
     return batchUpdate(() => {
         const s = getState();
         const before = s.memories.length;
-        s.memories = s.memories.filter(m => {
-            if (m.status === MEMORY_STATUS.PINNED) return true;
+
+        // 收集所有血缘引用关系，确保演化拓扑不被破坏
+        const referencedInConsolidated = new Set();
+        const referencedAsSuperseded = new Set();
+        for (const m of s.memories) {
+            if (Array.isArray(m.consolidated_from)) {
+                for (const cid of m.consolidated_from) {
+                    if (cid && typeof cid === 'string') referencedInConsolidated.add(cid.trim());
+                }
+            }
+            if (m.superseded_by && typeof m.superseded_by === 'string') {
+                referencedAsSuperseded.add(m.superseded_by.trim());
+            }
+        }
+
+        const nextMemories = [];
+        let purgedCount = 0;
+        let tombstonedCount = 0;
+
+        for (const m of s.memories) {
+            if (m.status === MEMORY_STATUS.PINNED) {
+                nextMemories.push(m);
+                continue;
+            }
+
             // 严格基于生命周期判定终态，严禁误删仅处于 status=archived 检索休眠但事实仍有效的条目
             const isTerminal = m.lifecycle === MEMORY_LIFECYCLE.COMPLETED ||
                                m.lifecycle === MEMORY_LIFECYCLE.SUPERSEDED ||
                                m.lifecycle === MEMORY_LIFECYCLE.REFUTED;
-            return !isTerminal;
-        });
-        const removed = before - s.memories.length;
-        return { success: true, removed, remaining: s.memories.length };
+
+            if (!isTerminal) {
+                nextMemories.push(m);
+                continue;
+            }
+
+            // 判断该终态记忆是否参与血缘演化树 (作为归并来源、被取代前身、或自身已有归并来源/取代指向)
+            const hasLineageTies = referencedInConsolidated.has(m.id) ||
+                                   referencedAsSuperseded.has(m.id) ||
+                                   (Array.isArray(m.consolidated_from) && m.consolidated_from.length > 0) ||
+                                   Boolean(m.superseded_by);
+
+            if (hasLineageTies) {
+                // 保留轻量级血缘墓碑 (Lineage Tombstone)：剥离文本详情与向量，保留拓扑关联
+                const tombstone = {
+                    id: m.id,
+                    type: m.type,
+                    scope: m.scope,
+                    character: m.character,
+                    known_by: m.known_by,
+                    floor: m.floor || 0,
+                    status: MEMORY_STATUS.ARCHIVED,
+                    lifecycle: m.lifecycle,
+                    content: m.is_tombstone ? m.content : `[已归档结项: ${m.content ? m.content.slice(0, 30) : m.id}]`,
+                    trigger_keys: [],
+                    embedding: null,
+                    embedding_hash: null,
+                    consolidated_from: m.consolidated_from,
+                    superseded_by: m.superseded_by,
+                    is_tombstone: true,
+                    purged_at: m.purged_at || new Date().toISOString(),
+                    created_at: m.created_at,
+                    updated_at: new Date().toISOString()
+                };
+                nextMemories.push(tombstone);
+                tombstonedCount++;
+            } else {
+                // 无任何血缘挂靠的孤立终态条目，彻底物理移除
+                purgedCount++;
+            }
+        }
+
+        s.memories = nextMemories;
+        return { success: true, removed: purgedCount, tombstoned: tombstonedCount, remaining: s.memories.length };
     });
 }
 
