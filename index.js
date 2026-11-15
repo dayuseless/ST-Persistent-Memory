@@ -1,6 +1,7 @@
 /**
- * SillyTavern 鎻掍欢鍏ュ彛: 鎸佺画璁板繂 (Persistent Memory) v0.1.44
- * 閬靛惊鐜板満蹇収 (L0 Resume) 涓庝簨浠堕┍鍔ㄨ蹇嗘灦鏋? */
+ * SillyTavern 插件入口: 持续记忆 (Persistent Memory) v0.1.44
+ * 遵循现场快照 (L0 Resume) 与事件驱动记忆架构
+ */
 
 import { MODULE_NAME, EXTENSION_VERSION } from './src/config.js';
 import { loadCurrentState, getSettings, onStateChange } from './src/state.js';
@@ -11,11 +12,11 @@ import { initUI } from './src/ui.js';
 import { registerSlashCommands } from './src/commands.js';
 import { registerGlobalApi } from './src/sdk.js';
 
-// 绔嬪嵆鎸傝浇鍏ㄥ眬 SDK (window.STPersistentMemoryAPI)
+// 立即挂载全局 SDK (window.STPersistentMemoryAPI)
 try {
     registerGlobalApi();
 } catch (e) {
-    console.warn(`[${MODULE_NAME}] 鍏ㄥ眬 SDK 娉ㄥ唽寮傚父:`, e);
+    console.warn(`[${MODULE_NAME}] 全局 SDK 注册异常:`, e);
 }
 
 const CTX_WAIT_MS = 250;
@@ -26,7 +27,8 @@ function getContext() {
 }
 
 /**
- * 杞绛夊緟 SillyTavern 涓婁笅鏂囧氨缁? */
+ * 轮询等待 SillyTavern 上下文就绪
+ */
 function waitForContext() {
     return new Promise((resolve, reject) => {
         const start = Date.now();
@@ -36,7 +38,7 @@ function waitForContext() {
                 return resolve(c);
             }
             if (Date.now() - start > CTX_TIMEOUT_MS) {
-                return reject(new Error('绛夊緟 SillyTavern 涓婁笅鏂囪秴鏃?));
+                return reject(new Error('等待 SillyTavern 上下文超时'));
             }
             setTimeout(tick, CTX_WAIT_MS);
         };
@@ -45,7 +47,7 @@ function waitForContext() {
 }
 
 /**
- * 绛夊緟 APP_READY 浜嬩欢
+ * 等待 APP_READY 事件
  */
 function waitForAppReady(c) {
     return new Promise(resolve => {
@@ -53,51 +55,52 @@ function waitForAppReady(c) {
         const finish = () => { if (done) return; done = true; resolve(); };
         try {
             c.eventSource.on?.(c.event_types.APP_READY, finish);
-        } catch { /* 蹇界暐 */ }
-        setTimeout(finish, 1000); // 鍏滃簳瓒呮椂
+        } catch { /* 忽略 */ }
+        setTimeout(finish, 1000); // 兜底超时
     });
 }
 
 let isInitialized = false;
 
 /**
- * 涓诲垵濮嬪寲鍑芥暟
+ * 主初始化函数
  */
 async function init() {
     if (isInitialized) {
-        console.log(`[${MODULE_NAME}] 鎻掍欢宸插畬鎴愬垵濮嬪寲锛岃烦杩囬噸澶嶅垵濮嬪寲`);
+        console.log(`[${MODULE_NAME}] 插件已完成初始化，跳过重复初始化`);
         return;
     }
     isInitialized = true;
-    console.log(`[${MODULE_NAME}] 姝ｅ湪鍒濆鍖栨寔缁蹇嗘彃浠?(v${EXTENSION_VERSION})...`);
+    console.log(`[${MODULE_NAME}] 正在初始化持续记忆插件 (v${EXTENSION_VERSION})...`);
     const c = await waitForContext();
     await waitForAppReady(c);
 
-    // 1. 浼樺厛鍒濆鍖?UI 闈㈡澘 (淇濊瘉鎮诞鐞冧笌鍘熺敓鎶藉眽缁濆绋冲畾鍛堢幇锛屼笉鍙楀悗缁€昏緫骞叉壈)
+    // 1. 优先初始化 UI 面板 (保证悬浮球与原生抽屉绝对稳定呈现，不受后续逻辑干扰)
     try {
         initUI();
     } catch (e) {
-        console.error(`[${MODULE_NAME}] UI 鍒濆鍖栧紓甯?`, e);
+        console.error(`[${MODULE_NAME}] UI 初始化异常:`, e);
     }
 
-    // 2. 娉ㄥ唽鍘熺敓蹇嵎鏂滄潬鎸囦护 (/remember, /scene, /inspect, /digest, /forget)
+    // 2. 注册原生快捷斜杠指令 (/remember, /scene, /inspect, /digest, /forget)
     try {
         await registerSlashCommands();
     } catch (e) {
-        console.warn(`[${MODULE_NAME}] 鏂滄潬鎸囦护娉ㄥ唽寮傚父:`, e);
+        console.warn(`[${MODULE_NAME}] 斜杠指令注册异常:`, e);
     }
 
-    // 3. 鍒濆鍖栧綋鍓嶈亰澶╃殑鐘舵€佸苟鎵ц鍒濇娉ㄥ叆
+    // 3. 初始化当前聊天的状态并执行初次注入
     try {
         loadCurrentState();
         if (getSettings().enabled) {
             buildAndInjectMemoryPrompt();
         }
     } catch (e) {
-        console.error(`[${MODULE_NAME}] 鐘舵€佸姞杞戒笌鍒濇娉ㄥ叆寮傚父:`, e);
+        console.error(`[${MODULE_NAME}] 状态加载与初次注入异常:`, e);
     }
 
-    // 3. 鐩戝惉鍒囨。涓庤亰澶╄浇鍏ヤ簨浠?    const processedSyncMessages = new Set();
+    // 3. 监听切档与聊天载入事件
+    const processedSyncMessages = new Set();
     const processedAsyncMessages = new Set();
 
     function markMessageProcessed(set, key, maxItems = 500) {
@@ -116,7 +119,7 @@ async function init() {
     }
 
     const onChatReset = () => {
-        console.log(`[${MODULE_NAME}] 浼氳瘽鍒囨崲/杞藉叆锛屽榻愮姸鎬佸苟鏇存柊鎻愮ず璇嶆敞鍏);
+        console.log(`[${MODULE_NAME}] 会话切换/载入，对齐状态并更新提示词注入`);
         processedSyncMessages.clear();
         processedAsyncMessages.clear();
         loadCurrentState();
@@ -129,10 +132,10 @@ async function init() {
         c.eventSource.on(c.event_types.CHAT_LOADED, onChatReset);
     }
 
-    // 4. 鍙戦€佸墠/鐢熸垚鍓嶇簿鍑嗛挬瀛愶細纭繚鍦ㄦ彁绀鸿瘝缁勮 (getCombinedPrompt & prepareOpenAIMessages) 涔嬪墠瀹屾垚娉ㄥ叆
-    // 绉婚櫎鏃跺簭杩囨櫄鐨?CHAT_COMPLETION_PROMPT_READY (鍏惰Е鍙戞椂 Chat Completion 娑堟伅浣撳凡瀹氬瀷)
-    // 绉婚櫎鎻愬墠閲忓啑浣欑殑 GENERATION_STARTED (鍦ㄦ枩鏉犳寚浠ゅ墠瑙﹀彂)
-    // 閲囩敤 GENERATION_AFTER_COMMANDS (鏂滄潬鎸囦护澶勭悊瀹屾垚鍚庛€佺粍瑁呮彁绀鸿瘝鍓? 涓?GENERATE_BEFORE_COMBINE_PROMPTS
+    // 4. 发送前/生成前精准钩子：确保在提示词组装 (getCombinedPrompt & prepareOpenAIMessages) 之前完成注入
+    // 移除时序过晚的 CHAT_COMPLETION_PROMPT_READY (其触发时 Chat Completion 消息体已定型)
+    // 移除提前量冗余的 GENERATION_STARTED (在斜杠指令前触发)
+    // 采用 GENERATION_AFTER_COMMANDS (斜杠指令处理完成后、组装提示词前) 与 GENERATE_BEFORE_COMBINE_PROMPTS
     let lastInjectTime = 0;
     const ensurePromptInjected = (force = false) => {
         if (!getSettings().enabled) return;
@@ -163,12 +166,13 @@ async function init() {
         c.eventSource.on(c.event_types.MESSAGE_SWIPED, () => ensurePromptInjected(true));
     }
 
-    // 5. 璁板繂鐘舵€佹垨蹇収鍙戠敓鍙樺姩鏃讹紝瀹炴椂瀵归綈娉ㄥ叆璇?    onStateChange(() => {
+    // 5. 记忆状态或快照发生变动时，实时对齐注入词
+    onStateChange(() => {
         ensurePromptInjected(true);
     });
 
-    // 6. 娑堟伅瀹屾垚涓庢覆鏌撳鐞?(甯﹀叏閾捐矾娑堟伅骞傜瓑闃查噸瀹堝崼)
-    // 鍚屾浼撮殢妯″紡锛氫互 MESSAGE_RECEIVED 涓烘潈濞佹暟鎹憚鍏ヤ簨浠讹紝CHARACTER_MESSAGE_RENDERED 浣滀负鍓嶇娓叉煋鍚屾鍏滃簳
+    // 6. 消息完成与渲染处理 (带全链路消息幂等防重守卫)
+    // 同步伴随模式：以 MESSAGE_RECEIVED 为权威数据摄入事件，CHARACTER_MESSAGE_RENDERED 作为前端渲染同步兜底
     c.eventSource.on(c.event_types.CHARACTER_MESSAGE_RENDERED, (mesid) => {
         const settings = getSettings();
         if (!settings.enabled || settings.mode !== 'sync') return;
@@ -179,11 +183,11 @@ async function init() {
 
         const key = getMessageFingerprint(c, id, msg);
         if (processedSyncMessages.has(key)) {
-            // 宸插湪 MESSAGE_RECEIVED 涓畬鎴愭爣绛炬彁鍙栦笌鐘舵€佸叆搴擄紝鐩存帴杩斿洖
+            // 已在 MESSAGE_RECEIVED 中完成标签提取与状态入库，直接返回
             return;
         }
 
-        // 鍏滃簳鍒嗘敮锛氳嫢娓叉煋浜嬩欢鍏堜簬鎺ユ敹浜嬩欢瑙﹀彂
+        // 兜底分支：若渲染事件先于接收事件触发
         if (typeof msg.mes === 'string' && msg.mes.includes('<!--PERSISTENT_MEMORY')) {
             const cleaned = extractAndApplySyncTag(msg.mes);
             markMessageProcessed(processedSyncMessages, key);
@@ -237,9 +241,9 @@ async function init() {
         }
     });
 
-    console.log(`[${MODULE_NAME}] 鎸佺画璁板繂绯荤粺 (v${EXTENSION_VERSION}) 鍒濆鍖栧氨缁猔);
+    console.log(`[${MODULE_NAME}] 持续记忆系统 (v${EXTENSION_VERSION}) 初始化就绪`);
 
-    // 鏆撮湶鍏ㄥ眬璋冭瘯鎺ュ彛
+    // 暴露全局调试接口
     window.__persistentMemory = {
         getState: () => loadCurrentState(),
         injectNow: () => buildAndInjectMemoryPrompt(),
@@ -247,15 +251,15 @@ async function init() {
     };
 }
 
-// 鍚姩鍏ュ彛 (鏀寔绔嬪嵆鎵ц涓?jQuery ready 鍙岄噸淇濇椿)
+// 启动入口 (支持立即执行与 jQuery ready 双重保活)
 if (typeof document !== 'undefined' && (document.readyState === 'complete' || document.readyState === 'interactive')) {
-    init().catch(e => console.error(`[${MODULE_NAME}] 鍚姩澶辫触:`, e));
+    init().catch(e => console.error(`[${MODULE_NAME}] 启动失败:`, e));
 } else {
     jQuery(async () => {
         try {
             await init();
         } catch (e) {
-            console.error(`[${MODULE_NAME}] 鍚姩澶辫触:`, e);
+            console.error(`[${MODULE_NAME}] 启动失败:`, e);
         }
     });
 }
