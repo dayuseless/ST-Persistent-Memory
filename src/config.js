@@ -45,6 +45,7 @@ export const MEMORY_SCOPE = {
 export const DEFAULT_SETTINGS = {
     enabled: true,
     showFloatingBubble: true,  // 是否在屏幕上显示快捷悬浮球
+    bubbleAutoDock: true,      // 悬浮球边缘吸附与静止半隐藏 (CatGod 风格抽屉拉手)
     mode: 'async',             // 'async' (后台静默) | 'sync' (伴随标签)
     asyncFrequency: 3,         // 异步模式下每几轮提炼一次
     digestSliceCount: 6,       // 提炼时回溯的历史消息数量 (2~15)

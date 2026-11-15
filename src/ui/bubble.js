@@ -117,6 +117,7 @@ export function placeBall(btn, W, D, host) {
     const box = viewportBox(W, D, host);
     const size = (btn && btn.offsetWidth) || (isMobile ? 48 : 46);
     let x = 0, y = 0;
+    let side = 'right';
     let restored = false;
     try {
         const storageKey = isMobile ? 'pm_bubble_pos_mobile' : 'pm_bubble_pos';
@@ -131,6 +132,7 @@ export function placeBall(btn, W, D, host) {
                     const maxY = Math.max(10, box.height - size - 10);
                     x = Math.min(Math.max(10, parsed.x), maxX);
                     y = Math.min(Math.max(10, parsed.y), maxY);
+                    side = parsed.side || (x + size / 2 < box.width / 2 ? 'left' : 'right');
                     restored = true;
                 }
             }
@@ -138,12 +140,63 @@ export function placeBall(btn, W, D, host) {
     } catch {}
 
     if (!restored) {
+        side = 'right';
         x = Math.max(10, box.width - size - (isMobile ? 16 : 20));
         y = Math.max(10, box.height - size - (isMobile ? 120 : 85));
     }
 
+    if (btn) {
+        btn.setAttribute('data-side', side);
+    }
+
     setBallPos(btn, x, y);
-    return { x, y };
+    return { x, y, side };
+}
+
+let restTimer = null;
+
+/**
+ * 唤醒悬浮球（拉出侧边，恢复全亮与完全可见状态）
+ */
+export function wakeBubble(btn) {
+    if (!btn) return;
+    if (restTimer) {
+        clearTimeout(restTimer);
+        restTimer = null;
+    }
+    btn.classList.remove('pm-resting');
+    btn.classList.add('pm-wake');
+}
+
+/**
+ * 调度悬浮球进入侧边半隐藏静止状态 (Resting Mode)
+ */
+export function scheduleBubbleRest(btn, delay = 3200) {
+    if (!btn) return;
+    if (restTimer) {
+        clearTimeout(restTimer);
+        restTimer = null;
+    }
+    if (getSettings().bubbleAutoDock === false) {
+        btn.classList.remove('pm-resting');
+        return;
+    }
+
+    const W = resolveHostWindow() || (typeof window !== 'undefined' ? window : null);
+    const D = W?.document || (typeof document !== 'undefined' ? document : null);
+
+    restTimer = setTimeout(() => {
+        if (!btn || !btn.isConnected) return;
+        const panel = D?.getElementById('pm-drawer-panel');
+        const isPanelOpen = panel?.classList?.contains('pm-show');
+        const isDragging = btn.classList?.contains('pm-dragging');
+        const isHovered = typeof btn.matches === 'function' ? btn.matches(':hover') : false;
+
+        if (!isPanelOpen && !isDragging && !isHovered) {
+            btn.classList.remove('pm-wake');
+            btn.classList.add('pm-resting');
+        }
+    }, delay);
 }
 
 /**
@@ -171,6 +224,7 @@ export function createFloatingButton(onToggle) {
     btn.title = '持续记忆系统 (可拖拽，点击打开 HUD 面板)';
     btn.innerHTML = '<i class="fa-solid fa-brain"></i>';
     btn.setAttribute('data-swipe-ignore', 'true');
+    btn.setAttribute('data-side', 'right');
 
     // 核心内联高可用防御样式：确保无论外部 CSS 载入延迟或样式冲突，悬浮球在双端均清晰可见且层级最高
     btn.style.position = 'fixed';
@@ -181,7 +235,7 @@ export function createFloatingButton(onToggle) {
     btn.style.alignItems = 'center';
     btn.style.justifyContent = 'center';
     btn.style.fontSize = isMobileDevice ? '20px' : '19px';
-    btn.style.cursor = 'pointer';
+    btn.style.cursor = 'grab';
     btn.style.userSelect = 'none';
     btn.style.webkitUserSelect = 'none';
     btn.style.webkitTouchCallout = 'none';
@@ -194,7 +248,7 @@ export function createFloatingButton(onToggle) {
     btn.style.color = '#2563eb';
     btn.style.border = '2px solid #2563eb';
     btn.style.boxShadow = '0 4px 16px rgba(0, 0, 0, 0.22), 0 1px 3px rgba(0, 0, 0, 0.12)';
-    btn.style.willChange = 'transform';
+    btn.style.willChange = 'transform, translate, opacity';
 
     const shouldShow = getSettings().showFloatingBubble !== false;
     btn.style.setProperty('display', shouldShow ? 'flex' : 'none', 'important');
@@ -210,6 +264,9 @@ export function createFloatingButton(onToggle) {
             onToggle();
         }
     });
+
+    // 挂载后闲置自动优雅缩入侧边栏半隐藏
+    scheduleBubbleRest(btn, 3500);
 }
 
 /**
@@ -231,7 +288,9 @@ export function resetBubblePosition() {
         if (bubble) {
             const layer = ensureLayerHost();
             placeBall(bubble, W, D, layer ? layer.host : null);
+            wakeBubble(bubble);
             bubble.style.setProperty('display', 'flex', 'important');
+            scheduleBubbleRest(bubble, 3500);
         }
     }
 }
@@ -332,6 +391,7 @@ export function makeDraggable(el, onClickCallback) {
 
     const onPointerDown = (e) => {
         if (e.pointerType === 'mouse' && e.button !== 0) return;
+        wakeBubble(el);
         isDragging = true;
         hasMoved = false;
         touchStartTime = Date.now();
@@ -346,6 +406,7 @@ export function makeDraggable(el, onClickCallback) {
 
         el.style.transition = 'none';
         el.classList.add('pm-dragging');
+        el.classList.remove('pm-snapping');
     };
 
     const onPointerMove = (e) => {
@@ -354,18 +415,21 @@ export function makeDraggable(el, onClickCallback) {
         const dy = e.clientY - startY;
 
         if (!hasMoved) {
-            if (Math.hypot(dx, dy) < 8) return;
+            if (Math.hypot(dx, dy) < 6) return;
             hasMoved = true;
         }
 
         const box = viewportBox(W, D, host);
         const size = el.offsetWidth || (isMobile() ? 48 : 46);
-        const maxX = Math.max(10, box.width - size - 10);
-        const maxY = Math.max(10, box.height - size - 10);
+        const maxX = Math.max(4, box.width - size - 4);
+        const maxY = Math.max(4, box.height - size - 4);
 
-        currentX = Math.min(Math.max(10, initialX + dx), maxX);
-        currentY = Math.min(Math.max(10, initialY + dy), maxY);
+        currentX = Math.min(Math.max(4, initialX + dx), maxX);
+        currentY = Math.min(Math.max(4, initialY + dy), maxY);
         setBallPos(el, currentX, currentY);
+
+        const side = currentX + size / 2 < box.width / 2 ? 'left' : 'right';
+        el.setAttribute('data-side', side);
     };
 
     const onPointerUp = (e) => {
@@ -378,12 +442,38 @@ export function makeDraggable(el, onClickCallback) {
             el.releasePointerCapture?.(e.pointerId);
         } catch {}
 
+        const box = viewportBox(W, D, host);
+        const size = el.offsetWidth || (isMobile() ? 48 : 46);
+
         if (hasMoved) {
             suppressClickUntil = Date.now() + 350;
+
+            const autoDock = getSettings().bubbleAutoDock !== false;
+            let side = currentX + size / 2 < box.width / 2 ? 'left' : 'right';
+
+            if (autoDock) {
+                // 智能边缘吸附：松手时平滑吸附到最近一侧边缘
+                const edgeMargin = isMobile() ? 6 : 8;
+                const snapX = side === 'left' ? edgeMargin : Math.max(edgeMargin, box.width - size - edgeMargin);
+                const maxY = Math.max(10, box.height - size - 10);
+                currentY = Math.min(Math.max(10, currentY), maxY);
+                currentX = snapX;
+
+                el.setAttribute('data-side', side);
+                el.classList.add('pm-snapping');
+                setBallPos(el, currentX, currentY);
+
+                setTimeout(() => {
+                    el.classList.remove('pm-snapping');
+                }, 450);
+            }
+
             try {
                 const storage = W?.localStorage || (typeof localStorage !== 'undefined' ? localStorage : null);
-                storage?.setItem(getStorageKey(), JSON.stringify({ x: currentX, y: currentY }));
+                storage?.setItem(getStorageKey(), JSON.stringify({ x: currentX, y: currentY, side }));
             } catch {}
+
+            scheduleBubbleRest(el, 3000);
         } else {
             const duration = Date.now() - touchStartTime;
             if (duration < 450) {
@@ -391,6 +481,7 @@ export function makeDraggable(el, onClickCallback) {
                     onClickCallback?.();
                 }
             }
+            scheduleBubbleRest(el, 3000);
         }
     };
 
@@ -398,6 +489,17 @@ export function makeDraggable(el, onClickCallback) {
     el.addEventListener('pointermove', onPointerMove);
     el.addEventListener('pointerup', onPointerUp);
     el.addEventListener('pointercancel', onPointerUp);
+
+    // 鼠标触摸/悬停即刻唤醒拉出，移出延时进入半隐藏
+    el.addEventListener('pointerenter', () => {
+        wakeBubble(el);
+    });
+
+    el.addEventListener('pointerleave', () => {
+        if (!isDragging) {
+            scheduleBubbleRest(el, 2500);
+        }
+    });
 
     // 鼠标拖拽与触控轻触去重防穿透
     el.addEventListener('click', (e) => {

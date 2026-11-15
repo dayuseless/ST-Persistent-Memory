@@ -12,7 +12,7 @@ import { API_PRESETS, GAMEPLAY_PRESETS, applyApiPreset, applyGameplayPreset, get
 import { renderMemoryCard } from './ui/cards.js';
 import { showSyncLoreModal, showPromoteLoreModal, showAdvancedSettingsModal, showInjectionInspectorModal, showMemoryLineageModal, showHistoricalSliceModal } from './ui/modal.js';
 import { getLastInjectionSnapshot } from './injector.js';
-import { createFloatingButton, resetBubblePosition, setBubbleState, getBubbleState, resolveHostWindow } from './ui/bubble.js';
+import { createFloatingButton, resetBubblePosition, setBubbleState, getBubbleState, resolveHostWindow, wakeBubble, scheduleBubbleRest } from './ui/bubble.js';
 import { createNativeExtensionDrawer, registerExtensionsMenuEntry, renderNativeDrawerContent, importSillyTavernApiConfig } from './ui/drawer.js';
 import {
     registerSlashCommands,
@@ -178,11 +178,17 @@ function createPanelDOM() {
 function togglePanel(show) {
     if (!panelEl) return;
     const shouldShow = show !== undefined ? show : !panelEl.classList.contains('pm-show');
+    const W = resolveHostWindow() || (typeof window !== 'undefined' ? window : null);
+    const D = W?.document || (typeof document !== 'undefined' ? document : null);
+    const bubble = D?.getElementById('pm-floating-bubble');
+
     if (shouldShow) {
         panelEl.classList.add('pm-show');
         renderPanelContent();
+        if (bubble) wakeBubble(bubble);
     } else {
         panelEl.classList.remove('pm-show');
+        if (bubble) scheduleBubbleRest(bubble, 2500);
     }
 }
 
@@ -614,6 +620,17 @@ function renderPanelContent() {
                         <i class="fa-solid fa-arrows-rotate"></i> 重置位置
                     </button>
                 </div>
+                <div class="flex-container alignitemscenter wide100p" style="justify-content: space-between; padding-top: 6px; border-top: 1px dashed #e2e8f0; margin-top: 6px;">
+                    <label class="pm-switch-wrapper flex1">
+                        <span style="color: #475569; font-size: 12px; font-weight: 600;">
+                            <i class="fa-solid fa-arrows-left-right-to-line" style="color: #10b981;"></i> 边缘吸附与静止半隐藏 (闲置时像小猫之神自动缩进侧边)
+                        </span>
+                        <div class="pm-switch">
+                            <input type="checkbox" id="pm-setting-hud-autodock" ${settings.bubbleAutoDock !== false ? 'checked' : ''}>
+                            <span class="pm-slider"></span>
+                        </div>
+                    </label>
+                </div>
             </div>
 
             <!-- ⚡ 独立提炼 API 端点配置 (自定义兼容 OpenAI 格式) -->
@@ -954,6 +971,21 @@ function bindPanelEvents(container) {
         if (nativeCb) nativeCb.checked = isChecked;
     });
 
+    container.querySelector('#pm-setting-hud-autodock')?.addEventListener('change', (e) => {
+        const isChecked = e.target.checked;
+        updateSettings({ bubbleAutoDock: isChecked });
+        const W = resolveHostWindow() || (typeof window !== 'undefined' ? window : null);
+        const D = W?.document || (typeof document !== 'undefined' ? document : null);
+        const bubble = D?.getElementById('pm-floating-bubble');
+        if (bubble) {
+            if (!isChecked) {
+                wakeBubble(bubble);
+            } else {
+                scheduleBubbleRest(bubble, 2500);
+            }
+        }
+    });
+
     container.querySelector('#pm-reset-bubble-btn')?.addEventListener('click', () => {
         resetBubblePosition();
         window.toastr?.info?.('悬浮球位置已重置至默认推荐位置', '持续记忆');
@@ -1065,11 +1097,13 @@ function bindPanelEvents(container) {
         syncHudApiInputs();
         const isEnabled = container.querySelector('#pm-setting-hud-enabled')?.checked ?? true;
         const showBubble = container.querySelector('#pm-setting-hud-bubble')?.checked ?? true;
+        const isAutoDock = container.querySelector('#pm-setting-hud-autodock')?.checked ?? true;
         const useCustom = container.querySelector('#pm-setting-custom-api-enabled')?.checked ?? false;
 
         updateSettings({
             enabled: isEnabled,
             showFloatingBubble: showBubble,
+            bubbleAutoDock: isAutoDock,
             useCustomApi: useCustom
         });
 

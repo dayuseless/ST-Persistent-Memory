@@ -275,6 +275,8 @@ import {
 import {
     createFloatingButton as bubbleCreateFloatingButton,
     resetBubblePosition as bubbleResetBubblePosition,
+    wakeBubble as bubbleWakeBubble,
+    scheduleBubbleRest as bubbleScheduleRest,
     setBubbleState,
     getBubbleState
 } from '../src/ui/bubble.js';
@@ -7618,6 +7620,141 @@ Intermediate analysis details...
             assert.strictEqual(btnCustom.style.transform, 'translate3d(328px, 678px, 0)', '手机端重置后必须靠右 16px、靠底 120px，完全避开手机输入法与底栏 (390-46-16, 844-46-120)');
             assert.strictEqual(mockLocalStorage['pm_bubble_pos'], undefined, '重置后必须清除桌面坐标缓存');
             assert.strictEqual(mockLocalStorage['pm_bubble_pos_mobile'], undefined, '重置后必须清除手机坐标缓存');
+        } finally {
+            global.document = origDoc;
+            global.window = origWin;
+        }
+    });
+
+    // ─────────────────────────────────────────────────────────────
+    // T126: 悬浮球边缘吸附与静止半隐藏 (CatGod 风格抽屉拉手模式)
+    // ─────────────────────────────────────────────────────────────
+    test('T126: 悬浮球智能边缘吸附与静止半隐藏契约测试 (CatGod 风格抽屉拉手模式：方向感知、唤醒拉出、延时收起与配置控制)', async () => {
+        const origDoc = global.document;
+        const origWin = global.window;
+        const domRegistry = new Map();
+
+        const createMockDOMElement = (tagName = 'div') => {
+            const styles = {};
+            const attrs = {};
+            const children = [];
+            const classes = new Set();
+            let _id = '';
+            const el = {
+                tagName: tagName.toUpperCase(),
+                className: '',
+                title: '',
+                innerHTML: '',
+                offsetWidth: 46,
+                offsetHeight: 46,
+                isConnected: false,
+                children,
+                setAttribute: (k, v) => { attrs[k] = String(v); },
+                getAttribute: (k) => attrs[k] || null,
+                contains: (node) => children.includes(node),
+                appendChild: (node) => {
+                    if (!children.includes(node)) children.push(node);
+                    node.isConnected = true;
+                    if (node.id) domRegistry.set(node.id, node);
+                    return node;
+                },
+                removeChild: (node) => {
+                    const idx = children.indexOf(node);
+                    if (idx !== -1) children.splice(idx, 1);
+                    node.isConnected = false;
+                    if (node.id) domRegistry.delete(node.id);
+                    return node;
+                },
+                style: {
+                    setProperty: (k, v) => { styles[k] = String(v); },
+                    getPropertyValue: (k) => styles[k] || '',
+                    get position() { return styles['position'] || ''; },
+                    set position(v) { styles['position'] = v; },
+                    get zIndex() { return styles['z-index'] || ''; },
+                    set zIndex(v) { styles['z-index'] = v; },
+                    get left() { return styles['left'] || ''; },
+                    set left(v) { styles['left'] = v; },
+                    get top() { return styles['top'] || ''; },
+                    set top(v) { styles['top'] = v; },
+                    get transform() { return styles['transform'] || ''; },
+                    set transform(v) { styles['transform'] = v; }
+                },
+                classList: {
+                    add: (...c) => c.forEach(x => classes.add(x)),
+                    remove: (...c) => c.forEach(x => classes.delete(x)),
+                    contains: (c) => classes.has(c)
+                },
+                addEventListener: () => {},
+                removeEventListener: () => {},
+                getBoundingClientRect: () => ({ left: 0, top: 0, width: el.offsetWidth || 1920, height: el.offsetHeight || 1080 })
+            };
+            Object.defineProperty(el, 'id', {
+                get: () => _id,
+                set: (v) => {
+                    _id = v;
+                    if (v) domRegistry.set(v, el);
+                }
+            });
+            return el;
+        };
+
+        const mockBody = createMockDOMElement('body');
+        mockBody.isConnected = true;
+        mockBody.offsetWidth = 1920;
+        mockBody.offsetHeight = 1080;
+
+        try {
+            global.document = {
+                documentElement: { clientWidth: 1920, clientHeight: 1080 },
+                body: mockBody,
+                getElementById: (id) => domRegistry.get(id) || null,
+                createElement: (tag) => {
+                    const el = createMockDOMElement(tag);
+                    if (tag.toUpperCase() === 'PM-FLOATING-LAYER') {
+                        el.offsetWidth = 1920;
+                        el.offsetHeight = 1080;
+                    }
+                    return el;
+                }
+            };
+
+            global.window = Object.assign({}, origWin, {
+                innerWidth: 1920,
+                innerHeight: 1080,
+                document: global.document,
+                localStorage: global.localStorage,
+                addEventListener: () => {},
+                removeEventListener: () => {}
+            });
+            global.window.parent = global.window;
+            global.window.top = global.window;
+
+            // 1. 初次挂载具有默认吸附侧边
+            mockLocalStorage['pm_bubble_pos'] = null;
+            bubbleCreateFloatingButton();
+            const btn = global.document.getElementById('pm-floating-bubble');
+            assert.ok(btn, '悬浮球必须创建成功');
+            assert.strictEqual(btn.getAttribute('data-side'), 'right', '默认吸附方向为右侧');
+
+            // 2. 验证唤醒功能 (wakeBubble)
+            btn.classList.add('pm-resting');
+            bubbleWakeBubble(btn);
+            assert.strictEqual(btn.classList.contains('pm-resting'), false, '唤醒时必须移除 pm-resting');
+            assert.strictEqual(btn.classList.contains('pm-wake'), true, '唤醒时必须添加 pm-wake 标记完全展开');
+
+            // 3. 验证延时静止半隐藏 (scheduleBubbleRest)
+            bubbleScheduleRest(btn, 10);
+            await new Promise(r => setTimeout(r, 35));
+            assert.strictEqual(btn.classList.contains('pm-resting'), true, '倒计时结束后必须进入 pm-resting 半隐藏');
+            assert.strictEqual(btn.classList.contains('pm-wake'), false, '半隐藏时必须移除 pm-wake');
+
+            // 4. 验证禁用配置 (bubbleAutoDock: false) 时绝不半隐藏
+            updateSettings({ bubbleAutoDock: false });
+            bubbleWakeBubble(btn);
+            bubbleScheduleRest(btn, 10);
+            await new Promise(r => setTimeout(r, 35));
+            assert.strictEqual(btn.classList.contains('pm-resting'), false, '禁用吸附半隐藏后，必须保持常驻不隐藏');
+            updateSettings({ bubbleAutoDock: true });
         } finally {
             global.document = origDoc;
             global.window = origWin;
