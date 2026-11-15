@@ -97,16 +97,23 @@ export function viewportBox(W, D, host) {
     };
 }
 
+let ballPos = { x: 0, y: 0 };
+
 /**
  * 将坐标通过 GPU 硬件加速 translate3d 渲染在屏幕上
  */
 export function setBallPos(btn, x, y) {
     if (!btn || !btn.style) return;
+    ballPos = { x, y };
     btn.style.left = '0px';
     btn.style.top = '0px';
     btn.style.right = 'auto';
     btn.style.bottom = 'auto';
     btn.style.transform = `translate3d(${Math.round(x)}px, ${Math.round(y)}px, 0)`;
+}
+
+export function getBallPos() {
+    return { ...ballPos };
 }
 
 /**
@@ -373,50 +380,47 @@ export function makeDraggable(el, onClickCallback) {
     const isMobile = () => ((W && W.innerWidth) || 1024) <= 768;
     const getStorageKey = () => isMobile() ? 'pm_bubble_pos_mobile' : 'pm_bubble_pos';
 
-    let isDragging = false;
-    let hasMoved = false;
-    let startX = 0, startY = 0;
-    let initialX = 0, initialY = 0;
-    let currentX = 0, currentY = 0;
-    let touchStartTime = 0;
+    let drag = null;
     let suppressClickUntil = 0;
 
     const layer = ensureLayerHost();
     const host = layer ? layer.host : null;
 
     // 初次定位
-    const pos = placeBall(el, W, D, host);
-    currentX = pos.x;
-    currentY = pos.y;
+    placeBall(el, W, D, host);
+
+    // 禁用移动端长按系统菜单
+    el.addEventListener('contextmenu', (e) => e.preventDefault());
 
     const onPointerDown = (e) => {
         if (e.pointerType === 'mouse' && e.button !== 0) return;
-        wakeBubble(el);
-        isDragging = true;
-        hasMoved = false;
-        touchStartTime = Date.now();
-        startX = e.clientX;
-        startY = e.clientY;
-        initialX = currentX;
-        initialY = currentY;
+        drag = {
+            id: e.pointerId,
+            sx: e.clientX,
+            sy: e.clientY,
+            x: ballPos.x,
+            y: ballPos.y,
+            moved: false
+        };
 
         try {
             el.setPointerCapture?.(e.pointerId);
         } catch {}
 
-        el.style.transition = 'none';
-        el.classList.add('pm-dragging');
-        el.classList.remove('pm-snapping');
+        wakeBubble(el);
     };
 
     const onPointerMove = (e) => {
-        if (!isDragging) return;
-        const dx = e.clientX - startX;
-        const dy = e.clientY - startY;
+        if (!drag || e.pointerId !== drag.id) return;
+        const dx = e.clientX - drag.sx;
+        const dy = e.clientY - drag.sy;
 
-        if (!hasMoved) {
+        if (!drag.moved) {
+            // 防抖阈值：手指触控小于 6px 的微小位移视为轻触，不触发拖拽
             if (Math.hypot(dx, dy) < 6) return;
-            hasMoved = true;
+            drag.moved = true;
+            el.classList.add('pm-dragging');
+            el.classList.remove('pm-snapping');
         }
 
         const box = viewportBox(W, D, host);
@@ -424,98 +428,90 @@ export function makeDraggable(el, onClickCallback) {
         const maxX = Math.max(4, box.width - size - 4);
         const maxY = Math.max(4, box.height - size - 4);
 
-        currentX = Math.min(Math.max(4, initialX + dx), maxX);
-        currentY = Math.min(Math.max(4, initialY + dy), maxY);
+        const currentX = Math.min(Math.max(4, drag.x + dx), maxX);
+        const currentY = Math.min(Math.max(4, drag.y + dy), maxY);
         setBallPos(el, currentX, currentY);
 
         const side = currentX + size / 2 < box.width / 2 ? 'left' : 'right';
         el.setAttribute('data-side', side);
     };
 
-    const onPointerUp = (e) => {
-        if (!isDragging) return;
-        isDragging = false;
-        el.style.transition = '';
+    const endDrag = (e) => {
+        if (!drag || e.pointerId !== drag.id) return;
+        const moved = drag.moved;
+        drag = null;
         el.classList.remove('pm-dragging');
 
         try {
             el.releasePointerCapture?.(e.pointerId);
         } catch {}
 
+        // 若没有发生有效位移（属于纯轻触点击），不重写坐标与吸附，由 click 事件精准触发控制台
+        if (!moved) {
+            scheduleBubbleRest(el, 3000);
+            return;
+        }
+
+        // 发生过拖拽：设置 400ms 屏蔽窗口，拦截拖拽释放时浏览器伴生的合成 click 事件
+        suppressClickUntil = Date.now() + 400;
+
         const box = viewportBox(W, D, host);
         const size = el.offsetWidth || (isMobile() ? 48 : 46);
+        let currentX = ballPos.x;
+        let currentY = ballPos.y;
 
-        if (hasMoved) {
-            suppressClickUntil = Date.now() + 350;
+        const autoDock = getSettings().bubbleAutoDock !== false;
+        let side = currentX + size / 2 < box.width / 2 ? 'left' : 'right';
 
-            const autoDock = getSettings().bubbleAutoDock !== false;
-            let side = currentX + size / 2 < box.width / 2 ? 'left' : 'right';
+        if (autoDock) {
+            // 智能边缘平滑吸附
+            const edgeMargin = isMobile() ? 6 : 8;
+            const snapX = side === 'left' ? edgeMargin : Math.max(edgeMargin, box.width - size - edgeMargin);
+            const maxY = Math.max(10, box.height - size - 10);
+            currentY = Math.min(Math.max(10, currentY), maxY);
+            currentX = snapX;
 
-            if (autoDock) {
-                // 智能边缘吸附：松手时平滑吸附到最近一侧边缘
-                const edgeMargin = isMobile() ? 6 : 8;
-                const snapX = side === 'left' ? edgeMargin : Math.max(edgeMargin, box.width - size - edgeMargin);
-                const maxY = Math.max(10, box.height - size - 10);
-                currentY = Math.min(Math.max(10, currentY), maxY);
-                currentX = snapX;
+            el.setAttribute('data-side', side);
+            el.classList.add('pm-snapping');
+            setBallPos(el, currentX, currentY);
 
-                el.setAttribute('data-side', side);
-                el.classList.add('pm-snapping');
-                setBallPos(el, currentX, currentY);
-
-                setTimeout(() => {
-                    el.classList.remove('pm-snapping');
-                }, 450);
-            }
-
-            try {
-                const storage = W?.localStorage || (typeof localStorage !== 'undefined' ? localStorage : null);
-                storage?.setItem(getStorageKey(), JSON.stringify({ x: currentX, y: currentY, side }));
-            } catch {}
-
-            scheduleBubbleRest(el, 3000);
-        } else {
-            const duration = Date.now() - touchStartTime;
-            if (duration < 450) {
-                if (Date.now() > suppressClickUntil) {
-                    onClickCallback?.();
-                }
-            }
-            scheduleBubbleRest(el, 3000);
+            setTimeout(() => {
+                el.classList.remove('pm-snapping');
+            }, 450);
         }
+
+        try {
+            const storage = W?.localStorage || (typeof localStorage !== 'undefined' ? localStorage : null);
+            storage?.setItem(getStorageKey(), JSON.stringify({ x: currentX, y: currentY, side }));
+        } catch {}
+
+        scheduleBubbleRest(el, 3000);
     };
 
     el.addEventListener('pointerdown', onPointerDown);
     el.addEventListener('pointermove', onPointerMove);
-    el.addEventListener('pointerup', onPointerUp);
-    el.addEventListener('pointercancel', onPointerUp);
+    el.addEventListener('pointerup', endDrag);
+    el.addEventListener('pointercancel', endDrag);
 
-    // 鼠标触摸/悬停即刻唤醒拉出，移出延时进入半隐藏
-    el.addEventListener('pointerenter', () => {
-        wakeBubble(el);
-    });
-
-    el.addEventListener('pointerleave', () => {
-        if (!isDragging) {
-            scheduleBubbleRest(el, 2500);
-        }
-    });
-
-    // 鼠标拖拽与触控轻触去重防穿透
+    // 唯一原生点击响应入口：零延迟、100% 灵敏响应轻触 (彻底消灭 double-toggle 假死 Bug)
     el.addEventListener('click', (e) => {
-        if (hasMoved || Date.now() < suppressClickUntil) {
-            e.stopImmediatePropagation();
-            e.preventDefault();
+        if (Date.now() < suppressClickUntil) {
+            e?.stopImmediatePropagation?.();
+            e?.preventDefault?.();
             return;
         }
+        wakeBubble(el);
         onClickCallback?.();
+    });
+
+    el.addEventListener('pointerenter', () => wakeBubble(el));
+    el.addEventListener('pointerleave', () => {
+        if (!drag) scheduleBubbleRest(el, 2500);
     });
 
     // 视口动态伸缩响应 (屏幕翻转、软键盘弹出/收起自适应)
     const onResize = () => {
-        const nextPos = placeBall(el, W, D, host);
-        currentX = nextPos.x;
-        currentY = nextPos.y;
+        placeBall(el, W, D, host);
     };
 
     if (typeof W.addEventListener === 'function') {

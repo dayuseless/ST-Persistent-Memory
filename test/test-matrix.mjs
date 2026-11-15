@@ -7640,6 +7640,7 @@ Intermediate analysis details...
             const children = [];
             const classes = new Set();
             let _id = '';
+            const listeners = {};
             const el = {
                 tagName: tagName.toUpperCase(),
                 className: '',
@@ -7684,8 +7685,19 @@ Intermediate analysis details...
                     remove: (...c) => c.forEach(x => classes.delete(x)),
                     contains: (c) => classes.has(c)
                 },
-                addEventListener: () => {},
-                removeEventListener: () => {},
+                addEventListener: (type, fn) => {
+                    if (!listeners[type]) listeners[type] = [];
+                    listeners[type].push(fn);
+                },
+                removeEventListener: (type, fn) => {
+                    if (listeners[type]) {
+                        const idx = listeners[type].indexOf(fn);
+                        if (idx !== -1) listeners[type].splice(idx, 1);
+                    }
+                },
+                dispatch: (type, event = {}) => {
+                    (listeners[type] || []).forEach(fn => fn(event));
+                },
                 getBoundingClientRect: () => ({ left: 0, top: 0, width: el.offsetWidth || 1920, height: el.offsetHeight || 1080 })
             };
             Object.defineProperty(el, 'id', {
@@ -7755,6 +7767,30 @@ Intermediate analysis details...
             await new Promise(r => setTimeout(r, 35));
             assert.strictEqual(btn.classList.contains('pm-resting'), false, '禁用吸附半隐藏后，必须保持常驻不隐藏');
             updateSettings({ bubbleAutoDock: true });
+
+            // 5. 验证触控轻点单次响应灵敏度 (杜绝 pointerup 与 click 双触发抵消与长按要求)
+            let clickCallbackFired = 0;
+            domRegistry.delete('pm-floating-bubble');
+            mockBody.children = [];
+            bubbleCreateFloatingButton(() => {
+                clickCallbackFired++;
+            });
+            const newBtn = global.document.getElementById('pm-floating-bubble');
+            assert.ok(newBtn, '新创建悬浮球必须存在');
+
+            // 模拟极短轻触 (touchdown -> touchup < 6px 位移)
+            newBtn.dispatch('pointerdown', { pointerId: 1, pointerType: 'touch', clientX: 100, clientY: 100 });
+            newBtn.dispatch('pointerup', { pointerId: 1, clientX: 101, clientY: 100 });
+            assert.strictEqual(clickCallbackFired, 0, 'pointerup 阶段绝对不得重复提前触发点击');
+            newBtn.dispatch('click', { stopImmediatePropagation: () => {}, preventDefault: () => {} });
+            assert.strictEqual(clickCallbackFired, 1, '手指轻触点击必须精准触发且仅触发一次');
+
+            // 模拟拖拽后松手 (touchdown -> move > 6px -> touchup)
+            newBtn.dispatch('pointerdown', { pointerId: 2, pointerType: 'touch', clientX: 100, clientY: 100 });
+            newBtn.dispatch('pointermove', { pointerId: 2, clientX: 200, clientY: 100 });
+            newBtn.dispatch('pointerup', { pointerId: 2 });
+            newBtn.dispatch('click', { stopImmediatePropagation: () => {}, preventDefault: () => {} });
+            assert.strictEqual(clickCallbackFired, 1, '拖拽松手后伴生的合成 click 必须被安全屏蔽，绝不误触控制台');
         } finally {
             global.document = origDoc;
             global.window = origWin;
