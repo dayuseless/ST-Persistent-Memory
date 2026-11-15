@@ -142,12 +142,22 @@ export const GAMEPLAY_PRESETS = {
  * @returns {boolean}
  */
 export function applyGameplayPreset(presetId) {
-    const preset = GAMEPLAY_PRESETS[presetId];
+    if (!presetId || typeof presetId !== 'string') return false;
+    const cleanId = presetId.trim().toLowerCase();
+    const aliasMap = {
+        'fantasy': 'fantasy_ttrpg',
+        'ensemble': 'ensemble_drama',
+        'mystery': 'mystery_detective',
+        'detective': 'mystery_detective',
+        'ttrpg': 'fantasy_ttrpg'
+    };
+    const key = aliasMap[cleanId] || cleanId;
+    const preset = GAMEPLAY_PRESETS[key];
     if (!preset) return false;
 
     updateSettings({
         ...preset.settings,
-        activeGameplayPreset: presetId
+        activeGameplayPreset: key
     });
     saveSettingsImmediately();
     if (typeof window !== 'undefined') {

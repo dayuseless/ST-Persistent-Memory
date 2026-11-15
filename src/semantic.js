@@ -478,8 +478,19 @@ export function calculateHybridMemoryScore(mem, queryContext, settings = {}) {
     let lexicalHits = 0;
 
     for (const k of keys) {
-        if (k && scanCorpus.includes(String(k).toLowerCase())) {
+        if (!k) continue;
+        const kStr = String(k).toLowerCase();
+        if (scanCorpus.includes(kStr)) {
             lexicalHits += 2;
+        } else if (kStr.length >= 2) {
+            // Bigram 细粒度容错匹配 (仅针对 2 字及以上复合词，杜绝单字虚假触发)
+            const keyTokens = tokenizeCjkBigram(kStr).filter(t => t.length >= 2);
+            if (keyTokens.length > 0) {
+                const hitCount = keyTokens.filter(t => scanCorpus.includes(t)).length;
+                if (hitCount > 0) {
+                    lexicalHits += Number((1.5 * (hitCount / keyTokens.length)).toFixed(2));
+                }
+            }
         }
     }
 
@@ -547,4 +558,287 @@ export function calculateHybridMemoryScore(mem, queryContext, settings = {}) {
 
     // 放大至兼容基准分
     return Math.max(0.1, Number((fusedScore * 5).toFixed(3)));
+}
+
+/**
+ * CJK 与字母数字混合离散 Bigram 分词器 (纯本地、零外部依赖、高吞吐)
+ * 
+ * 规则：
+ * 1. 过滤标点、控制字符及常见通用停用词。
+ * 2. 针对 CJK (中日韩汉字/假名/谚文) 片段：
+ *    - 提取单字 (Unigram)，过滤单字停用词；
+ *    - 提取相邻双字 (Bigram)，例如 "黑刀刺客" -> ["黑刀", "刀刺", "刺客"]，极大强化实体与地名人名组合词判别力。
+ * 3. 针对英文字母/数字词汇：提取单词级 Token (如 "excalibur")。
+ * 
+ * @param {string} text 输入文本
+ * @returns {string[]} 去重后的 Token 词元数组
+ */
+export function tokenizeCjkBigram(text) {
+    if (!text || typeof text !== 'string') return [];
+    const clean = text.toLowerCase().trim();
+    if (!clean) return [];
+
+    const tokens = new Set();
+    // 匹配英文/数字词 与 CJK 字符片段 (含中日韩常用汉字、扩展字与假名谚文)
+    const segmentRegex = /([a-z0-9_\-]+)|([\u4e00-\u9fa5\u3400-\u4dbf\uf900-\ufaff\u3040-\u309f\u30a0-\u30ff\uac00-\ud7af]+)/gi;
+    let match;
+    while ((match = segmentRegex.exec(clean)) !== null) {
+        const enWord = match[1];
+        const cjkSeg = match[2];
+        if (enWord) {
+            if (!STOPWORDS.has(enWord) && enWord.length > 1) {
+                tokens.add(enWord);
+            }
+        } else if (cjkSeg) {
+            // 生成 2-gram (二元词)
+            for (let i = 0; i < cjkSeg.length - 1; i++) {
+                const bg = cjkSeg.slice(i, i + 2);
+                tokens.add(bg);
+            }
+            // 生成 1-gram (过滤停用单字)
+            for (let i = 0; i < cjkSeg.length; i++) {
+                const char = cjkSeg[i];
+                if (!STOPWORDS.has(char)) {
+                    tokens.add(char);
+                }
+            }
+        }
+    }
+    return Array.from(tokens);
+}
+
+/**
+ * 基于 CJK Bigram + Unigram 的纯本地加权词法重合度打分器 (Dice 系数加权变种)
+ * 
+ * 权重分配：
+ * - 2-gram 及以上复合词命中权重为 2.0 (专名、实体词强特征)
+ * - 1-gram 单字命中权重为 0.5 (弱特征)
+ * 
+ * @param {string} textA 文本 A
+ * @param {string} textB 文本 B
+ * @returns {number} 归一化重合度得分 [0, 1]
+ */
+export function calculateBigramLexicalScore(textA, textB) {
+    if (!textA || !textB || typeof textA !== 'string' || typeof textB !== 'string') {
+        return 0;
+    }
+    const tokensA = tokenizeCjkBigram(textA);
+    const tokensB = tokenizeCjkBigram(textB);
+    if (tokensA.length === 0 || tokensB.length === 0) {
+        return 0;
+    }
+
+    const setB = new Set(tokensB);
+    let intersectionWeight = 0;
+    let weightA = 0;
+
+    for (const t of tokensA) {
+        const w = t.length >= 2 ? 2.0 : 0.5;
+        weightA += w;
+        if (setB.has(t)) {
+            intersectionWeight += w;
+        }
+    }
+
+    let weightB = 0;
+    for (const t of tokensB) {
+        weightB += (t.length >= 2 ? 2.0 : 0.5);
+    }
+
+    const totalWeight = weightA + weightB;
+    if (totalWeight <= 0) return 0;
+
+    const score = (2.0 * intersectionWeight) / totalWeight;
+    return Math.max(0, Math.min(1.0, Number(score.toFixed(4))));
+}
+
+/**
+ * 计算记忆条目相对于现场查询语料的原始词法匹配得分
+ * 
+ * @param {object} mem 记忆对象
+ * @param {object} queryContext 现场查询上下文
+ * @param {object} [settings={}] 插件配置
+ * @returns {number} 原始词法打分
+ */
+export function calculateRawLexicalScore(mem, queryContext, settings = {}) {
+    if (!mem || !mem.content) return 0;
+    const scanCorpus = queryContext?.scanCorpus || '';
+    const queryText = queryContext?.queryText || '';
+    const combinedCorpus = `${scanCorpus} ${queryText}`.toLowerCase().trim();
+    if (!combinedCorpus) return 0;
+
+    let score = 0;
+    const keys = Array.isArray(mem.trigger_keys) ? mem.trigger_keys : [];
+
+    // 1. 触发词命中 (精确匹配与 Bigram 细粒度容错)
+    for (const k of keys) {
+        if (!k) continue;
+        const kStr = String(k).toLowerCase();
+        if (combinedCorpus.includes(kStr)) {
+            score += 2.0;
+        } else if (kStr.length >= 2) {
+            const keyTokens = tokenizeCjkBigram(kStr).filter(t => t.length >= 2);
+            if (keyTokens.length > 0) {
+                const hitCount = keyTokens.filter(t => combinedCorpus.includes(t)).length;
+                if (hitCount > 0) {
+                    score += 1.5 * (hitCount / keyTokens.length);
+                }
+            }
+        }
+    }
+
+    // 2. 正文与现场语料的 Bigram 重合度
+    const bigramOverlap = calculateBigramLexicalScore(mem.content, combinedCorpus);
+    score += bigramOverlap * 3.0;
+
+    // 3. 世界书关联加权
+    if (settings.worldBookIntegrationEnabled !== false && mem.lorebook_ref?.entry_name) {
+        const lbName = String(mem.lorebook_ref.entry_name).toLowerCase();
+        if (combinedCorpus.includes(lbName)) {
+            score += 2.0;
+        }
+    }
+
+    return Number(score.toFixed(4));
+}
+
+/**
+ * 计算记忆条目相对于现场查询向量的稠密语义相似度得分
+ * 
+ * @param {object} mem 记忆对象
+ * @param {object} queryContext 现场查询上下文
+ * @returns {number} 原始语义余弦相似度 [0, 1]
+ */
+export function calculateRawSemanticScore(mem, queryContext) {
+    if (!mem) return 0;
+    const queryVector = queryContext?.queryVector;
+    if (!queryVector || !Array.isArray(queryVector)) return 0;
+
+    if (Array.isArray(mem.embedding) && mem.embedding.length > 0) {
+        return Number(cosineSimilarity(queryVector, mem.embedding).toFixed(4));
+    }
+    const localVec = generateLocalEmbedding(getMemoryEmbeddingText(mem));
+    return Number(cosineSimilarity(queryVector, localVec).toFixed(4));
+}
+
+/**
+ * 倒数排名融合算法 (Reciprocal Rank Fusion, RRF)
+ * 工业级混合检索标准融合算法：无量纲失真、无需经验超参微调分数比例、对极端偏斜分具有极强抗噪性
+ * 
+ * 融合公式：RRF_Score(d) = \sum_{m \in M} \frac{1}{k + rank_m(d)}
+ * 
+ * @param {Array<Array<object|string>>} rankedLists 各检索通道已排序的候选列表
+ * @param {number} [k=60] 平滑阻尼常数 (默认工业标准 60)
+ * @returns {Array<{id: string, item: any, rrfScore: number, ranks: number[]}>} 按 RRF 得分降序排序的融合结果
+ */
+export function reciprocalRankFusion(rankedLists, k = 60) {
+    if (!Array.isArray(rankedLists) || rankedLists.length === 0) {
+        return [];
+    }
+    const smoothingK = typeof k === 'number' && k > 0 ? k : 60;
+    const scoreMap = new Map(); // id -> { id, item, rrfScore, ranks: [] }
+
+    for (let listIdx = 0; listIdx < rankedLists.length; listIdx++) {
+        const list = rankedLists[listIdx];
+        if (!Array.isArray(list)) continue;
+
+        for (let rank = 0; rank < list.length; rank++) {
+            const entry = list[rank];
+            if (!entry) continue;
+
+            const id = typeof entry === 'string'
+                ? entry
+                : (entry.id || entry.mem?.id || String(rank));
+            const item = typeof entry === 'object' ? entry : { id };
+
+            const rank1Based = rank + 1; // 1-indexed rank
+            const rankScore = 1.0 / (smoothingK + rank1Based);
+
+            if (!scoreMap.has(id)) {
+                scoreMap.set(id, {
+                    id,
+                    item,
+                    rrfScore: 0,
+                    ranks: new Array(rankedLists.length).fill(null)
+                });
+            }
+
+            const record = scoreMap.get(id);
+            record.rrfScore += rankScore;
+            record.ranks[listIdx] = rank1Based;
+            if (typeof entry === 'object') {
+                record.item = entry;
+            }
+        }
+    }
+
+    const results = Array.from(scoreMap.values());
+    results.sort((a, b) => b.rrfScore - a.rrfScore);
+
+    return results.map(r => ({
+        id: r.id,
+        item: r.item,
+        rrfScore: Number(r.rrfScore.toFixed(6)),
+        ranks: r.ranks
+    }));
+}
+
+/**
+ * 针对候选记忆条目执行稠密语义与离散 Bigram 双路检索并采用 RRF 倒数排名融合重排序
+ * 
+ * @param {Array<object>} candidates 候选记忆列表 (记忆对象或带包装的对象)
+ * @param {object} queryContext 现场查询上下文
+ * @param {object} [settings={}] 插件配置
+ * @param {number} [k=60] RRF 阻尼常数
+ * @returns {Array<object>} 经 RRF 融合重排序的候选条目列表 (带详细排名归因)
+ */
+export function rankCandidatesWithRRF(candidates, queryContext, settings = {}, k = 60) {
+    if (!Array.isArray(candidates) || candidates.length === 0) {
+        return [];
+    }
+
+    const items = candidates.map(c => {
+        const mem = (c && c.mem) ? c.mem : c;
+        return {
+            id: mem.id || `mem-${Math.random().toString(36).slice(2, 8)}`,
+            mem,
+            rawItem: c
+        };
+    });
+
+    // 1. 稠密语义通道打分与排序
+    const semanticScored = items.map(item => ({
+        ...item,
+        score: calculateRawSemanticScore(item.mem, queryContext)
+    }));
+    semanticScored.sort((a, b) => b.score - a.score);
+
+    // 2. 离散词法通道打分与排序
+    const lexicalScored = items.map(item => ({
+        ...item,
+        score: calculateRawLexicalScore(item.mem, queryContext, settings)
+    }));
+    lexicalScored.sort((a, b) => b.score - a.score);
+
+    // 3. RRF 双路榜单融合
+    const fused = reciprocalRankFusion([semanticScored, lexicalScored], k);
+
+    // 4. 组装归因输出
+    const semanticScoreMap = new Map(semanticScored.map(s => [s.id, s.score]));
+    const lexicalScoreMap = new Map(lexicalScored.map(s => [s.id, s.score]));
+
+    return fused.map(f => {
+        const original = items.find(it => it.id === f.id);
+        const mem = original ? original.mem : (f.item.mem || f.item);
+        return {
+            id: f.id,
+            mem,
+            rawItem: original ? original.rawItem : f.item,
+            rrfScore: f.rrfScore,
+            semanticRank: f.ranks[0] || null,
+            lexicalRank: f.ranks[1] || null,
+            semanticScore: semanticScoreMap.get(f.id) || 0,
+            lexicalScore: lexicalScoreMap.get(f.id) || 0
+        };
+    });
 }

@@ -10,6 +10,14 @@ import { extractAndApplySyncTag } from './src/apply.js';
 import { triggerAsyncDigest } from './src/extractor.js';
 import { initUI } from './src/ui.js';
 import { registerSlashCommands } from './src/commands.js';
+import { registerGlobalApi } from './src/sdk.js';
+
+// 立即挂载全局 SDK (window.STPersistentMemoryAPI)
+try {
+    registerGlobalApi();
+} catch (e) {
+    console.warn(`[${MODULE_NAME}] 全局 SDK 注册异常:`, e);
+}
 
 const CTX_WAIT_MS = 250;
 const CTX_TIMEOUT_MS = 30000;

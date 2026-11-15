@@ -25,6 +25,7 @@ import {
     parseCommandArgs,
     SLASH_COMMAND_DEFINITIONS
 } from './commands.js';
+import { registerGlobalApi, getGlobalApi } from './sdk.js';
 
 let panelEl = null;
 let currentTab = 'memories'; // 'memories' | 'scene' | 'settings'
@@ -1745,5 +1746,7 @@ export {
     executeForgetCommand,
     executePresetCommand,
     parseCommandArgs,
-    SLASH_COMMAND_DEFINITIONS
+    SLASH_COMMAND_DEFINITIONS,
+    registerGlobalApi,
+    getGlobalApi
 };

@@ -296,8 +296,18 @@ import {
     fetchApiEmbedding,
     reindexMemories,
     DEFAULT_EMBEDDING_MAX_RETRIES,
-    DEFAULT_BATCH_THROTTLE_MS
+    DEFAULT_BATCH_THROTTLE_MS,
+    tokenizeCjkBigram,
+    calculateBigramLexicalScore,
+    calculateRawLexicalScore,
+    calculateRawSemanticScore,
+    reciprocalRankFusion,
+    rankCandidatesWithRRF
 } from '../src/semantic.js';
+import {
+    registerGlobalApi,
+    getGlobalApi
+} from '../src/sdk.js';
 
 let passed = 0;
 let failed = 0;
@@ -3178,15 +3188,17 @@ Intermediate analysis details...
         assert.ok(indexContent.includes('v0.1.43'), 'index.js 头部必须标注 v0.1.43');
         assert.ok(!indexContent.includes('v0.1.42'), 'index.js 严禁残留旧版本 v0.1.42 版本头');
 
-        // 5. 各核心模块头部注释版本检查 (16 个核心模块 + 5 个 UI 子模块 = 21 个模块)
+        // 5. 各核心模块头部注释版本检查 (18 个核心模块 + 5 个 UI 子模块 = 23 个模块)
         const checkModules = [
             'src/acl.js',
             'src/api.js',
             'src/apply.js',
             'src/consolidator.js',
             'src/backlog.js',
+            'src/commands.js',
             'src/lorebook.js',
             'src/scene.js',
+            'src/sdk.js',
             'src/migration.js',
             'src/state.js',
             'src/extractor.js',
@@ -6801,6 +6813,224 @@ Intermediate analysis details...
             });
 
         } finally {
+            Object.assign(mockContext, origCtx);
+            updateSettings(origSettings);
+            clearStateCache();
+            loadCurrentState();
+        }
+    });
+
+    // ─────────────────────────────────────────────────────────────
+    // T118: CJK Bigram 离散分词、RRF 倒数排名融合与全局开放 SDK (STPersistentMemoryAPI) 契约测试
+    // ─────────────────────────────────────────────────────────────
+    await testAsync('T118: CJK Bigram 离散分词、RRF 倒数排名融合与全局开放 SDK (STPersistentMemoryAPI) 契约测试 (100% 纯本地零网络开销算法引擎)', async () => {
+        // 0. 严密拦截网络：监听并拦截任何全局 fetch 请求，确保纯本地 0 次 API 调用
+        let networkCallCount = 0;
+        const originalFetch = globalThis.fetch;
+        globalThis.fetch = async (...args) => {
+            networkCallCount++;
+            throw new Error(`[Network Violation] 严禁在本地算法及 SDK 调用中产生外部网络调用: ${args[0]}`);
+        };
+
+        const origCtx = { ...mockContext };
+        const origSettings = { ...getSettings() };
+        clearStateCache();
+        loadCurrentState();
+
+        try {
+            // ─────────────────────────────────────────────
+            // 1. CJK Bigram 离散分词器契约核验 (tokenizeCjkBigram)
+            // ─────────────────────────────────────────────
+            // 1.1 基础与边界输入：空值与非字符串安全兜底
+            assert.deepStrictEqual(tokenizeCjkBigram(''), []);
+            assert.deepStrictEqual(tokenizeCjkBigram(null), []);
+            assert.deepStrictEqual(tokenizeCjkBigram(undefined), []);
+            assert.deepStrictEqual(tokenizeCjkBigram(12345), []);
+
+            // 1.2 中文实体短语分词：提取 Unigrams 与相邻 Bigrams，并过滤停用词与标点
+            const cjkTokens = tokenizeCjkBigram('在王城，黑刀刺客首领拔出了黑刀！');
+            // 校验提取出的 2-gram 核心实体
+            assert.ok(cjkTokens.includes('王城'), '必须提取二元词 "王城"');
+            assert.ok(cjkTokens.includes('黑刀'), '必须提取二元词 "黑刀"');
+            assert.ok(cjkTokens.includes('刺客'), '必须提取二元词 "刺客"');
+            assert.ok(cjkTokens.includes('首领'), '必须提取二元词 "首领"');
+            assert.ok(cjkTokens.includes('拔出'), '必须提取二元词 "拔出"');
+            // 校验单字 (Unigram)
+            assert.ok(cjkTokens.includes('黑') && cjkTokens.includes('刀'));
+            // 停用词 "在"、"了" 不得作为有效单字 token 残留
+            assert.ok(!cjkTokens.includes('在'), '停用单字 "在" 必须被剔除');
+            // 标点符号绝对不作为 token 残留
+            assert.ok(!cjkTokens.includes('，') && !cjkTokens.includes('！'));
+
+            // 1.3 英文与数字混合支持
+            const mixedTokens = tokenizeCjkBigram('Arthur 拔出了 Excalibur 圣剑 +9 装备！');
+            assert.ok(mixedTokens.includes('arthur'), '英文字词转小写提取');
+            assert.ok(mixedTokens.includes('excalibur'), '英文字词转小写提取');
+            assert.ok(mixedTokens.includes('圣剑'), '中文字词二元提取');
+
+            // ─────────────────────────────────────────────
+            // 2. Bigram 词法加权重合度打分契约核验 (calculateBigramLexicalScore)
+            // ─────────────────────────────────────────────
+            // 2.1 完全无关文本：重合度得分严格为 0
+            const zeroScore = calculateBigramLexicalScore('黑刀刺客首领', '阳光明媚的花园在喝下午茶');
+            assert.strictEqual(zeroScore, 0, '语义与字面完全无关的文本重合度必须为 0');
+
+            // 2.2 高度相关实体命中：共享复合词得分显著高于 0.20
+            const highOverlap = calculateBigramLexicalScore('黑刀刺客首领身怀绝技', '月光下出现了一名刺客首领，手中握着漆黑的匕首');
+            assert.ok(highOverlap >= 0.20, `实体复合词交集得分应显著提升 (实际得分: ${highOverlap})`);
+
+            // 2.3 自反性：完全相同的文本重合度为 1.0
+            const selfScore = calculateBigramLexicalScore('黄金律法碎裂于王城地下', '黄金律法碎裂于王城地下');
+            assert.strictEqual(selfScore, 1.0, '自反全等文本重合度必须为 1.0');
+
+            // ─────────────────────────────────────────────
+            // 3. RRF (Reciprocal Rank Fusion) 纯数学融合核验 (reciprocalRankFusion)
+            // ─────────────────────────────────────────────
+            // 3.1 两个排序列融合验证
+            const listSemantic = ['docA', 'docC', 'docB', 'docD'];
+            const listLexical = ['docA', 'docD', 'docB'];
+            const rrfResults = reciprocalRankFusion([listSemantic, listLexical], 60);
+
+            assert.strictEqual(rrfResults.length, 4);
+            assert.strictEqual(rrfResults[0].id, 'docA', '双路冠军 docA 必须为 RRF 第一名');
+            assert.strictEqual(rrfResults[0].ranks[0], 1);
+            assert.strictEqual(rrfResults[0].ranks[1], 1);
+            assert.strictEqual(rrfResults[0].rrfScore, Number((2 / 61).toFixed(6)));
+
+            const docCResult = rrfResults.find(r => r.id === 'docC');
+            assert.ok(docCResult.rrfScore < rrfResults[0].rrfScore);
+            assert.strictEqual(docCResult.ranks[0], 2);
+            assert.strictEqual(docCResult.ranks[1], null);
+
+            // 3.2 空输入防御
+            assert.deepStrictEqual(reciprocalRankFusion([]), []);
+            assert.deepStrictEqual(reciprocalRankFusion(null), []);
+
+            // ─────────────────────────────────────────────
+            // 4. 端到端候选重排序契约核验 (rankCandidatesWithRRF)
+            // ─────────────────────────────────────────────
+            const candidates = [
+                {
+                    id: 'mem_balanced',
+                    content: '黑刀刺客首领埋伏在王城地宫入口，等待暗杀指令',
+                    trigger_keys: ['黑刀', '刺客首领'],
+                    type: 'fact',
+                    scope: 'world'
+                },
+                {
+                    id: 'mem_dense_only',
+                    content: '隐秘行刺组织的最高统领在首都城门暗中布防，意图刺杀目标',
+                    trigger_keys: ['暗杀', '统领'],
+                    type: 'fact',
+                    scope: 'world'
+                },
+                {
+                    id: 'mem_lexical_only',
+                    content: '黑刀与刺客首领在王城城郊集结，但并非为了暗杀',
+                    trigger_keys: ['黑刀', '刺客首领', '王城'],
+                    type: 'fact',
+                    scope: 'world'
+                },
+                {
+                    id: 'mem_irrelevant',
+                    content: '农夫在阳光明媚的下午耕作麦田',
+                    trigger_keys: ['麦田', '农夫'],
+                    type: 'fact',
+                    scope: 'world'
+                }
+            ];
+
+            const queryCtx = {
+                queryText: '地点: 王城入口 | 角色: 刺客首领拔出了黑刀，暗杀阴云笼罩全城！',
+                scanCorpus: '刺客首领拔出了黑刀，暗杀阴云笼罩全城！',
+                queryVector: generateLocalEmbedding('地点: 王城入口 | 角色: 刺客首领拔出了黑刀，暗杀阴云笼罩全城！')
+            };
+
+            const rankedCandidates = rankCandidatesWithRRF(candidates, queryCtx, getSettings(), 60);
+            assert.strictEqual(rankedCandidates.length, 4);
+
+            // 第一名必须是兼具词法命中与语义高分的 mem_balanced
+            assert.strictEqual(rankedCandidates[0].id, 'mem_balanced', '词法与语义双通道占优的记忆必须位列榜首');
+            assert.ok(rankedCandidates[0].semanticRank <= 2, '首名语义位次居前');
+            assert.ok(rankedCandidates[0].lexicalRank <= 2, '首名词法位次居前');
+            assert.ok(rankedCandidates[0].rrfScore > 0);
+
+            // 最后一名必须是完全无关的 mem_irrelevant
+            assert.strictEqual(rankedCandidates[3].id, 'mem_irrelevant', '无关记忆必须垫底');
+
+            // ─────────────────────────────────────────────
+            // 5. 全局开放 SDK (STPersistentMemoryAPI) 契约核验
+            // ─────────────────────────────────────────────
+            // 5.1 验证全局对象自动挂载
+            const api = getGlobalApi();
+            assert.ok(api, 'getGlobalApi 必须返回实例');
+            assert.strictEqual(api.version, '0.1.43', 'SDK 版本必须严格为 0.1.43');
+            assert.strictEqual(globalThis.STPersistentMemoryAPI, api, '必须挂载至 globalThis.STPersistentMemoryAPI');
+
+            // 5.2 状态与配置接口
+            const s = api.getState();
+            assert.ok(s && Array.isArray(s.memories));
+            const settings = api.getSettings();
+            assert.ok(settings && typeof settings === 'object');
+
+            api.updateSettings({ injectionDepth: 4 });
+            assert.strictEqual(api.getSettings().injectionDepth, 4);
+            api.updateSettings({ injectionDepth: origSettings.injectionDepth || 2 });
+
+            // 5.3 记忆 CRUD 与状态流转接口
+            const added = api.addMemory({
+                content: '全局 SDK 契约测试生成的临时事实',
+                type: 'fact',
+                scope: 'world',
+                trigger_keys: ['SDK测试']
+            });
+            assert.ok(added && added.id);
+            assert.ok(s.memories.some(m => m.id === added.id));
+
+            api.updateMemory(added.id, { content: '全局 SDK 契约测试更新后的事实' });
+            assert.strictEqual(s.memories.find(m => m.id === added.id).content, '全局 SDK 契约测试更新后的事实');
+
+            api.cycleMemoryType(added.id); // fact -> statement
+            assert.strictEqual(s.memories.find(m => m.id === added.id).type, 'statement');
+
+            api.setMemoryLifecycle(added.id, 'completed');
+            assert.strictEqual(s.memories.find(m => m.id === added.id).lifecycle, 'completed');
+            assert.strictEqual(s.memories.find(m => m.id === added.id).status, 'archived');
+
+            api.deleteMemory(added.id);
+            assert.ok(!s.memories.some(m => m.id === added.id));
+
+            // 5.4 现场快照与时光机接口
+            api.updateScene({ location: 'SDK时空枢纽', action: '执行时光穿越' });
+            assert.strictEqual(api.getScene().location, 'SDK时空枢纽');
+            assert.ok(Array.isArray(api.getSceneHistory()));
+
+            // 5.5 即时注入透视镜 (Live Inspector)
+            const liveSnap = api.getLiveSnapshot(true);
+            assert.ok(liveSnap && typeof liveSnap === 'object');
+            assert.strictEqual(typeof liveSnap.totalInjectedTokens, 'number');
+
+            // 5.6 预设接口
+            const presets = api.getPresets();
+            assert.ok(presets && presets.romance && presets.fantasy_ttrpg);
+            const applied = api.applyPreset('fantasy');
+            assert.strictEqual(applied, true);
+
+            // 5.7 本地算法接口透传可用性核验
+            assert.strictEqual(typeof api.tokenizeCjkBigram, 'function');
+            assert.strictEqual(typeof api.calculateBigramLexicalScore, 'function');
+            assert.strictEqual(typeof api.reciprocalRankFusion, 'function');
+            assert.strictEqual(typeof api.rankCandidatesWithRRF, 'function');
+            const sdkTokens = api.tokenizeCjkBigram('测试SDK本地分词');
+            assert.ok(sdkTokens.includes('分词') && sdkTokens.includes('本地'));
+
+            // ─────────────────────────────────────────────
+            // 6. 零网络开销 (0 API Overhead) 物理安全保证
+            // ─────────────────────────────────────────────
+            assert.strictEqual(networkCallCount, 0, '全套分词、RRF 融合与 SDK 操作严禁产生任何外部网络请求！');
+
+        } finally {
+            globalThis.fetch = originalFetch;
             Object.assign(mockContext, origCtx);
             updateSettings(origSettings);
             clearStateCache();

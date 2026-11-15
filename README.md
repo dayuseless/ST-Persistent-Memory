@@ -84,6 +84,25 @@
   - 即时现场快照修改器：随手手填或纠偏现场地点与角色。
   - 状态与生命周期显式流转：已履约 (`completed`)、已迭代 (`superseded`)、已证伪 (`refuted`) 实时徽标展示。
 
+### 8. 工业级混合检索 (CJK Bigram + RRF) 与全局开放 SDK (Global SDK)
+- 🔤 **纯前端 CJK Bigram 离散分词与词法加权重合度打分器**：
+  - 内置无依赖中日韩二元分词器 (`tokenizeCjkBigram`)，自动提取高价值单字与二元复合词（如“黑刀刺客” -> `黑刀`、`刺客`、`首领`），自动剥除无意义单字停用词与标点；
+  - 加权重合度打分 (`calculateBigramLexicalScore`) 赋予复合词 2.0 倍实体权重，显著提升中文专有名词、地名人名与道具武器召回精度，**0 API 开销**。
+- ⚖️ **工业级 RRF (Reciprocal Rank Fusion) 倒数排名融合**：
+  - 引入现代混合检索事实标准 RRF 算法 ($Score(d) = \sum \frac{1}{60 + Rank(d)}$)，无缝归并稠密语义与离散词法双通道排名；
+  - 彻底摆脱经验加权超参调参困扰，无标度失真，自带语义位次与词法位次完整归因审计，**0 API 开销**。
+- 🔌 **全局免网络免界面开放 SDK (`window.STPersistentMemoryAPI`)**：
+  - 统一在 `window.STPersistentMemoryAPI` 与 `globalThis.STPersistentMemoryAPI` 挂载门面单例；
+  - 支持外部生态脚本（如 Tavern Helper、Quick Reply、自动化流）无感调用：
+    - 状态与配置：`getState`, `getSettings`, `updateSettings`, `saveSettingsImmediately`；
+    - 记忆全生命周期 CRUD：`addMemory`, `updateMemory`, `deleteMemory`, `setMemoryLifecycle`, `cycleMemoryStatus`, `cycleMemoryType`, `purgeArchivedMemories`；
+    - 演化血缘追溯：`getMemoryLineage(id)`；
+    - 现场快照时光机：`getScene`, `updateScene`, `getSceneHistory`, `restoreSceneSnapshot`, `rollbackScene`；
+    - 即时注入透视镜快照：`getLiveSnapshot()`；
+    - 流派预设：`getPresets()`, `applyPreset(presetId)`；
+    - 本地算法工具包：`tokenizeCjkBigram`, `calculateBigramLexicalScore`, `reciprocalRankFusion`, `rankCandidatesWithRRF`。
+  - **100% 纯本地运行保障**：杜绝非必要外部网络调用，保护用户隐私与 Token 额度。
+
 ---
 
 ## 📥 安装方法
