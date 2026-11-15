@@ -12,7 +12,7 @@ import { API_PRESETS, GAMEPLAY_PRESETS, applyApiPreset, applyGameplayPreset, get
 import { renderMemoryCard } from './ui/cards.js';
 import { showSyncLoreModal, showPromoteLoreModal, showAdvancedSettingsModal, showInjectionInspectorModal, showMemoryLineageModal, showHistoricalSliceModal } from './ui/modal.js';
 import { getLastInjectionSnapshot } from './injector.js';
-import { createFloatingButton, resetBubblePosition, setBubbleState, getBubbleState } from './ui/bubble.js';
+import { createFloatingButton, resetBubblePosition, setBubbleState, getBubbleState, resolveHostWindow } from './ui/bubble.js';
 import { createNativeExtensionDrawer, registerExtensionsMenuEntry, renderNativeDrawerContent, importSillyTavernApiConfig } from './ui/drawer.js';
 import {
     registerSlashCommands,
@@ -55,12 +55,15 @@ function initUI() {
     setTimeout(alignAll, 1000);
     setTimeout(alignAll, 3000);
 
-    if (typeof MutationObserver !== 'undefined' && typeof document !== 'undefined' && document.body) {
+    const W = resolveHostWindow() || (typeof window !== 'undefined' ? window : null);
+    const D = W ? W.document : (typeof document !== 'undefined' ? document : null);
+
+    if (typeof MutationObserver !== 'undefined' && D && D.body) {
         let alignCount = 0;
         const observer = new MutationObserver(() => {
-            const hasBubble = !!document.getElementById('pm-floating-bubble');
-            const hasDrawer = !!document.getElementById('pm-native-container');
-            const hasMenu = !!document.getElementById('pm-menu-entry');
+            const hasBubble = !!D.getElementById('pm-floating-bubble');
+            const hasDrawer = !!D.getElementById('pm-native-container');
+            const hasMenu = !!D.getElementById('pm-menu-entry');
             if (!hasBubble || !hasDrawer || !hasMenu) {
                 alignAll();
                 alignCount++;
@@ -69,14 +72,14 @@ function initUI() {
                 }
             }
         });
-        observer.observe(document.body, { childList: true, subtree: true });
+        observer.observe(D.body, { childList: true, subtree: true });
         setTimeout(() => observer.disconnect(), 15000);
     }
 
     onStateChange(() => {
         renderPanelContent();
         renderNativeDrawerContent((show) => togglePanel(show), () => renderPanelContent());
-        const bubble = document.getElementById('pm-floating-bubble');
+        const bubble = D?.getElementById('pm-floating-bubble') || (typeof document !== 'undefined' ? document.getElementById('pm-floating-bubble') : null);
         if (bubble) {
             bubble.style.setProperty('display', (getSettings().showFloatingBubble !== false) ? 'flex' : 'none', 'important');
         }
@@ -87,14 +90,19 @@ function initUI() {
  * 创建主抽屉 HUD 控制台 DOM (带导航 Tab)
  */
 function createPanelDOM() {
-    if (document.getElementById('pm-drawer-panel')) {
-        panelEl = document.getElementById('pm-drawer-panel');
+    const W = resolveHostWindow() || (typeof window !== 'undefined' ? window : null);
+    const D = W ? W.document : (typeof document !== 'undefined' ? document : null);
+    if (!D) return;
+
+    if (D.getElementById('pm-drawer-panel')) {
+        panelEl = D.getElementById('pm-drawer-panel');
         return;
     }
 
-    panelEl = document.createElement('div');
+    panelEl = D.createElement('div');
     panelEl.id = 'pm-drawer-panel';
     panelEl.className = 'pm-panel-container';
+    panelEl.setAttribute('data-swipe-ignore', 'true');
     panelEl.innerHTML = `
         <div class="pm-panel-header">
             <div class="pm-title-group">
@@ -126,7 +134,9 @@ function createPanelDOM() {
         </div>
     `;
 
-    document.body.appendChild(panelEl);
+    if (D.body) {
+        D.body.appendChild(panelEl);
+    }
 
     // 绑定 Tab 切换事件
     panelEl.querySelector('#pm-tab-bar')?.addEventListener('click', (e) => {

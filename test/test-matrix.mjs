@@ -7469,17 +7469,39 @@ Intermediate analysis details...
     test('T125: 悬浮球双端零延迟防御 (零 top-left 瞬态闪烁、脏坐标自愈纠偏、双端响应式保底重置)', () => {
         const origDoc = global.document;
         const origWin = global.window;
-        let createdElement = null;
+        const domRegistry = new Map();
 
-        const createMockDOMElement = (id = '') => {
+        const createMockDOMElement = (tagName = 'div') => {
             const styles = {};
+            const attrs = {};
+            const children = [];
+            let _id = '';
+            const isLayer = tagName.toUpperCase() === 'PM-FLOATING-LAYER' || tagName.toUpperCase() === 'BODY';
             const el = {
-                id,
+                tagName: tagName.toUpperCase(),
                 className: '',
                 title: '',
                 innerHTML: '',
-                offsetWidth: 46,
-                offsetHeight: 46,
+                offsetWidth: isLayer ? 1920 : 46,
+                offsetHeight: isLayer ? 1080 : 46,
+                isConnected: false,
+                children,
+                setAttribute: (k, v) => { attrs[k] = String(v); },
+                getAttribute: (k) => attrs[k] || null,
+                contains: (node) => children.includes(node),
+                appendChild: (node) => {
+                    if (!children.includes(node)) children.push(node);
+                    node.isConnected = true;
+                    if (node.id) domRegistry.set(node.id, node);
+                    return node;
+                },
+                removeChild: (node) => {
+                    const idx = children.indexOf(node);
+                    if (idx !== -1) children.splice(idx, 1);
+                    node.isConnected = false;
+                    if (node.id) domRegistry.delete(node.id);
+                    return node;
+                },
                 style: {
                     setProperty: (k, v) => { styles[k] = String(v); },
                     getPropertyValue: (k) => styles[k] || '',
@@ -7502,7 +7524,11 @@ Intermediate analysis details...
                     get bottom() { return styles['bottom'] || ''; },
                     set bottom(v) { styles['bottom'] = v; },
                     get display() { return styles['display'] || ''; },
-                    set display(v) { styles['display'] = v; }
+                    set display(v) { styles['display'] = v; },
+                    get transform() { return styles['transform'] || ''; },
+                    set transform(v) { styles['transform'] = v; },
+                    get cssText() { return styles['cssText'] || ''; },
+                    set cssText(v) { styles['cssText'] = v; }
                 },
                 classList: {
                     add: () => {},
@@ -7511,71 +7537,85 @@ Intermediate analysis details...
                 },
                 addEventListener: () => {},
                 removeEventListener: () => {},
-                getBoundingClientRect: () => ({ left: 200, top: 300, width: 46, height: 46 })
+                getBoundingClientRect: () => ({ left: 0, top: 0, width: el.offsetWidth || 1920, height: el.offsetHeight || 1080 })
             };
+            Object.defineProperty(el, 'id', {
+                get: () => _id,
+                set: (v) => {
+                    _id = v;
+                    if (v) domRegistry.set(v, el);
+                }
+            });
             return el;
         };
 
-        const mockBody = {
-            contains: (node) => node === createdElement,
-            appendChild: (node) => { createdElement = node; return node; }
-        };
+        const mockBody = createMockDOMElement('body');
+        mockBody.isConnected = true;
+        mockBody.getBoundingClientRect = () => ({ left: 0, top: 0, width: 1920, height: 1080 });
 
         try {
+            global.document = {
+                documentElement: { clientWidth: 1920, clientHeight: 1080 },
+                body: mockBody,
+                getElementById: (id) => domRegistry.get(id) || null,
+                createElement: (tag) => createMockDOMElement(tag)
+            };
+
             global.window = Object.assign({}, origWin, {
                 innerWidth: 1920,
                 innerHeight: 1080,
+                document: global.document,
+                localStorage: global.localStorage,
                 addEventListener: () => {},
                 removeEventListener: () => {}
             });
+            global.window.parent = global.window;
+            global.window.top = global.window;
 
-            global.document = {
-                body: mockBody,
-                getElementById: (id) => (createdElement && createdElement.id === id ? createdElement : null),
-                createElement: (tag) => {
-                    const el = createMockDOMElement();
-                    return el;
-                }
-            };
-
-            // 1. 验证 PC 大屏端初次挂载（无任何缓存时）的内联样式完整性与右下定位
+            // 1. 验证 PC 大屏端初次挂载：独立防裁切宿主图层与 translate3d 硬件加速右下定位
             mockLocalStorage['pm_bubble_pos'] = null;
             bubbleCreateFloatingButton();
-            assert.ok(createdElement, '悬浮球必须成功加入 DOM');
-            assert.strictEqual(createdElement.style.position, 'fixed', '内联样式必须包含 fixed 定位');
-            assert.strictEqual(createdElement.style.zIndex, '2147483647', '内联层级必须置顶');
-            assert.strictEqual(createdElement.style.background, '#ffffff', '内联背景必须为白色');
-            assert.strictEqual(createdElement.style.color, '#2563eb', '内联图标颜色必须为系统蓝');
-            assert.ok(createdElement.style.border.includes('#2563eb'), '内联边框必须清晰醒目');
-            assert.strictEqual(createdElement.style.left, 'auto', '默认 left 必须为 auto，绝不可为 0 或空');
-            assert.strictEqual(createdElement.style.top, 'auto', '默认 top 必须为 auto，绝不可为 0 或空');
-            assert.strictEqual(createdElement.style.right, '20px', '桌面端默认靠右 20px');
-            assert.strictEqual(createdElement.style.bottom, '85px', '桌面端默认靠底 85px');
+
+            const layer = global.document.getElementById('pm-floating-layer');
+            assert.ok(layer, '宿主图层 pm-floating-layer 必须存在且挂载在 DOM');
+            assert.strictEqual(layer.getAttribute('data-swipe-ignore'), 'true', '宿主图层必须标记 data-swipe-ignore');
+
+            const btn = global.document.getElementById('pm-floating-bubble');
+            assert.ok(btn, '悬浮球必须成功加入 DOM');
+            assert.ok(layer.contains(btn), '悬浮球必须挂载在独立宿主图层内');
+            assert.strictEqual(btn.getAttribute('data-swipe-ignore'), 'true', '悬浮球必须包含 data-swipe-ignore 防止移动端滑动手势截流');
+            assert.strictEqual(btn.style.position, 'fixed', '内联样式必须包含 fixed 定位');
+            assert.strictEqual(btn.style.zIndex, '2147483647', '内联层级必须置顶');
+            assert.strictEqual(btn.style.background, '#ffffff', '内联背景必须为白色');
+            assert.strictEqual(btn.style.color, '#2563eb', '内联图标颜色必须为系统蓝');
+            assert.ok(btn.style.border.includes('#2563eb'), '内联边框必须清晰醒目');
+            assert.strictEqual(btn.style.left, '0px', 'translate3d 架构下 left 固定为 0px');
+            assert.strictEqual(btn.style.top, '0px', 'translate3d 架构下 top 固定为 0px');
+            assert.strictEqual(btn.style.right, 'auto', 'translate3d 架构下 right 为 auto');
+            assert.strictEqual(btn.style.bottom, 'auto', 'translate3d 架构下 bottom 为 auto');
+            assert.strictEqual(btn.style.transform, 'translate3d(1854px, 949px, 0)', 'PC端初始默认定位到右下安全区 (1920-46-20, 1080-46-85)');
 
             // 2. 验证脏坐标自愈 (旧版本误记录落在左上角死区 x<=25 && y<=60 时，自动丢弃并重置回底右)
-            createdElement = null;
+            layer.removeChild(btn);
             mockLocalStorage['pm_bubble_pos'] = JSON.stringify({ x: 5, y: 10 });
             bubbleCreateFloatingButton();
-            assert.strictEqual(createdElement.style.left, 'auto', '检测到左上角死区脏数据时，left 必须被强制修复回 auto');
-            assert.strictEqual(createdElement.style.top, 'auto', '检测到左上角死区脏数据时，top 必须被强制修复回 auto');
-            assert.strictEqual(createdElement.style.right, '20px', '脏坐标自愈后必须恢复桌面底右安全坐标');
-            assert.strictEqual(createdElement.style.bottom, '85px');
+            const btnHealed = global.document.getElementById('pm-floating-bubble');
+            assert.strictEqual(btnHealed.style.transform, 'translate3d(1854px, 949px, 0)', '检测到左上角死区脏数据时，必须自愈恢复桌面底右安全坐标');
 
             // 3. 验证合法自定义拖拽坐标能正常恢复
-            createdElement = null;
+            layer.removeChild(btnHealed);
             mockLocalStorage['pm_bubble_pos'] = JSON.stringify({ x: 450, y: 350 });
             bubbleCreateFloatingButton();
-            assert.strictEqual(createdElement.style.left, '450px', '合法坐标正常还原');
-            assert.strictEqual(createdElement.style.top, '350px');
-            assert.strictEqual(createdElement.style.right, 'auto');
-            assert.strictEqual(createdElement.style.bottom, 'auto');
+            const btnCustom = global.document.getElementById('pm-floating-bubble');
+            assert.strictEqual(btnCustom.style.transform, 'translate3d(450px, 350px, 0)', '合法自定义拖拽坐标正常还原');
 
             // 4. 验证移动端重置与安全坐标切换 (window.innerWidth <= 768)
             global.window.innerWidth = 390;
             global.window.innerHeight = 844;
+            global.document.documentElement.clientWidth = 390;
+            global.document.documentElement.clientHeight = 844;
             bubbleResetBubblePosition();
-            assert.strictEqual(createdElement.style.right, '16px', '手机端重置后必须靠右 16px');
-            assert.strictEqual(createdElement.style.bottom, '120px', '手机端重置后必须靠底 120px，完全避开手机输入法与底栏');
+            assert.strictEqual(btnCustom.style.transform, 'translate3d(328px, 678px, 0)', '手机端重置后必须靠右 16px、靠底 120px，完全避开手机输入法与底栏 (390-46-16, 844-46-120)');
             assert.strictEqual(mockLocalStorage['pm_bubble_pos'], undefined, '重置后必须清除桌面坐标缓存');
             assert.strictEqual(mockLocalStorage['pm_bubble_pos_mobile'], undefined, '重置后必须清除手机坐标缓存');
         } finally {
