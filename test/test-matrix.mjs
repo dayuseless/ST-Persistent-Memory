@@ -3689,13 +3689,29 @@ Intermediate analysis details...
         assert.strictEqual(resEmpty.success, false);
         assert.ok(resEmpty.error.includes('请先填写 Base URL'));
 
-        // 2. 模拟网络异常时的优雅捕获 (绝不引起未捕获崩溃)
+        // 2. 模拟网络异常时的优雅捕获 (绝不引起未捕获崩溃，并提供详尽跨域与自愈指导)
         const resNetworkErr = await testCustomApiConnection({
             customApiUrl: 'http://127.0.0.1:99999/invalid_port',
             customApiKey: 'dummy_key'
         });
         assert.strictEqual(resNetworkErr.success, false);
         assert.ok(resNetworkErr.error);
+
+        // 3. 验证独立提炼 API 跨域/网络故障时的自动平滑降级至酒馆主模型 (Graceful Degradation)
+        let fallbackCalled = false;
+        const mockFallbackContext = {
+            generateRaw: async () => {
+                fallbackCalled = true;
+                return '降级主模型提炼成功';
+            }
+        };
+        const digestFallbackRes = await executeDigestRequest(mockFallbackContext, '提炼提示词', {
+            useCustomApi: true,
+            customApiUrl: 'https://127.0.0.1:99999/invalid_host',
+            customApiKey: 'invalid_key'
+        });
+        assert.strictEqual(fallbackCalled, true, '独立 API 跨域或网络失败时，必须自动平滑降级至酒馆原生 generateRaw 接口');
+        assert.strictEqual(digestFallbackRes, '降级主模型提炼成功');
     });
 
     // ─────────────────────────────────────────────────────────────
@@ -6261,7 +6277,7 @@ Intermediate analysis details...
             assert.ok(cmdNames.includes('inspect'));
             assert.ok(cmdNames.includes('digest'));
             assert.ok(cmdNames.includes('forget'));
-            assert.ok(cmdNames.includes('preset'));
+            assert.ok(cmdNames.includes('pm-preset') || cmdNames.includes('preset'));
 
             // 验证 remember command 的 callback 正常运转
             const rememberCmd = registeredCommands.find(c => c.name === 'remember');

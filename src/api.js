@@ -167,6 +167,31 @@ export async function executeDigestRequest(c, digestPrompt, settings, abortSigna
             if (fetchErr.name === 'AbortError') {
                 throw new Error(`独立提炼 API 请求超时 (超过 ${DIGEST_REQUEST_TIMEOUT_MS / 1000} 秒未响应)`);
             }
+
+            const isCorsOrNetwork = fetchErr.name === 'TypeError' || String(fetchErr.message).includes('Failed to fetch') || String(fetchErr.message).includes('NetworkError');
+            if (isCorsOrNetwork && c && (typeof c.generateRaw === 'function' || typeof c.generateQuietPrompt === 'function')) {
+                console.warn(`[${MODULE_NAME}] [CORS 跨域异常降级] 独立 API (${targetUrl}) 请求被浏览器同源策略 (CORS) 拦截或网络中断。云端商业 API (如智谱 open.bigmodel.cn、DeepSeek 等) 通常不允许浏览器前端直连。正在平滑降级至酒馆主模型继续执行提炼...`);
+                // 平滑降级至酒馆原生接口，避免本次对话记忆丢失
+                if (typeof c.generateRaw === 'function') {
+                    return await withTimeout(
+                        () => c.generateRaw({ prompt: digestPrompt, responseLength: 2048, signal: abortSignal }),
+                        DIGEST_REQUEST_TIMEOUT_MS,
+                        '原生 generateRaw 提炼请求 (CORS 降级)',
+                        abortSignal,
+                        c
+                    );
+                }
+                if (typeof c.generateQuietPrompt === 'function') {
+                    return await withTimeout(
+                        () => c.generateQuietPrompt({ quietPrompt: digestPrompt, responseLength: 2048, removeReasoning: true, signal: abortSignal }),
+                        DIGEST_REQUEST_TIMEOUT_MS,
+                        '原生 generateQuietPrompt 提炼请求 (CORS 降级)',
+                        abortSignal,
+                        c
+                    );
+                }
+            }
+
             throw fetchErr;
         } finally {
             clearTimeout(timeoutId);
@@ -263,6 +288,14 @@ export async function testCustomApiConnection(overrideSettings = null) {
     } catch (e) {
         if (e.name === 'AbortError') {
             return { success: false, error: `连接超时 (超过 ${TEST_CONNECTION_TIMEOUT_MS / 1000} 秒无响应)` };
+        }
+        const isCors = e.name === 'TypeError' || String(e.message).includes('Failed to fetch') || String(e.message).includes('NetworkError');
+        if (isCors) {
+            return {
+                success: false,
+                isCors: true,
+                error: `跨域请求被拦截 (CORS Error): 浏览器安全策略禁止直接跨域请求商业云端 API (${targetUrl})。智谱/DeepSeek 等服务商未开放前端 CORS 权限。\n解决方案：\n1. 【推荐】取消勾选“使用独立 API”，直接使用酒馆当前主模型（走酒馆后端代理，无 CORS 限制）；\n2. 使用本地模型 (如 Ollama: http://127.0.0.1:11434/v1 或 LM Studio)；\n3. 或配置支持 CORS 跨域的中转反代。`
+            };
         }
         return { success: false, error: e.message || '网络连接失败' };
     } finally {

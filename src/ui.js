@@ -1061,9 +1061,10 @@ function bindPanelEvents(container) {
         } else {
             if (statusEl) {
                 statusEl.style.color = '#f87171';
-                statusEl.innerHTML = `<i class="fa-solid fa-xmark"></i> 失败: ${escapeHtml(res.error).slice(0, 35)}`;
+                const shortErr = res.isCors ? '跨域限制 (CORS)' : escapeHtml(res.error).slice(0, 35);
+                statusEl.innerHTML = `<i class="fa-solid fa-xmark"></i> 失败: ${shortErr}`;
             }
-            window.toastr?.error?.(res.error, 'API 连接失败');
+            window.toastr?.error?.(res.error, res.isCors ? 'API 跨域限制 (CORS)' : 'API 连接失败', { timeOut: res.isCors ? 10000 : 5000 });
         }
     });
 

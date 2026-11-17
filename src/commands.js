@@ -330,9 +330,9 @@ export const SLASH_COMMAND_DEFINITIONS = [
         }
     },
     {
-        name: 'preset',
-        aliases: ['pm-preset'],
-        helpString: '一键套用玩法流派预设。用法: /preset <romance|fantasy|ensemble|mystery|list>',
+        name: 'pm-preset',
+        aliases: ['pm:preset', 'memory-preset', 'pmpreset'],
+        helpString: '一键套用持续记忆玩法流派预设。用法: /pm-preset <romance|fantasy|ensemble|mystery|list>',
         callback: (named, unnamed) => {
             const raw = Array.isArray(unnamed) ? unnamed.join(' ') : String(unnamed || '');
             return executePresetCommand(raw, named);
@@ -373,17 +373,42 @@ export async function registerSlashCommands(customParser = null, customCommandCl
         return false;
     }
 
+    const commandsRegistry = parser.commands || {};
+
     for (const def of SLASH_COMMAND_DEFINITIONS) {
         try {
+            // 防重防冲突守卫：若指令已被原生或其他插件占用，避免重复注册引发警告
+            if (Object.hasOwn(commandsRegistry, def.name)) {
+                const existing = commandsRegistry[def.name];
+                if (existing?.source && !existing.source.includes('ST-Persistent-Memory')) {
+                    console.info(`[${MODULE_NAME}] 斜杠指令 /${def.name} 已被原生或外部模块占用，跳过主名注册`);
+                    continue;
+                }
+            }
+
+            // 安全剔除已被其他扩展占用的别名
+            const safeAliases = (def.aliases || []).filter(a => {
+                if (Object.hasOwn(commandsRegistry, a)) {
+                    const existing = commandsRegistry[a];
+                    return !existing?.source || existing.source.includes('ST-Persistent-Memory');
+                }
+                return true;
+            });
+
+            const safeDef = {
+                ...def,
+                aliases: safeAliases
+            };
+
             const cmdObj = typeof commandClass?.fromProps === 'function'
-                ? commandClass.fromProps(def)
-                : def;
+                ? commandClass.fromProps(safeDef)
+                : safeDef;
             parser.addCommandObject(cmdObj);
         } catch (e) {
             console.warn(`[${MODULE_NAME}] 注册斜杠指令 [${def.name}] 失败:`, e);
         }
     }
 
-    console.log(`[${MODULE_NAME}] [Commands] 成功注册 6 大原生斜杠指令 (/remember, /scene, /inspect, /digest, /forget, /preset)`);
+    console.log(`[${MODULE_NAME}] [Commands] 成功注册 6 大原生斜杠指令 (/remember, /scene, /inspect, /digest, /forget, /pm-preset)`);
     return true;
 }
