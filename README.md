@@ -1,6 +1,6 @@
 # SillyTavern 鎸佺画璁板繂鎻掍欢 (ST-Persistent-Memory)
 
-[![Version](https://img.shields.io/badge/version-v0.1.44-blue.svg)](https://github.com/dayuseless/ST-Persistent-Memory)
+[![Version](https://img.shields.io/badge/version-v0.1.45-blue.svg)](https://github.com/dayuseless/ST-Persistent-Memory)
 [![SillyTavern](https://img.shields.io/badge/SillyTavern-1.12.0+-purple.svg)](https://github.com/SillyTavern/SillyTavern)
 [![License](https://img.shields.io/badge/license-MIT-green.svg)](LICENSE)
 
@@ -43,7 +43,7 @@
    ```
 4. 椤甸潰鎻愮ず瀹夎鎴愬姛鍚庯紝鎸?**`Ctrl + F5`** 鍒锋柊缃戦〉鍗冲彲銆?
 ### 鏂瑰紡浜岋細鎵嬪姩绂荤嚎鍖呭畨瑁?
-1. 浠?[Releases 椤甸潰](https://github.com/dayuseless/ST-Persistent-Memory/releases) 涓嬭浇 `ST-Persistent-Memory-v0.1.44.zip`銆?2. 瑙ｅ帇鍒?SillyTavern 鐨勬墿灞曠洰褰曚腑锛?   ```text
+1. 浠?[Releases 椤甸潰](https://github.com/dayuseless/ST-Persistent-Memory/releases) 涓嬭浇 `ST-Persistent-Memory-v0.1.45.zip`銆?2. 瑙ｅ帇鍒?SillyTavern 鐨勬墿灞曠洰褰曚腑锛?   ```text
    SillyTavern/public/scripts/extensions/third-party/ST-Persistent-Memory/
    ```
    *(澶氱敤鎴风増鏈彲鏀剧疆浜?`SillyTavern/data/default-user/extensions/ST-Persistent-Memory/`)*
@@ -121,6 +121,31 @@ npm test
 ---
 
 ## 馃摑 鐗堟湰鍘嗗彶
+
+### v0.1.45 (状态所有权隔离闭环、跨平台纯 Node PKZIP 打包、RRF 同榜去重与 Unicode CJK 码点级分词；129 项金标测试矩阵)
+
+全面解决外部专业代码审计发现的 P0、P1 与 P2 级安全及算法边界问题：
+1. **P0 状态所有权与写接口返回值彻底隔离 (`src/state.js`, `src/sdk.js`, `src/scene.js`, `index.js`)**：
+   - `addMemory()` 与 `updateMemory()` 返回值强制执行深拷贝 (`safeClone`)，彻底断绝外部调用方在获取对象后原位直接修改 `scope`、`character`、`known_by` 实施绕过 ACL 的提权攻击；
+   - 现场管理写方法 `rollbackScene()`、`restoreSceneSnapshot()` 与 `getSceneHistory()` 返回值全量隔离；
+   - `window.__persistentMemory.getState()` 全局调试接口完全切换为快照深拷贝返回，严防控制台原位篡改内部 `stateCache`；
+   - `updateSettings(patch)` 入参执行深拷贝，消除外部传入配置对象的引用泄漏。
+2. **P1 跨平台纯 Node.js 标准 PKZIP 打包器 (`scripts/pack-zip.mjs`)**：
+   - 彻底废除依赖宿主环境 `tar` 二进制的打包方案（彻底根除 Linux/GNU tar 产生假 zip、Windows 缺失 tar 工具等跨平台构建失败问题）；
+   - 采用纯 Node.js 内置标准库 (`zlib.deflateRawSync`, `zlib.crc32`, `fs`, `crypto`) 实现标准 PKWARE PKZIP 规范，严格保证 100% 正斜杠 `/` POSIX 路径格式与 UNIX 文件属性；
+   - 自动生成 SHA-256 校验和文件，支持全平台 `unzip -t` 与 Python `zipfile` 验证。
+3. **P1 RRF (Reciprocal Rank Fusion) 同榜单去重与数学排名不变性 (`src/semantic.js`)**：
+   - 单通道榜单遍历引入 `seenInList = new Set()`，同榜单重复 ID 条目严格只记录首次出现位次，严禁同榜重复叠加累计打分 ($1/61 + 1/62$)；
+   - 非法/纯空白 ID 条目不挤占有效实体名次，确保排名的数学连续性；
+   - `rankCandidatesWithRRF` 预处理候选池按 ID 严格去重，消除候选膨胀。
+4. **P2 Unicode CJK 补充平面汉字 (Ext B~I)、韩文 Jamo 与日文长音符码点级 Bigram 分词 (`src/semantic.js`)**：
+   - 正则表达式升级为 Unicode 属性转义 `[\p{Script=Han}\p{Script=Hiragana}\p{Script=Katakana}\p{Script=Hangul}\u30fc]+`，完整覆盖 CJK Ext-A 至 Ext-I 全区、韩文谚文音节/字母及日文长音符；
+   - 采用码点级展开 (`Array.from(cjkSeg)`) 替代 UTF-16 字节切片，彻底消除包含 Ext-B 罕见字（如 "𠮷" U+20BB7）时的 UTF-16 孤立代理对碎片 (Broken Surrogates) 乱码；
+   - 确保东亚多语言与罕见字混合句式的准确分词与词法加权。
+5. **P2 零网络测试契约与测试用例语义严谨化 (`test/test-matrix.mjs`)**：
+   - T118 明确更名为 "零网络调用契约 (Zero-Fetch & Zero-Network Contract)"，并在单测中同步拦截 `XMLHttpRequest` 与 `fetch`；
+   - 订正 T120 单测注释中关于 ACL 提权拦截与字段不可篡改性的表述；
+   - 新增 **T127、T128、T129** 专项覆盖上述所有 P0/P1/P2 修复，测试矩阵总数扩展至 **129 项 (129/129 PASS 全绿通过)**。
 
 ### v0.1.44 (鏁版嵁瀹屾暣鎬с€佹潈闄愪竴鑷存€т笌鍥涘ぇ浣撻獙闈╂柊锛?17椤归噾鏍囨祴璇曠煩闃点€佸嵆鏃堕€忚闀溿€佹祦娲鹃璁俱€佹紨鍖栬缂樹笌鏃跺厜鍒囩墖)
 

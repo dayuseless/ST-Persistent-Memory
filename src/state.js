@@ -1,5 +1,5 @@
 /**
- * 记忆状态管理器 (v0.1.44)
+ * 记忆状态管理器 (v0.1.45)
  * 严格落实 state_revision 状态修订号、L0 三态 PATCH 语义、真正原子回滚事务、统一ACL判定层介入、数据准入流水线、世界书升格溯源、知情集合隔离、世界书解耦、现场状态时光机解耦 (src/scene.js) 与数据迁移/导入导出解耦 (src/migration.js)
  */
 
@@ -57,6 +57,8 @@ const stateCacheMap = new Map();
 let currentLoadedChatId = null;
 const stateChangeListeners = new Set();
 let isBatchUpdating = false;
+
+const safeClone = (o) => (o == null ? o : (typeof structuredClone === 'function' ? structuredClone(o) : JSON.parse(JSON.stringify(o))));
 
 function getContext() {
     return window.SillyTavern?.getContext?.() ?? null;
@@ -264,11 +266,13 @@ export function getSettings() {
 }
 
 export function updateSettings(patch) {
+    if (!patch || typeof patch !== 'object') return false;
+    const cleanPatch = typeof structuredClone === 'function' ? structuredClone(patch) : JSON.parse(JSON.stringify(patch));
     const settings = getSettings();
-    Object.assign(settings, patch);
+    Object.assign(settings, cleanPatch);
 
     if (settingsCache && settingsCache !== settings) {
-        Object.assign(settingsCache, patch);
+        Object.assign(settingsCache, cleanPatch);
     }
 
     const extSettings = getExtSettingsObject();
@@ -362,6 +366,15 @@ export function getState() {
         return loadCurrentState();
     }
     return stateCache;
+}
+
+/**
+ * 获取当前记忆状态的只读深拷贝快照 (物理阻断外部原位篡改 stateCache)
+ * @returns {object}
+ */
+export function getStateSnapshot() {
+    const s = getState();
+    return typeof structuredClone === 'function' ? structuredClone(s) : JSON.parse(JSON.stringify(s));
 }
 
 
@@ -533,7 +546,7 @@ export function addMemory(item, options = {}) {
 
             saveCurrentState();
             console.log(`[${MODULE_NAME}] [保守融合] 匹配到高度吻合条目，融合触发词: "${existing.content}"`);
-            return existing;
+            return safeClone(existing);
         }
     }
 
@@ -564,7 +577,7 @@ export function addMemory(item, options = {}) {
 
     s.memories.push(newItem);
     saveCurrentState();
-    return newItem;
+    return safeClone(newItem);
 }
 
 export function updateMemory(id, patch) {
@@ -647,7 +660,7 @@ export function updateMemory(id, patch) {
     updated.updated_at = new Date().toISOString();
     s.memories[idx] = updated;
     saveCurrentState();
-    return updated;
+    return safeClone(updated);
 }
 
 /**

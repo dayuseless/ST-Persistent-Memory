@@ -3,6 +3,7 @@
 .DS_Store
 Thumbs.db
 *.zip
+*.sha256
 
 # Editor & OS
 .vscode/

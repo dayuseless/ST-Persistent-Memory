@@ -1,5 +1,5 @@
 /**
- * SillyTavern 插件入口: 持续记忆 (Persistent Memory) v0.1.44
+ * SillyTavern 插件入口: 持续记忆 (Persistent Memory) v0.1.45
  * 遵循现场快照 (L0 Resume) 与事件驱动记忆架构
  */
 
@@ -270,9 +270,10 @@ async function init() {
 
     console.log(`[${MODULE_NAME}] 持续记忆系统 (v${EXTENSION_VERSION}) 初始化就绪`);
 
-    // 暴露全局调试接口
+    // 暴露全局调试接口 (严格输出只读深拷贝快照，杜绝外部原位篡改 stateCache)
     window.__persistentMemory = {
-        getState: () => loadCurrentState(),
+        getState: () => (typeof structuredClone === 'function' ? structuredClone(loadCurrentState()) : JSON.parse(JSON.stringify(loadCurrentState()))),
+        getStateSnapshot: () => (typeof structuredClone === 'function' ? structuredClone(loadCurrentState()) : JSON.parse(JSON.stringify(loadCurrentState()))),
         injectNow: () => buildAndInjectMemoryPrompt(),
         digestNow: () => triggerAsyncDigest(true)
     };

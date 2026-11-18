@@ -1,5 +1,5 @@
 /**
- * ST-Persistent-Memory - 现场状态管理与快照时光机服务 (Scene Management & Time-Machine, v0.1.44)
+ * ST-Persistent-Memory - 现场状态管理与快照时光机服务 (Scene Management & Time-Machine, v0.1.45)
  *
  * 核心职责：
  * 1. 领域解耦：将 L0 实时现场状态 (location, time, action, tension, unresolved, in_scene_characters)
@@ -17,6 +17,8 @@
  */
 
 import { getState, saveCurrentState } from './state.js';
+
+const safeClone = (o) => (o == null ? o : (typeof structuredClone === 'function' ? structuredClone(o) : JSON.parse(JSON.stringify(o))));
 
 /**
  * 现场快照时光机：将当前快照入栈历史栈 (保留最近 10 次变更)
@@ -81,7 +83,7 @@ export function rollbackScene() {
     };
 
     saveCurrentState();
-    return { success: true, scene: s.scene, restoredFrom: previous };
+    return { success: true, scene: safeClone(s.scene), restoredFrom: safeClone(previous) };
 }
 
 /**
@@ -109,16 +111,16 @@ export function restoreSceneSnapshot(index) {
     };
 
     saveCurrentState();
-    return { success: true, scene: s.scene, restoredFrom: target };
+    return { success: true, scene: safeClone(s.scene), restoredFrom: safeClone(target) };
 }
 
 /**
- * 获取现场快照历史列表
+ * 获取现场快照历史列表 (只读深拷贝快照)
  * @returns {Array<object>}
  */
 export function getSceneHistory() {
     const s = getState();
-    return Array.isArray(s.scene_history) ? [...s.scene_history] : [];
+    return Array.isArray(s.scene_history) ? safeClone(s.scene_history) : [];
 }
 
 /**

@@ -1,5 +1,5 @@
 /**
- * ST-Persistent-Memory (v0.1.44) - 屏幕快捷悬浮按钮与拖拽持久化 (Floating Bubble & Draggable Service)
+ * ST-Persistent-Memory (v0.1.45) - 屏幕快捷悬浮按钮与拖拽持久化 (Floating Bubble & Draggable Service)
  * 职责：
  * 1. 注入屏幕快捷入口（悬浮气泡，支持任意拖拽与坐标记忆）
  * 2. 手机触控与桌面鼠标双端适配、防遮挡安全边缘算法

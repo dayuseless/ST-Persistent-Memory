@@ -1,5 +1,5 @@
 /**
- * ST-Persistent-Memory - 全局开放 API 接口层 (Global SDK, v0.1.44)
+ * ST-Persistent-Memory - 全局开放 API 接口层 (Global SDK, v0.1.45)
  * 
  * 核心设计目标：
  * 1. 挂载 window.STPersistentMemoryAPI 与 globalThis.STPersistentMemoryAPI，
@@ -48,51 +48,56 @@ import {
     cosineSimilarity
 } from './semantic.js';
 
+const safeClone = (o) => (o == null ? o : (typeof structuredClone === 'function' ? structuredClone(o) : JSON.parse(JSON.stringify(o))));
+
 /**
  * 组装全局 API 门面对象
  * 遵循严格的状态所有权隔离：
  * 1. 凡读取状态/记忆/现场的接口均返回深拷贝快照 (structuredClone)，物理阻断外部恶意变异内部内存；
- * 2. 凡写入接口严格屏蔽内部可信参数 (bypassAcl, 伪造 participants)，强制由内部统一准入判定层裁决。
+ * 2. 凡写入接口严格屏蔽内部可信参数 (bypassAcl, 伪造 participants)，强制由内部统一准入判定层裁决；
+ * 3. 凡写入接口的返回值 (addMemory, updateMemory, rollbackScene 等) 严格实行深拷贝隔离，杜绝通过返回引用原位篡改内部条目。
  */
 export function buildGlobalApi() {
     return {
         version: EXTENSION_VERSION,
 
         // 状态与配置 (返回只读深拷贝快照)
-        getState: () => structuredClone(getState()),
-        getStateSnapshot: () => structuredClone(getState()),
-        getSettings: () => structuredClone(getSettings()),
+        getState: () => safeClone(getState()),
+        getStateSnapshot: () => safeClone(getState()),
+        getSettings: () => safeClone(getSettings()),
         updateSettings: (patch) => {
             if (!patch || typeof patch !== 'object') return false;
-            return updateSettings(patch);
+            return updateSettings(safeClone(patch));
         },
         saveSettingsImmediately: () => saveSettingsImmediately(),
 
-        // 记忆 CRUD 与状态流转 (严格锁定所有权与防提权)
+        // 记忆 CRUD 与状态流转 (严格锁定所有权与防提权，返回值严格深拷贝)
         getMemory: (id) => {
             if (!id || typeof id !== 'string') return null;
             const item = (getState()?.memories || []).find(m => m.id === id);
-            return item ? structuredClone(item) : null;
+            return item ? safeClone(item) : null;
         },
         addMemory: (item) => {
             if (!item || typeof item !== 'object') {
                 throw new TypeError('[STPersistentMemoryAPI] addMemory 要求传入非空对象');
             }
             // 权限收敛铁律：强制剔除外部可控的提权与伪造环境参数，严格锁定内部权威判定
-            const cleanItem = structuredClone(item);
+            const cleanItem = safeClone(item);
             delete cleanItem.bypassAcl;
             delete cleanItem.participants;
             delete cleanItem.context;
-            return addMemory(cleanItem, { bypassAcl: false });
+            const res = addMemory(cleanItem, { bypassAcl: false });
+            return safeClone(res);
         },
         updateMemory: (id, patch) => {
             if (!id || typeof id !== 'string') return null;
             if (!patch || typeof patch !== 'object') return null;
-            const cleanPatch = structuredClone(patch);
+            const cleanPatch = safeClone(patch);
             delete cleanPatch.bypassAcl;
             delete cleanPatch.participants;
             delete cleanPatch.context;
-            return updateMemory(id, cleanPatch);
+            const res = updateMemory(id, cleanPatch);
+            return safeClone(res);
         },
         deleteMemory: (id) => deleteMemory(id),
         setMemoryLifecycle: (id, lifecycle) => setMemoryLifecycle(id, lifecycle),
@@ -103,27 +108,36 @@ export function buildGlobalApi() {
         // 记忆演化血缘追溯 (返回拓扑克隆快照)
         getMemoryLineage: (id) => {
             const lin = getMemoryLineage(id);
-            return lin ? structuredClone(lin) : null;
+            return lin ? safeClone(lin) : null;
         },
 
         // L0 现场与时光机快照 (返回只读深拷贝快照)
         getScene: () => {
             const sc = getState()?.scene;
-            return sc ? structuredClone(sc) : null;
+            return sc ? safeClone(sc) : null;
         },
-        updateScene: (patch) => updateScene(patch),
-        getSceneHistory: () => structuredClone(getSceneHistory()),
-        restoreSceneSnapshot: (index) => restoreSceneSnapshot(index),
-        rollbackScene: () => rollbackScene(),
+        updateScene: (patch) => {
+            const res = updateScene(patch);
+            return safeClone(res);
+        },
+        getSceneHistory: () => safeClone(getSceneHistory()),
+        restoreSceneSnapshot: (index) => {
+            const res = restoreSceneSnapshot(index);
+            return safeClone(res);
+        },
+        rollbackScene: () => {
+            const res = rollbackScene();
+            return safeClone(res);
+        },
 
         // 即时注入透视镜 (Live Inspector 快照)
         getLiveSnapshot: (forceRefresh = true) => {
             const snap = getLastInjectionSnapshot(forceRefresh);
-            return snap ? structuredClone(snap) : null;
+            return snap ? safeClone(snap) : null;
         },
 
         // 玩法流派预设
-        getPresets: () => structuredClone(GAMEPLAY_PRESETS),
+        getPresets: () => safeClone(GAMEPLAY_PRESETS),
         applyPreset: (presetId) => applyGameplayPreset(presetId),
 
         // 纯本地算法套件 (0 API 开销)

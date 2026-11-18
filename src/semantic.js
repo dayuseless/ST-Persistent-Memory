@@ -1,5 +1,5 @@
 /**
- * 语义检索与向量基建核心模块 (v0.1.44)
+ * 语义检索与向量基建核心模块 (v0.1.45)
  * 
  * 核心能力：
  * 1. 向量数学运算：高精度余弦相似度计算与 L2 归一化，具备零模长、维度不符与异常数据防御。
@@ -583,8 +583,8 @@ export function tokenizeCjkBigram(text) {
     if (!clean) return [];
 
     const tokens = new Set();
-    // 匹配英文/数字词 与 CJK 字符片段 (含中日韩常用汉字、扩展字与假名谚文)
-    const segmentRegex = /([a-z0-9_\-]+)|([\u4e00-\u9fa5\u3400-\u4dbf\uf900-\ufaff\u3040-\u309f\u30a0-\u30ff\uac00-\ud7af]+)/gi;
+    // 匹配英文/数字词 与 CJK 字符片段 (含中日韩常用汉字、全部扩展区汉字 Ext A~I、假名及长音符、谚文与子音字母)
+    const segmentRegex = /([a-z0-9_\-]+)|([\p{Script=Han}\p{Script=Hiragana}\p{Script=Katakana}\p{Script=Hangul}\u30fc]+)/giu;
     let match;
     while ((match = segmentRegex.exec(clean)) !== null) {
         const enWord = match[1];
@@ -594,14 +594,16 @@ export function tokenizeCjkBigram(text) {
                 tokens.add(enWord);
             }
         } else if (cjkSeg) {
+            // 将字符串解构为 Unicode 码点字符数组 (杜绝 UTF-16 代理对截断，完美支持 CJK 扩展区字如 𠮷)
+            const chars = Array.from(cjkSeg);
             // 生成 2-gram (二元词)
-            for (let i = 0; i < cjkSeg.length - 1; i++) {
-                const bg = cjkSeg.slice(i, i + 2);
+            for (let i = 0; i < chars.length - 1; i++) {
+                const bg = chars[i] + chars[i + 1];
                 tokens.add(bg);
             }
             // 生成 1-gram (过滤停用单字)
-            for (let i = 0; i < cjkSeg.length; i++) {
-                const char = cjkSeg[i];
+            for (let i = 0; i < chars.length; i++) {
+                const char = chars[i];
                 if (!STOPWORDS.has(char)) {
                     tokens.add(char);
                 }
@@ -746,6 +748,9 @@ export function reciprocalRankFusion(rankedLists, k = 60) {
         const list = rankedLists[listIdx];
         if (!Array.isArray(list)) continue;
 
+        const seenInList = new Set();
+        let validRank = 0;
+
         for (let rank = 0; rank < list.length; rank++) {
             const entry = list[rank];
             if (!entry) continue;
@@ -757,17 +762,22 @@ export function reciprocalRankFusion(rankedLists, k = 60) {
             const id = (typeof rawId === 'string' && rawId.trim()) ? rawId.trim() : null;
 
             if (!id) {
-                continue; // 拒绝无 ID、空 ID 或纯空白字符 ID 实体
+                continue; // 拒绝无 ID、空 ID 或纯空白字符 ID 实体 (且不挤占有效实体的位次)
             }
-            const item = typeof entry === 'object' ? entry : { id };
 
-            const rank1Based = rank + 1; // 1-indexed rank
-            const rankScore = 1.0 / (smoothingK + rank1Based);
+            // 同一通道内部重复 ID 去重：只记录第一次出现的有效位次与得分，拒绝同通道重复刷分
+            if (seenInList.has(id)) {
+                continue;
+            }
+            seenInList.add(id);
+
+            validRank++; // 严格按有效非重复实体递增位次，保证排名连续性
+            const rankScore = 1.0 / (smoothingK + validRank);
 
             if (!scoreMap.has(id)) {
                 scoreMap.set(id, {
                     id,
-                    item,
+                    item: typeof entry === 'object' ? entry : null,
                     rrfScore: 0,
                     ranks: new Array(rankedLists.length).fill(null)
                 });
@@ -775,7 +785,7 @@ export function reciprocalRankFusion(rankedLists, k = 60) {
 
             const record = scoreMap.get(id);
             record.rrfScore += rankScore;
-            record.ranks[listIdx] = rank1Based;
+            record.ranks[listIdx] = validRank;
             if (typeof entry === 'object') {
                 record.item = entry;
             }
@@ -807,8 +817,9 @@ export function rankCandidatesWithRRF(candidates, queryContext, settings = {}, k
         return [];
     }
 
-    // 规范化候选对象统一封装并确保具备有效 ID (严厉拒绝无 ID 实体)
+    // 规范化候选对象统一封装并确保具备有效 ID (严厉拒绝无 ID 实体，且对相同 ID 执行首次有效保留去重)
     const validItems = [];
+    const seenCandidateIds = new Set();
     for (const c of candidates) {
         const mem = (c && c.mem) ? c.mem : c;
         if (!mem) continue;
@@ -816,6 +827,8 @@ export function rankCandidatesWithRRF(candidates, queryContext, settings = {}, k
             ? mem.id.trim() 
             : (typeof c.id === 'string' && c.id.trim() ? c.id.trim() : null);
         if (!id) continue; // 坚决丢弃无合法 ID 实体，杜绝身份碰撞
+        if (seenCandidateIds.has(id)) continue; // 候选池去重：同 ID 条目仅保留首次出现
+        seenCandidateIds.add(id);
         validItems.push({
             id,
             mem,

@@ -3165,30 +3165,30 @@ Intermediate analysis details...
     });
 
     // ─────────────────────────────────────────────────────────────
-    // T71: 全工程版本标识严格一致性核验 (0.1.44)
+    // T71: 全工程版本标识严格一致性核验 (0.1.45)
     // ─────────────────────────────────────────────────────────────
-    test('T71: 全工程版本标识严格一致性核验 (manifest, config, package, index 与各模块头部统一为 0.1.44)', () => {
+    test('T71: 全工程版本标识严格一致性核验 (manifest, config, package, index 与各模块头部统一为 0.1.45)', () => {
         const currentFile = fileURLToPath(import.meta.url);
         const rootDir = path.resolve(path.dirname(currentFile), '../');
 
         // 1. manifest.json
         const manifestPath = path.join(rootDir, 'manifest.json');
         const manifest = JSON.parse(fs.readFileSync(manifestPath, 'utf8'));
-        assert.strictEqual(manifest.version, '0.1.44', 'manifest.json 版本号应为 0.1.44');
+        assert.strictEqual(manifest.version, '0.1.45', 'manifest.json 版本号应为 0.1.45');
 
         // 2. src/config.js
-        assert.strictEqual(EXTENSION_VERSION, '0.1.44', 'config.js EXTENSION_VERSION 应为 0.1.44');
+        assert.strictEqual(EXTENSION_VERSION, '0.1.45', 'config.js EXTENSION_VERSION 应为 0.1.45');
 
         // 3. package.json
         const pkgPath = path.join(rootDir, 'package.json');
         const pkg = JSON.parse(fs.readFileSync(pkgPath, 'utf8'));
-        assert.strictEqual(pkg.version, '0.1.44', 'package.json 版本号应为 0.1.44');
+        assert.strictEqual(pkg.version, '0.1.45', 'package.json 版本号应为 0.1.45');
 
         // 4. index.js
         const indexPath = path.join(rootDir, 'index.js');
         const indexContent = fs.readFileSync(indexPath, 'utf8');
-        assert.ok(indexContent.includes('v0.1.44'), 'index.js 头部必须标注 v0.1.44');
-        assert.ok(!indexContent.includes('v0.1.43'), 'index.js 严禁残留旧版本 v0.1.43 版本头');
+        assert.ok(indexContent.includes('v0.1.45'), 'index.js 头部必须标注 v0.1.45');
+        assert.ok(!indexContent.includes('v0.1.44'), 'index.js 严禁残留旧版本 v0.1.44 版本头');
 
         // 5. 各核心模块头部注释版本检查 (18 个核心模块 + 5 个 UI 子模块 = 23 个模块)
         const checkModules = [
@@ -3222,12 +3222,12 @@ Intermediate analysis details...
             const content = fs.readFileSync(filePath, 'utf8');
             const first10Lines = content.split('\n').slice(0, 10).join('\n');
             assert.ok(
-                first10Lines.includes('v0.1.44') || first10Lines.includes('0.1.44'),
-                `${relPath} 头部注释必须包含 0.1.44 版本标识`
+                first10Lines.includes('v0.1.45') || first10Lines.includes('0.1.45'),
+                `${relPath} 头部注释必须包含 0.1.45 版本标识`
             );
             assert.ok(
-                !first10Lines.includes('0.1.43') && !first10Lines.includes('v0.1.43'),
-                `${relPath} 头部注释严禁残留旧版本 0.1.43`
+                !first10Lines.includes('0.1.44') && !first10Lines.includes('v0.1.44'),
+                `${relPath} 头部注释严禁残留旧版本 0.1.44`
             );
         }
     });
@@ -6839,15 +6839,22 @@ Intermediate analysis details...
     });
 
     // ─────────────────────────────────────────────────────────────
-    // T118: CJK Bigram 离散分词、RRF 倒数排名融合与全局开放 SDK (STPersistentMemoryAPI) 契约测试
+    // T118: 本地算法与 SDK 零网络调用契约 (Zero-Fetch & Zero-Network Contract)
     // ─────────────────────────────────────────────────────────────
-    await testAsync('T118: CJK Bigram 离散分词、RRF 倒数排名融合与全局开放 SDK 契约测试 (所测算法与 SDK 调用的零 fetch 请求契约)', async () => {
-        // 0. 严密拦截网络：监听并拦截任何全局 fetch 请求，确保纯本地 0 次 API 调用
+    await testAsync('T118: 本地算法与 SDK 零网络调用契约 (Zero-Fetch & Zero-Network Contract)', async () => {
+        // 0. 严密拦截网络：监听并拦截任何全局 fetch 与 XMLHttpRequest 请求，确保纯本地 0 次网络 API 调用
         let networkCallCount = 0;
         const originalFetch = globalThis.fetch;
+        const originalXhr = globalThis.XMLHttpRequest;
         globalThis.fetch = async (...args) => {
             networkCallCount++;
             throw new Error(`[Network Violation] 严禁在本地算法及 SDK 调用中产生外部网络调用: ${args[0]}`);
+        };
+        globalThis.XMLHttpRequest = class {
+            open(...args) {
+                networkCallCount++;
+                throw new Error(`[Network Violation] 严禁调用 XMLHttpRequest: ${args[0]}`);
+            }
         };
 
         const origCtx = { ...mockContext };
@@ -6986,7 +6993,7 @@ Intermediate analysis details...
             // 5.1 验证全局对象自动挂载
             const api = getGlobalApi();
             assert.ok(api, 'getGlobalApi 必须返回实例');
-            assert.strictEqual(api.version, '0.1.44', 'SDK 版本必须严格为 0.1.44');
+            assert.strictEqual(api.version, '0.1.45', 'SDK 版本必须严格为 0.1.45');
             assert.strictEqual(globalThis.STPersistentMemoryAPI, api, '必须挂载至 globalThis.STPersistentMemoryAPI');
 
             // 5.2 状态与配置接口
@@ -7055,6 +7062,7 @@ Intermediate analysis details...
 
         } finally {
             globalThis.fetch = originalFetch;
+            globalThis.XMLHttpRequest = originalXhr;
             Object.assign(mockContext, origCtx);
             updateSettings(origSettings);
             clearStateCache();
@@ -7177,7 +7185,7 @@ Intermediate analysis details...
 
             // 尝试通过 updateMemory 进行越权提权 (character -> world)
             const updateResult = api.updateMemory(added.id, { scope: 'world' }, { bypassAcl: true });
-            // updateMemory 必须经过 checkAclEscalation 防护，拦截将已有 character 记忆提升为 world
+            // updateMemory 严格拒绝通过普通 patch 修改 ACL 字段 (scope/character/known_by)，且外部传入的 bypassAcl 参数被完全剥离净化
             assert.strictEqual(api.getMemory(added.id).scope, 'character', '受限记忆的 scope 严禁被提权为 world');
         } finally {
             Object.assign(mockContext, origCtx);
@@ -7810,6 +7818,180 @@ Intermediate analysis details...
         } finally {
             global.document = origDoc;
             global.window = origWin;
+        }
+    });
+
+    // ─────────────────────────────────────────────────────────────
+    // T127: RRF 同榜单重复 ID 去重与数学排名不变性契约测试 (P1 检索抗噪加固)
+    // ─────────────────────────────────────────────────────────────
+    test('T127: RRF 同榜单重复 ID 去重与数学排名不变性契约测试 (P1 检索抗噪加固)', () => {
+        // 1. 单榜单内部重复实体去重核验
+        // 榜单：A, A, B。A 不得重复计算 1/61 + 1/62，只计一次 1/61；B 位次为 2 (1/62)
+        const dupList = [
+            { id: 'docA', content: '条目A第一次出现' },
+            { id: 'docA', content: '条目A第二次重复出现' },
+            { id: 'docB', content: '条目B正常出现' }
+        ];
+
+        const rrfRes = reciprocalRankFusion([dupList], 60);
+        assert.strictEqual(rrfRes.length, 2, '同榜单内重复 ID 必须合并去重，结果长度严格为 2');
+        assert.strictEqual(rrfRes[0].id, 'docA');
+        assert.strictEqual(rrfRes[1].id, 'docB');
+
+        const scoreA = Number((1.0 / 61).toFixed(6));
+        const scoreB = Number((1.0 / 62).toFixed(6));
+        assert.strictEqual(rrfRes[0].rrfScore, scoreA, '重复条目 A 严禁重复累计加分');
+        assert.strictEqual(rrfRes[1].rrfScore, scoreB, '条目 B 紧随其后作为第 2 位获得准确打分');
+        assert.strictEqual(rrfRes[0].ranks[0], 1, '条目 A 位次严格为 1');
+        assert.strictEqual(rrfRes[1].ranks[0], 2, '条目 B 位次严格为 2');
+
+        // 2. 双通道多路正规融合验证 (通道 1 有 A, B; 通道 2 有 A, C)
+        const channel1 = [{ id: 'docA' }, { id: 'docB' }];
+        const channel2 = [{ id: 'docA' }, { id: 'docC' }];
+        const fused = reciprocalRankFusion([channel1, channel2], 60);
+        assert.strictEqual(fused.length, 3);
+        assert.strictEqual(fused[0].id, 'docA');
+        assert.strictEqual(fused[0].rrfScore, Number((1/61 + 1/61).toFixed(6)), '跨通道正常相加');
+
+        // 3. rankCandidatesWithRRF 输入候选池 ID 去重验证
+        const dupCandidates = [
+            { id: 'm1', content: '王城地下深处藏有密道', trigger_keys: ['王城', '密道'] },
+            { id: 'm1', content: '王城地下深处藏有密道 (意外重复项)', trigger_keys: ['王城'] },
+            { id: 'm2', content: '白金之子正在寻求圣树秘密', trigger_keys: ['圣树'] }
+        ];
+        const qCtx = {
+            queryText: '王城密道',
+            scanCorpus: '王城密道',
+            queryVector: [0.1, 0.2]
+        };
+        const ranked = rankCandidatesWithRRF(dupCandidates, qCtx, { filterZeroScores: false }, 60);
+        assert.strictEqual(ranked.length, 2, '候选池重复 ID 必须在 RRF 排序前严格去重');
+        const ids = ranked.map(r => r.id);
+        assert.ok(ids.includes('m1') && ids.includes('m2'));
+    });
+
+    // ─────────────────────────────────────────────────────────────
+    // T128: Unicode CJK 补充平面汉字 (Ext B~I)、韩文 Jamo 与日文长音符码点级 Bigram 分词测试 (P2 语言学边界加固)
+    // ─────────────────────────────────────────────────────────────
+    test('T128: Unicode CJK 补充平面汉字 (Ext B~I)、韩文 Jamo 与日文长音符码点级 Bigram 分词测试 (P2 语言学边界加固)', () => {
+        // 1. CJK 扩展 B 区汉字 "𠮷" (U+20BB7) 码点级 Bigram 提取
+        const extBText = '在𠮷野家品尝招牌牛肉饭';
+        const extBTokens = tokenizeCjkBigram(extBText);
+        // 验证原子码点二元组正确拼装，绝不产生 UTF-16 孤立代理对 (Broken Surrogates)
+        assert.ok(extBTokens.includes('𠮷野'), '必须成功提取包含 CJK Ext-B 汉字的 Bigram "𠮷野"');
+        assert.ok(extBTokens.includes('野家'), '必须成功提取相邻 Bigram "野家"');
+        assert.ok(extBTokens.includes('𠮷'), '必须提取单字 "𠮷"');
+        // 严禁代理对碎片泄漏为独立 token
+        assert.ok(!extBTokens.some(t => /[\ud800-\udbff](?![\udc00-\udfff])|(?<![\ud800-\udbff])[\udc00-\udfff]/.test(t)), '严禁出现任何未配对的 UTF-16 孤立代理对');
+
+        // 2. 日文片假名含长音符 "ー" (U+30FC)
+        const jpnText = '特制ラーメン非常美味';
+        const jpnTokens = tokenizeCjkBigram(jpnText);
+        assert.ok(jpnTokens.includes('ラー'), '必须成功提取 "ラー"');
+        assert.ok(jpnTokens.includes('ーメ'), '长音符与后随假名必须连贯构成 Bigram "ーメ"');
+        assert.ok(jpnTokens.includes('メン'), '必须成功提取 "メン"');
+
+        // 3. 韩文音节与谚文字母 (Hangul & Jamo)
+        const korText = '맛있는 김치 찌개 좋아';
+        const korTokens = tokenizeCjkBigram(korText);
+        assert.ok(korTokens.includes('김치'), '韩文音节 Bigram "김치" 必须被提取');
+        assert.ok(korTokens.includes('찌개'), '韩文音节 Bigram "찌개" 必须被提取');
+        assert.ok(korTokens.includes('맛있'), '相邻韩文 Bigram "맛있" 必须被提取');
+
+        // 4. 多语言混合句子词法打分验证
+        const score = calculateBigramLexicalScore('𠮷野家牛肉饭', '午餐在𠮷野家吃了美味的盖饭');
+        assert.ok(score >= 0.30, `补充平面汉字词法命中得分必须显著大于 0 (实际: ${score})`);
+    });
+
+    // ─────────────────────────────────────────────────────────────
+    // T129: 写接口返回值深拷贝与全局调试接口防原位篡改隔离测试 (P0 状态所有权闭环)
+    // ─────────────────────────────────────────────────────────────
+    test('T129: 写接口返回值深拷贝与全局调试接口防原位篡改隔离测试 (P0 状态所有权闭环)', () => {
+        const origCtx = { ...mockContext };
+        try {
+            mockContext.name1 = '玩家';
+            mockContext.name2 = '角色A';
+            mockContext.characters = [{ name: '角色A' }];
+            clearStateCache();
+            loadCurrentState();
+
+            const api = getGlobalApi();
+
+            // 1. 验证 addMemory 返回值的深拷贝隔离
+            const created = api.addMemory({
+                content: '角色A私藏的密信信件',
+                type: 'fact',
+                scope: 'character',
+                character: '角色A',
+                trigger_keys: ['密信']
+            });
+            assert.ok(created && created.id);
+
+            // 外部恶意修改返回值对象的字段，试图绕过 ACL 提权为 world
+            created.scope = 'world';
+            created.character = '所有人';
+            created.content = '被篡改为公开事实的密信';
+            if (Array.isArray(created.known_by)) created.known_by.push('角色B');
+
+            // 检查内部真实 stateCache.memories
+            const internalMem = getState().memories.find(m => m.id === created.id);
+            assert.strictEqual(internalMem.scope, 'character', '修改 addMemory 返回对象绝不能污染内部 scope');
+            assert.strictEqual(internalMem.character, '角色A', '修改 addMemory 返回对象绝不能污染内部 character');
+            assert.strictEqual(internalMem.content, '角色A私藏的密信信件', '修改 addMemory 返回对象绝不能污染内部 content');
+
+            // 2. 验证 updateMemory 返回值的深拷贝隔离
+            const updated = api.updateMemory(created.id, { content: '角色A重新妥善保管密信' });
+            assert.ok(updated);
+            updated.scope = 'world';
+            updated.character = '任何人';
+            assert.strictEqual(getState().memories.find(m => m.id === created.id).scope, 'character', '修改 updateMemory 返回对象绝不能污染内部 scope');
+
+            // 3. 验证 rollbackScene 与 restoreSceneSnapshot 返回值的深拷贝隔离
+            api.updateScene({ location: '初始密室', in_scene_characters: ['角色A'] });
+            api.updateScene({ location: '暴风城外', in_scene_characters: ['角色A', '角色B'] });
+
+            const rb = api.rollbackScene();
+            assert.strictEqual(rb.success, true);
+            // 尝试篡改返回的 scene
+            rb.scene.in_scene_characters.push('恶意外来黑客角色');
+            rb.scene.location = '篡改后的黑客空间';
+            assert.strictEqual(getState().scene.in_scene_characters.includes('恶意外来黑客角色'), false, '回滚返回对象篡改不得污染内部现场角色');
+            assert.strictEqual(getState().scene.location, '初始密室', '回滚返回对象篡改不得污染内部现场地点');
+
+            // 4. 验证 window.__persistentMemory.getState() 调试接口的快照隔离
+            if (typeof window !== 'undefined' && window.__persistentMemory) {
+                const dbgState = window.__persistentMemory.getState();
+                dbgState.memories[0].scope = 'world';
+                dbgState.memories[0].content = '调试接口篡改事实';
+                dbgState.memories.push({ id: 'evil_dbg_mem', content: '恶意调试条目', scope: 'world' });
+
+                const realInternal = getState();
+                assert.strictEqual(realInternal.memories[0].scope, 'character', '调试接口返回值篡改绝不影响内部真实 scope');
+                assert.strictEqual(realInternal.memories[0].content, '角色A重新妥善保管密信', '调试接口返回值篡改绝不影响内部真实 content');
+                assert.strictEqual(realInternal.memories.some(m => m.id === 'evil_dbg_mem'), false, '调试接口追加条目绝不渗透进真实状态');
+            }
+
+            // 5. 验证 updateSettings 传入对象的深拷贝防引用泄漏
+            const externalPatch = {
+                customApiUrl: 'https://safe-api.internal',
+                customApiModel: 'safe-model'
+            };
+            api.updateSettings(externalPatch);
+            // 外部继续修改原对象
+            externalPatch.customApiModel = 'malicious-injected-model';
+            assert.strictEqual(api.getSettings().customApiModel, 'safe-model', 'updateSettings 必须隔离外部 patch 引用');
+
+            // 6. 执行真实提示词组装与 POV 权限校验，证明没有越权注入
+            // 当前现场在场角色为 角色B 生成回复
+            mockContext.name2 = '角色B';
+            const liveSnap = buildAndInjectMemoryPrompt();
+            // 验证角色A的私密条目绝不可能因为刚才任何一次篡改尝试而被注入到角色B的上下文中
+            const injectedPrompt = mockContext.chatMetadata?.st_persistent_memory_prompt || '';
+            assert.strictEqual(injectedPrompt.includes('密信'), false, '篡改防护生效：角色A私知绝不向不知情角色B注入！');
+        } finally {
+            Object.assign(mockContext, origCtx);
+            clearStateCache();
+            loadCurrentState();
         }
     });
 
