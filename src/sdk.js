@@ -1,5 +1,5 @@
 /**
- * ST-Persistent-Memory - 全局开放 API 接口层 (Global SDK, v0.1.46)
+ * ST-Persistent-Memory - 全局开放 API 接口层 (Global SDK, v0.1.47)
  * 
  * 核心设计目标：
  * 1. 挂载 window.STPersistentMemoryAPI 与 globalThis.STPersistentMemoryAPI，
@@ -16,7 +16,7 @@
  * 3. 0 API 开销保证：所有暴露方法均运行于本地环境，不产生任何未经用户主动触发的额外外部模型调用。
  */
 
-import { EXTENSION_VERSION } from './config.js';
+import { EXTENSION_VERSION, STATUS_BAR_PRESETS } from './config.js';
 import {
     getState,
     getSettings,
@@ -37,6 +37,7 @@ import {
 } from './state.js';
 import { getLastInjectionSnapshot } from './injector.js';
 import { GAMEPLAY_PRESETS, applyGameplayPreset } from './ui/common.js';
+import { formatSceneTemplate, renderStatusBarHtml, renderStatusBar } from './ui/statusbar.js';
 import {
     tokenizeCjkBigram,
     calculateBigramLexicalScore,
@@ -128,6 +129,29 @@ export function buildGlobalApi() {
         rollbackScene: () => {
             const res = rollbackScene();
             return safeClone(res);
+        },
+
+        // 场景外挂状态栏与 DIY 模板服务
+        formatScene: (template) => {
+            const sc = getState()?.scene;
+            const tpl = template || getSettings()?.statusBarTemplate;
+            return formatSceneTemplate(tpl, sc);
+        },
+        getStatusBarPresets: () => safeClone(STATUS_BAR_PRESETS),
+        applyStatusBarPreset: (presetId) => {
+            const preset = Object.values(STATUS_BAR_PRESETS).find(p => p.id === presetId);
+            if (!preset) return false;
+            updateSettings({ statusBarTemplate: preset.template });
+            saveSettingsImmediately();
+            renderStatusBar();
+            return true;
+        },
+        renderStatusBarHtml: (template, scene) => {
+            return renderStatusBarHtml(template, scene || getState()?.scene);
+        },
+        renderStatusBar: () => {
+            renderStatusBar();
+            return true;
         },
 
         // 即时注入透视镜 (Live Inspector 快照)

@@ -1,5 +1,5 @@
 /**
- * UI 管理器 (v0.1.46)：原生扩展抽屉集成、屏幕快捷悬浮按钮（支持自由拖拽与持久化）与 HUD 侧边控制台
+ * UI 管理器 (v0.1.47)：原生扩展抽屉集成、屏幕快捷悬浮按钮（支持自由拖拽与持久化）与 HUD 侧边控制台
  * 全面升级：傻瓜式与详细式双模式架构（默认傻瓜全托管，详细参数弹窗微调）、UI组件化解耦、统一ACL判定层介入、行内即时编辑、记忆数据独立导出/导入迁移、世界书升格安全确认
  */
 
@@ -14,6 +14,7 @@ import { showSyncLoreModal, showPromoteLoreModal, showAdvancedSettingsModal, sho
 import { getLastInjectionSnapshot } from './injector.js';
 import { createFloatingButton, resetBubblePosition, setBubbleState, getBubbleState, resolveHostWindow, wakeBubble, scheduleBubbleRest } from './ui/bubble.js';
 import { createNativeExtensionDrawer, registerExtensionsMenuEntry, renderNativeDrawerContent, importSillyTavernApiConfig } from './ui/drawer.js';
+import { renderStatusBar, registerSceneMacros } from './ui/statusbar.js';
 import {
     registerSlashCommands,
     executeRememberCommand,
@@ -43,12 +44,16 @@ function initUI() {
     createFloatingButton(() => togglePanel());
     createNativeExtensionDrawer((show) => togglePanel(show), () => renderPanelContent());
     registerExtensionsMenuEntry((show) => togglePanel(show));
+    renderStatusBar();
+    registerSceneMacros();
 
     // 针对酒馆模板异步延迟生成与 DOM 动态挂载，进行多轮对齐补全与 MutationObserver 监听
     const alignAll = () => {
         createFloatingButton(() => togglePanel());
         createNativeExtensionDrawer((show) => togglePanel(show), () => renderPanelContent());
         registerExtensionsMenuEntry((show) => togglePanel(show));
+        renderStatusBar();
+        registerSceneMacros();
     };
 
     setTimeout(alignAll, 300);
@@ -79,6 +84,7 @@ function initUI() {
     onStateChange(() => {
         renderPanelContent();
         renderNativeDrawerContent((show) => togglePanel(show), () => renderPanelContent());
+        renderStatusBar();
         const bubble = D?.getElementById('pm-floating-bubble') || (typeof document !== 'undefined' ? document.getElementById('pm-floating-bubble') : null);
         if (bubble) {
             bubble.style.setProperty('display', (getSettings().showFloatingBubble !== false) ? 'flex' : 'none', 'important');

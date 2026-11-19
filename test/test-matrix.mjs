@@ -59,7 +59,10 @@ import {
     MEMORY_SCOPE,
     DEFAULT_SETTINGS,
     DEFAULT_STATE,
-    INJECTION_TEMPLATES
+    INJECTION_TEMPLATES,
+    STATUS_BAR_DOCKS,
+    STATUS_BAR_THEMES,
+    STATUS_BAR_PRESETS
 } from '../src/config.js';
 
 import {
@@ -286,6 +289,12 @@ import {
     renderNativeDrawerContent as drawerRenderNativeDrawerContent,
     importSillyTavernApiConfig as drawerImportSillyTavernApiConfig
 } from '../src/ui/drawer.js';
+import {
+    formatSceneTemplate,
+    renderStatusBarHtml,
+    registerSceneMacros,
+    dispatchSceneUpdate
+} from '../src/ui/statusbar.js';
 import {
     LOCAL_VECTOR_DIM,
     cosineSimilarity,
@@ -3165,29 +3174,29 @@ Intermediate analysis details...
     });
 
     // ─────────────────────────────────────────────────────────────
-    // T71: 全工程版本标识严格一致性核验 (0.1.46)
+    // T71: 全工程版本标识严格一致性核验 (0.1.47)
     // ─────────────────────────────────────────────────────────────
-    test('T71: 全工程版本标识严格一致性核验 (manifest, config, package, index 与各模块头部统一为 0.1.46)', () => {
+    test('T71: 全工程版本标识严格一致性核验 (manifest, config, package, index 与各模块头部统一为 0.1.47)', () => {
         const currentFile = fileURLToPath(import.meta.url);
         const rootDir = path.resolve(path.dirname(currentFile), '../');
 
         // 1. manifest.json
         const manifestPath = path.join(rootDir, 'manifest.json');
         const manifest = JSON.parse(fs.readFileSync(manifestPath, 'utf8'));
-        assert.strictEqual(manifest.version, '0.1.46', 'manifest.json 版本号应为 0.1.46');
+        assert.strictEqual(manifest.version, '0.1.47', 'manifest.json 版本号应为 0.1.47');
 
         // 2. src/config.js
-        assert.strictEqual(EXTENSION_VERSION, '0.1.46', 'config.js EXTENSION_VERSION 应为 0.1.46');
+        assert.strictEqual(EXTENSION_VERSION, '0.1.47', 'config.js EXTENSION_VERSION 应为 0.1.47');
 
         // 3. package.json
         const pkgPath = path.join(rootDir, 'package.json');
         const pkg = JSON.parse(fs.readFileSync(pkgPath, 'utf8'));
-        assert.strictEqual(pkg.version, '0.1.46', 'package.json 版本号应为 0.1.46');
+        assert.strictEqual(pkg.version, '0.1.47', 'package.json 版本号应为 0.1.47');
 
         // 4. index.js
         const indexPath = path.join(rootDir, 'index.js');
         const indexContent = fs.readFileSync(indexPath, 'utf8');
-        assert.ok(indexContent.includes('v0.1.46'), 'index.js 头部必须标注 v0.1.46');
+        assert.ok(indexContent.includes('v0.1.47'), 'index.js 头部必须标注 v0.1.47');
         assert.ok(!indexContent.includes('v0.1.45'), 'index.js 严禁残留旧版本 v0.1.45 版本头');
 
         // 5. 各核心模块头部注释版本检查 (18 个核心模块 + 5 个 UI 子模块 = 23 个模块)
@@ -3222,8 +3231,8 @@ Intermediate analysis details...
             const content = fs.readFileSync(filePath, 'utf8');
             const first10Lines = content.split('\n').slice(0, 10).join('\n');
             assert.ok(
-                first10Lines.includes('v0.1.46') || first10Lines.includes('0.1.46'),
-                `${relPath} 头部注释必须包含 0.1.46 版本标识`
+                first10Lines.includes('v0.1.47') || first10Lines.includes('0.1.47'),
+                `${relPath} 头部注释必须包含 0.1.47 版本标识`
             );
             assert.ok(
                 !first10Lines.includes('0.1.45') && !first10Lines.includes('v0.1.45'),
@@ -6993,7 +7002,7 @@ Intermediate analysis details...
             // 5.1 验证全局对象自动挂载
             const api = getGlobalApi();
             assert.ok(api, 'getGlobalApi 必须返回实例');
-            assert.strictEqual(api.version, '0.1.46', 'SDK 版本必须严格为 0.1.46');
+            assert.strictEqual(api.version, '0.1.47', 'SDK 版本必须严格为 0.1.47');
             assert.strictEqual(globalThis.STPersistentMemoryAPI, api, '必须挂载至 globalThis.STPersistentMemoryAPI');
 
             // 5.2 状态与配置接口
@@ -8113,6 +8122,197 @@ Intermediate analysis details...
 
             assert.strictEqual(api.deleteMemory(null), false);
             assert.strictEqual(api.deleteMemory(''), false);
+        } finally {
+            Object.assign(mockContext, origCtx);
+            clearStateCache();
+            loadCurrentState();
+        }
+    });
+
+    // ─────────────────────────────────────────────────────────────
+    // T131: 场景外挂状态栏模板引擎与多流派预设解析契约测试 (DIY 模板 & 占位符)
+    // ─────────────────────────────────────────────────────────────
+    test('T131: 场景外挂状态栏模板引擎与多流派预设解析契约测试 (DIY 模板 & 占位符)', () => {
+        assert.ok(STATUS_BAR_DOCKS && STATUS_BAR_DOCKS.INPUT_TOP === 'input_top');
+        assert.ok(STATUS_BAR_THEMES && STATUS_BAR_THEMES.GLASS === 'glass');
+        assert.ok(STATUS_BAR_PRESETS && STATUS_BAR_PRESETS.RPG);
+
+        const fullScene = {
+            location: '迷雾森林营地',
+            time: '深夜微雨',
+            in_scene_characters: ['艾莲娜', '罗兰', '赛恩'],
+            action: '围坐在篝火旁商议对策',
+            tension: '暗潮涌动',
+            unresolved: '树林深处传来的怪异啼哭声'
+        };
+
+        // 1. 全变量替换
+        const customTemplate = '【地点】{{location}} ⌛{{time}} 👥[{{characters}}] ⚔️{{action}} ⚡{{tension}} ❓{{unresolved}}';
+        const formatted = formatSceneTemplate(customTemplate, fullScene);
+        assert.strictEqual(formatted, '【地点】迷雾森林营地 ⌛深夜微雨 👥[艾莲娜, 罗兰, 赛恩] ⚔️围坐在篝火旁商议对策 ⚡暗潮涌动 ❓树林深处传来的怪异啼哭声');
+
+        // 2. 空角色与全员离场处理
+        const emptyCharScene = { location: '空荡大殿', in_scene_characters: [] };
+        assert.strictEqual(formatSceneTemplate('地点: {{location}} | 角色: {{characters}}', emptyCharScene), '地点: 空荡大殿 | 角色: ');
+
+        const clearedCharScene = { location: '废墟', in_scene_characters: null };
+        assert.strictEqual(formatSceneTemplate('地点: {{location}} | 角色: {{characters}}', clearedCharScene), '地点: 废墟 | 角色: 无人在场');
+
+        // 3. 缺省字段平滑替换为空串
+        const partialScene = { location: '藏书阁' };
+        const resPartial = formatSceneTemplate('📍 {{location}} ｜ 🕒 {{time}} ｜ ⚔️ {{action}}', partialScene);
+        assert.strictEqual(resPartial, '📍 藏书阁 ｜ 🕒  ｜ ⚔️ ');
+
+        // 4. 四大官方玩法预设均能正常格式化
+        for (const preset of Object.values(STATUS_BAR_PRESETS)) {
+            const out = formatSceneTemplate(preset.template, fullScene);
+            assert.ok(out && typeof out === 'string');
+            assert.ok(out.includes('迷雾森林营地'), `预设 ${preset.name} 应包含地点`);
+        }
+    });
+
+    // ─────────────────────────────────────────────────────────────
+    // T132: 场景外挂状态栏交互式 HTML 渲染与防 XSS 安全转义测试 (行内即改标记)
+    // ─────────────────────────────────────────────────────────────
+    test('T132: 场景外挂状态栏交互式 HTML 渲染与防 XSS 安全转义测试 (行内即改标记)', () => {
+        const xssScene = {
+            location: '<script>alert("xss")</script>',
+            time: '黄昏" onfocus="alert(1)',
+            in_scene_characters: ['<img src=x onerror=alert(2)>', '角色B'],
+            action: '<b>正在施法</b>',
+            tension: '<style>body{display:none}</style>',
+            unresolved: '未知"&<>'
+        };
+
+        const tpl = '📍 {{location}} ｜ 🕒 {{time}} ｜ 👥 {{characters}} ｜ ⚔️ {{action}} ｜ ⚡ {{tension}} ｜ ❓ {{unresolved}}';
+        const html = renderStatusBarHtml(tpl, xssScene);
+
+        // 验证 XSS 标签彻底被转义，绝不允许未经转义的原始 script 或 img 标签存在
+        assert.strictEqual(html.includes('<script>'), false, '严禁原样输出 script 脚本标签');
+        assert.strictEqual(html.includes('&lt;script&gt;'), true, '恶意 script 标签必须被完全 HTML 实体转义');
+        assert.strictEqual(html.includes('<img src=x'), false, '严禁原样输出 img onerror 标签');
+        assert.strictEqual(html.includes('&lt;img src=x'), true, 'img 标签必须被安全转义');
+        assert.strictEqual(html.includes('<style>'), false, 'style 标签严禁原样输出');
+
+        // 验证行内即改元素钩子生成完整
+        assert.ok(html.includes('data-field="location"'));
+        assert.ok(html.includes('data-field="time"'));
+        assert.ok(html.includes('data-field="characters"'));
+        assert.ok(html.includes('data-field="action"'));
+        assert.ok(html.includes('data-field="tension"'));
+        assert.ok(html.includes('data-field="unresolved"'));
+        assert.ok(html.includes('class="pm-status-token pm-token-field'));
+
+        // 验证空字段自动带上 fallback 占位
+        const emptyHtml = renderStatusBarHtml('📍 {{location}} 🕒 {{time}}', {});
+        assert.ok(emptyHtml.includes('未知场景'));
+        assert.ok(emptyHtml.includes('时间未定'));
+    });
+
+    // ─────────────────────────────────────────────────────────────
+    // T133: 酒馆原生动态宏注册与跨组件解析契约测试 (Native Macros Registry)
+    // ─────────────────────────────────────────────────────────────
+    test('T133: 酒馆原生动态宏注册与跨组件解析契约测试 (Native Macros Registry)', () => {
+        const origCtx = { ...mockContext };
+        try {
+            const registeredMacros = {};
+            mockContext.macros = {
+                register: (name, def) => {
+                    registeredMacros[name] = def;
+                }
+            };
+            clearStateCache();
+            loadCurrentState();
+
+            // 设定当前场景
+            updateScene({
+                location: '王都大圣堂',
+                time: '黎明时分',
+                in_scene_characters: ['教皇', '骑士长'],
+                action: '举行加冕仪式',
+                tension: '庄严肃穆',
+                unresolved: '潜伏在人群中的刺客'
+            });
+
+            // 执行注册
+            registerSceneMacros();
+
+            // 验证 7 大原生宏全部正确注册
+            const expectedMacroNames = [
+                'pm_location',
+                'pm_time',
+                'pm_characters',
+                'pm_action',
+                'pm_tension',
+                'pm_unresolved',
+                'pm_status_line'
+            ];
+            for (const macroName of expectedMacroNames) {
+                assert.ok(registeredMacros[macroName], `宏 {{${macroName}}} 必须成功注册`);
+                assert.strictEqual(typeof registeredMacros[macroName].handler, 'function');
+            }
+
+            // 验证宏调用返回值与当前状态完全对齐
+            assert.strictEqual(registeredMacros['pm_location'].handler(), '王都大圣堂');
+            assert.strictEqual(registeredMacros['pm_time'].handler(), '黎明时分');
+            assert.strictEqual(registeredMacros['pm_characters'].handler(), '教皇, 骑士长');
+            assert.strictEqual(registeredMacros['pm_action'].handler(), '举行加冕仪式');
+            assert.strictEqual(registeredMacros['pm_tension'].handler(), '庄严肃穆');
+            assert.strictEqual(registeredMacros['pm_unresolved'].handler(), '潜伏在人群中的刺客');
+
+            const statusLine = registeredMacros['pm_status_line'].handler();
+            assert.ok(statusLine.includes('王都大圣堂'));
+            assert.ok(statusLine.includes('黎明时分'));
+        } finally {
+            Object.assign(mockContext, origCtx);
+            clearStateCache();
+            loadCurrentState();
+        }
+    });
+
+    // ─────────────────────────────────────────────────────────────
+    // T134: 场景外挂状态栏全局 SDK 开放接口与响应式事件广播测试 (Dual-Mode Ecosystem)
+    // ─────────────────────────────────────────────────────────────
+    test('T134: 场景外挂状态栏全局 SDK 开放接口与响应式事件广播测试 (Dual-Mode Ecosystem)', () => {
+        const origCtx = { ...mockContext };
+        try {
+            clearStateCache();
+            loadCurrentState();
+
+            const api = getGlobalApi();
+
+            // 1. 验证 getStatusBarPresets 返回不可变深拷贝
+            const presets = api.getStatusBarPresets();
+            assert.ok(presets && presets.DEFAULT && presets.RPG && presets.GALGAME && presets.DETECTIVE);
+            presets.DEFAULT.name = '篡改测试';
+            assert.notStrictEqual(api.getStatusBarPresets().DEFAULT.name, '篡改测试', '外部篡改不得污染预设');
+
+            // 2. 验证 applyStatusBarPreset 生效
+            const ok = api.applyStatusBarPreset('rpg');
+            assert.strictEqual(ok, true);
+            assert.strictEqual(api.getSettings().statusBarTemplate, STATUS_BAR_PRESETS.RPG.template);
+
+            // 3. 验证 formatScene
+            updateScene({ location: '星界神殿', time: '纪元之初' });
+            const formatted = api.formatScene('{{location}} // {{time}}');
+            assert.strictEqual(formatted, '星界神殿 // 纪元之初');
+
+            // 4. 验证 dispatchSceneUpdate 事件广播与 detail 隔离
+            let capturedDetail = null;
+            global.window.dispatchEvent = (customEvent) => {
+                if (customEvent && customEvent.type === 'st-pm-scene-update') {
+                    capturedDetail = customEvent.detail;
+                }
+                return true;
+            };
+
+            const sceneToDispatch = { location: '秘密基地', tension: '一触即发' };
+            dispatchSceneUpdate(sceneToDispatch);
+            assert.ok(capturedDetail);
+            assert.strictEqual(capturedDetail.location, '秘密基地');
+            // 验证深拷贝隔离
+            sceneToDispatch.location = '外部篡改地点';
+            assert.strictEqual(capturedDetail.location, '秘密基地', '事件广播 detail 必须为隔离深拷贝');
         } finally {
             Object.assign(mockContext, origCtx);
             clearStateCache();

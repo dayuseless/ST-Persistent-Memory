@@ -7,14 +7,15 @@
  * 4. 傻瓜式全托管运行状态概览与详细参数设置弹窗入口
  * 5. 原生面板配置双向绑定、即时保存与连通性测试
  *
- * @version 0.1.46
+ * @version 0.1.47
  */
 
-import { MODULE_NAME } from '../config.js';
+import { MODULE_NAME, STATUS_BAR_PRESETS } from '../config.js';
 import { getState, getSettings, updateSettings, saveSettingsImmediately } from '../state.js';
 import { triggerAsyncDigest, testCustomApiConnection } from '../extractor.js';
 import { escapeHtml, applyApiPreset, restoreRecommendedDefaults, GAMEPLAY_PRESETS, applyGameplayPreset } from './common.js';
 import { showAdvancedSettingsModal, showInjectionInspectorModal } from './modal.js';
+import { renderStatusBar } from './statusbar.js';
 
 /**
  * 一键提取并同步 SillyTavern 原生连接设置中的 Custom / OpenAI API 端点、密钥与模型
@@ -157,6 +158,59 @@ export function renderNativeDrawerContent(onToggleHUD, onRenderPanel) {
                         <span class="pm-slider"></span>
                     </div>
                 </label>
+            </div>
+
+            <!-- 🎮 场景外挂状态栏 (HUD & DIY 模板) -->
+            <div class="pm-section-card pm-mb-8">
+                <label class="pm-switch-wrapper pm-mb-8">
+                    <span class="pm-section-title">
+                        <i class="fa-solid fa-compass" style="color: #0284c7;"></i> 场景外挂状态栏 (HUD 悬浮与吸附)
+                    </span>
+                    <div class="pm-switch">
+                        <input type="checkbox" id="pm-native-statusbar-enabled" ${settings.showStatusBar !== false ? 'checked' : ''}>
+                        <span class="pm-slider"></span>
+                    </div>
+                </label>
+                <div id="pm-native-statusbar-body" style="${settings.showStatusBar !== false ? 'display: block;' : 'display: none;'}">
+                    <div class="pm-grid-2col pm-mb-4">
+                        <div class="pm-input-row">
+                            <label class="pm-input-label">停靠吸附位置:</label>
+                            <select id="pm-native-statusbar-dock" class="pm-input">
+                                <option value="input_top" ${settings.statusBarDock === 'input_top' ? 'selected' : ''}>⌨️ 输入框/QR上方 (打字可见)</option>
+                                <option value="chat_top" ${settings.statusBarDock === 'chat_top' ? 'selected' : ''}>📌 聊天区吸顶 (顶部常驻)</option>
+                                <option value="floating" ${settings.statusBarDock === 'floating' ? 'selected' : ''}>🎈 屏幕悬浮胶囊</option>
+                            </select>
+                        </div>
+                        <div class="pm-input-row">
+                            <label class="pm-input-label">视觉皮肤主题:</label>
+                            <select id="pm-native-statusbar-theme" class="pm-input">
+                                <option value="glass" ${settings.statusBarTheme === 'glass' ? 'selected' : ''}>🌫️ 极光毛玻璃 (默认)</option>
+                                <option value="cyber" ${settings.statusBarTheme === 'cyber' ? 'selected' : ''}>🌑 赛博霓虹 (暗黑)</option>
+                                <option value="parchment" ${settings.statusBarTheme === 'parchment' ? 'selected' : ''}>📜 羊皮纸复古 (跑团)</option>
+                                <option value="minimal" ${settings.statusBarTheme === 'minimal' ? 'selected' : ''}>🔲 极简纯净 (无边框)</option>
+                            </select>
+                        </div>
+                    </div>
+                    <div class="pm-input-row pm-mb-4">
+                        <label class="pm-input-label" style="display: flex; justify-content: space-between;">
+                            <span><i class="fa-solid fa-wand-magic-sparkles" style="color: #6366f1;"></i> 一键套用 DIY 风格预设：</span>
+                        </label>
+                        <div class="pm-preset-group" style="display: flex; gap: 4px; flex-wrap: wrap;">
+                            ${Object.values(STATUS_BAR_PRESETS).map(p => `
+                                <button type="button" class="pm-preset-pill pm-statusbar-preset-pill" data-template="${escapeHtml(p.template)}" title="${escapeHtml(p.desc)}">
+                                    ${escapeHtml(p.name)}
+                                </button>
+                            `).join('')}
+                        </div>
+                    </div>
+                    <div class="pm-input-row pm-mb-4">
+                        <label class="pm-input-label">自定义模板语法 (支持占位符与表情，点击字段即可行内即改):</label>
+                        <input type="text" id="pm-native-statusbar-template" class="pm-input" value="${escapeHtml(settings.statusBarTemplate || STATUS_BAR_PRESETS.DEFAULT.template)}" placeholder="📍 {{location}} ｜ 🕒 {{time}} ｜ 👥 {{characters}} ｜ ⚔️ {{action}}">
+                        <div style="font-size: 10px; color: #64748b; margin-top: 3px; line-height: 1.4;">
+                            支持动态宏占位符: <code>{{location}}</code>, <code>{{time}}</code>, <code>{{characters}}</code>, <code>{{action}}</code>, <code>{{tension}}</code>, <code>{{unresolved}}</code>
+                        </div>
+                    </div>
+                </div>
             </div>
 
             <!-- 独立提炼 API 直连配置 (自定义兼容 OpenAI 格式) -->
@@ -318,6 +372,42 @@ export function renderNativeDrawerContent(onToggleHUD, onRenderPanel) {
         if (hudCb) hudCb.checked = isChecked;
     });
 
+    // 场景状态栏 HUD 设置联动
+    content.querySelector('#pm-native-statusbar-enabled')?.addEventListener('change', (e) => {
+        const isChecked = e.target.checked;
+        const body = content.querySelector('#pm-native-statusbar-body');
+        if (body) body.style.display = isChecked ? 'block' : 'none';
+        updateSettings({ showStatusBar: isChecked });
+        renderStatusBar();
+    });
+
+    content.querySelector('#pm-native-statusbar-dock')?.addEventListener('change', (e) => {
+        updateSettings({ statusBarDock: e.target.value });
+        renderStatusBar();
+    });
+
+    content.querySelector('#pm-native-statusbar-theme')?.addEventListener('change', (e) => {
+        updateSettings({ statusBarTheme: e.target.value });
+        renderStatusBar();
+    });
+
+    content.querySelectorAll('.pm-statusbar-preset-pill').forEach(btn => {
+        btn.addEventListener('click', () => {
+            const tpl = btn.getAttribute('data-template');
+            if (tpl) {
+                const input = content.querySelector('#pm-native-statusbar-template');
+                if (input) input.value = tpl;
+                updateSettings({ statusBarTemplate: tpl });
+                renderStatusBar();
+            }
+        });
+    });
+
+    content.querySelector('#pm-native-statusbar-template')?.addEventListener('input', (e) => {
+        updateSettings({ statusBarTemplate: e.target.value });
+        renderStatusBar();
+    });
+
     content.querySelector('#pm-open-hud-btn')?.addEventListener('click', () => {
         if (typeof onToggleHUD === 'function') {
             onToggleHUD(true);
@@ -375,14 +465,23 @@ export function renderNativeDrawerContent(onToggleHUD, onRenderPanel) {
         const isEnabled = content.querySelector('#pm-setting-enabled')?.checked ?? true;
         const bubble = content.querySelector('#pm-native-bubble-enabled')?.checked ?? true;
         const useCustom = content.querySelector('#pm-native-custom-api-enabled')?.checked ?? false;
+        const showStatus = content.querySelector('#pm-native-statusbar-enabled')?.checked ?? true;
+        const statusDock = content.querySelector('#pm-native-statusbar-dock')?.value || 'input_top';
+        const statusTheme = content.querySelector('#pm-native-statusbar-theme')?.value || 'glass';
+        const statusTemplate = content.querySelector('#pm-native-statusbar-template')?.value || '';
         updateSettings({
             customApiUrl: url,
             customApiKey: key,
             customApiModel: model,
             enabled: isEnabled,
             showFloatingBubble: bubble,
-            useCustomApi: useCustom
+            useCustomApi: useCustom,
+            showStatusBar: showStatus,
+            statusBarDock: statusDock,
+            statusBarTheme: statusTheme,
+            ...(statusTemplate ? { statusBarTemplate: statusTemplate } : {})
         });
+        renderStatusBar();
     };
 
     ['input', 'change'].forEach(evt => {

@@ -1,5 +1,5 @@
 /**
- * ST-Persistent-Memory 跨平台规范化打包脚本 (pack-zip.mjs, v0.1.46)
+ * ST-Persistent-Memory 跨平台规范化打包脚本 (pack-zip.mjs, v0.1.47)
  * 
  * 核心设计目标：
  * 1. 采用原生 Node.js 内置模块 (zlib, fs, path, crypto) 实现纯正 PKWARE ZIP 规范打包器；
@@ -24,7 +24,7 @@ const folderName = path.basename(repoRoot);
 
 // 读取当前版本
 const pkg = JSON.parse(fs.readFileSync(path.join(repoRoot, 'package.json'), 'utf8'));
-const version = pkg.version || '0.1.46';
+const version = pkg.version || '0.1.47';
 
 // 目标 ZIP 输出路径
 const defaultOutDir = 'D:\\学习';

@@ -1,5 +1,5 @@
 /**
- * SillyTavern 插件入口: 持续记忆 (Persistent Memory) v0.1.46
+ * SillyTavern 插件入口: 持续记忆 (Persistent Memory) v0.1.47
  * 遵循现场快照 (L0 Resume) 与事件驱动记忆架构
  */
 
@@ -10,6 +10,7 @@ import { extractAndApplySyncTag } from './src/apply.js';
 import { triggerAsyncDigest } from './src/extractor.js';
 import { initUI } from './src/ui.js';
 import { createFloatingButton } from './src/ui/bubble.js';
+import { renderStatusBar, registerSceneMacros } from './src/ui/statusbar.js';
 import { registerSlashCommands } from './src/commands.js';
 import { registerGlobalApi } from './src/sdk.js';
 
@@ -109,16 +110,18 @@ async function init() {
         console.error(`[${MODULE_NAME}] UI 初始化异常:`, e);
     }
 
-    // 2. 注册原生快捷斜杠指令 (/remember, /scene, /inspect, /digest, /forget)
+    // 2. 注册原生快捷斜杠指令与原生动态宏
     try {
         await registerSlashCommands();
+        registerSceneMacros();
     } catch (e) {
-        console.warn(`[${MODULE_NAME}] 斜杠指令注册异常:`, e);
+        console.warn(`[${MODULE_NAME}] 斜杠指令与宏注册异常:`, e);
     }
 
     // 3. 初始化当前聊天的状态并执行初次注入
     try {
         loadCurrentState();
+        renderStatusBar();
         if (getSettings().enabled) {
             buildAndInjectMemoryPrompt();
         }
@@ -150,6 +153,7 @@ async function init() {
         processedSyncMessages.clear();
         processedAsyncMessages.clear();
         loadCurrentState();
+        renderStatusBar();
         if (getSettings().enabled) {
             buildAndInjectMemoryPrompt();
         }

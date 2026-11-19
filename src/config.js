@@ -1,8 +1,8 @@
 /**
- * 持续记忆插件配置与常量定义 (v0.1.46)
+ * 持续记忆插件配置与常量定义 (v0.1.47)
  */
 
-export const EXTENSION_VERSION = '0.1.46';
+export const EXTENSION_VERSION = '0.1.47';
 export const MODULE_NAME = 'st_persistent_memory';
 export const INJECT_KEY = 'PERSISTENT_MEMORY_INJECT';
 
@@ -42,10 +42,61 @@ export const MEMORY_SCOPE = {
     WORLD: 'world'            // 世界层面的公共公开常识
 };
 
+// 场景状态栏 HUD 停靠位置
+export const STATUS_BAR_DOCKS = {
+    INPUT_TOP: 'input_top',     // 输入框/QR栏上方 (默认，打字时一眼掌握)
+    CHAT_TOP: 'chat_top',       // 聊天区吸顶 (固定置顶)
+    FLOATING: 'floating'        // 独立悬浮胶囊挂件
+};
+
+// 场景状态栏 HUD 视觉皮肤
+export const STATUS_BAR_THEMES = {
+    GLASS: 'glass',             // 极光毛玻璃 (磨砂半透明，默认)
+    CYBER: 'cyber',             // 赛博霓虹 (暗黑荧光)
+    PARCHMENT: 'parchment',     // 羊皮纸复古 (奇幻跑团)
+    MINIMAL: 'minimal'          // 极简极净 (黑白纯净)
+};
+
+// 场景状态栏 HUD 预设模板
+export const STATUS_BAR_PRESETS = {
+    DEFAULT: {
+        id: 'default',
+        name: '💊 极简紧凑 (默认)',
+        desc: '地点、时间、在场角色与当前行动紧凑排列',
+        template: '📍 {{location}} ｜ 🕒 {{time}} ｜ 👥 {{characters}} ｜ ⚔️ {{action}}'
+    },
+    RPG: {
+        id: 'rpg',
+        name: '🎲 TRPG 跑团 / 地牢探险',
+        desc: '古典奇幻与地下城跑团风格，队伍与局势一目了然',
+        template: '🏰 [地点: {{location}}] ⏳ [时辰: {{time}}] 🛡️ [同伴: {{characters}}] ⚔️ [状态: {{action}}]'
+    },
+    GALGAME: {
+        id: 'galgame',
+        name: '🌸 Galgame / 恋爱日常',
+        desc: '粉色氛围与羁绊羁系，突出心境与浪漫场所',
+        template: '✨ 场所: {{location}} 💕 氛围: {{tension}} 👫 羁绊: {{characters}}'
+    },
+    DETECTIVE: {
+        id: 'detective',
+        name: '🔍 悬疑 / 侦探调查',
+        desc: '线索与未决谜团排查，侦破悬疑案件专用',
+        template: '📍 案发地: {{location}} ｜ 🕒 时间线: {{time}} ｜ 👥 关系人: {{characters}} ｜ ⚡ 谜团: {{unresolved}}'
+    }
+};
+
 export const DEFAULT_SETTINGS = {
     enabled: true,
     showFloatingBubble: true,  // 是否在屏幕上显示快捷悬浮球
     bubbleAutoDock: true,      // 悬浮球边缘吸附与静止半隐藏 (CatGod 风格抽屉拉手)
+
+    // 场景外挂状态栏 HUD (Scene Status Bar & DIY)
+    showStatusBar: true,          // 是否在屏幕界面呈现场景状态栏
+    statusBarDock: 'input_top',   // 停靠位置: 'input_top' | 'chat_top' | 'floating'
+    statusBarTheme: 'glass',      // 视觉主题: 'glass' | 'cyber' | 'parchment' | 'minimal'
+    statusBarTemplate: '📍 {{location}} ｜ 🕒 {{time}} ｜ 👥 {{characters}} ｜ ⚔️ {{action}}', // DIY 模板字符串
+    statusBarCollapsed: false,    // 是否默认折叠为迷你胶囊
+
     mode: 'async',             // 'async' (后台静默) | 'sync' (伴随标签)
     asyncFrequency: 3,         // 异步模式下每几轮提炼一次
     digestSliceCount: 6,       // 提炼时回溯的历史消息数量 (2~15)
