@@ -1,5 +1,5 @@
 /**
- * ST-Persistent-Memory (v0.1.45) - 屏幕快捷悬浮按钮与拖拽持久化 (Floating Bubble & Draggable Service)
+ * ST-Persistent-Memory (v0.1.46) - 屏幕快捷悬浮按钮与拖拽持久化 (Floating Bubble & Draggable Service)
  * 职责：
  * 1. 注入屏幕快捷入口（悬浮气泡，支持任意拖拽与坐标记忆）
  * 2. 手机触控与桌面鼠标双端适配、防遮挡安全边缘算法
@@ -126,9 +126,11 @@ export function placeBall(btn, W, D, host) {
     let x = 0, y = 0;
     let side = 'right';
     let restored = false;
+    let needsPersistenceHealing = false;
+    const storageKey = isMobile ? 'pm_bubble_pos_mobile' : 'pm_bubble_pos';
+    const storage = W?.localStorage || (typeof localStorage !== 'undefined' ? localStorage : null);
+
     try {
-        const storageKey = isMobile ? 'pm_bubble_pos_mobile' : 'pm_bubble_pos';
-        const storage = W?.localStorage || (typeof localStorage !== 'undefined' ? localStorage : null);
         const saved = storage?.getItem(storageKey);
         if (saved) {
             const parsed = JSON.parse(saved);
@@ -141,15 +143,32 @@ export function placeBall(btn, W, D, host) {
                     y = Math.min(Math.max(10, parsed.y), maxY);
                     side = parsed.side || (x + size / 2 < box.width / 2 ? 'left' : 'right');
                     restored = true;
+                    // 若坐标超出当前屏幕被截断纠偏，标记需要持久化写回
+                    if (x !== parsed.x || y !== parsed.y || side !== parsed.side) {
+                        needsPersistenceHealing = true;
+                    }
+                } else {
+                    needsPersistenceHealing = true;
                 }
+            } else {
+                needsPersistenceHealing = true;
             }
         }
-    } catch {}
+    } catch {
+        needsPersistenceHealing = true;
+    }
 
     if (!restored) {
         side = 'right';
         x = Math.max(10, box.width - size - (isMobile ? 16 : 20));
         y = Math.max(10, box.height - size - (isMobile ? 120 : 85));
+    }
+
+    // 持久化自愈：若发生脏坐标拦截或边界纠偏，将合法安全坐标同步写回缓存，杜绝下次启动重复纠偏
+    if (needsPersistenceHealing && storage) {
+        try {
+            storage.setItem(storageKey, JSON.stringify({ x, y, side }));
+        } catch {}
     }
 
     if (btn) {

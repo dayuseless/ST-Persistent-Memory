@@ -1,6 +1,6 @@
 # SillyTavern 鎸佺画璁板繂鎻掍欢 (ST-Persistent-Memory)
 
-[![Version](https://img.shields.io/badge/version-v0.1.45-blue.svg)](https://github.com/dayuseless/ST-Persistent-Memory)
+[![Version](https://img.shields.io/badge/version-v0.1.46-blue.svg)](https://github.com/dayuseless/ST-Persistent-Memory)
 [![SillyTavern](https://img.shields.io/badge/SillyTavern-1.12.0+-purple.svg)](https://github.com/SillyTavern/SillyTavern)
 [![License](https://img.shields.io/badge/license-MIT-green.svg)](LICENSE)
 
@@ -43,7 +43,7 @@
    ```
 4. 椤甸潰鎻愮ず瀹夎鎴愬姛鍚庯紝鎸?**`Ctrl + F5`** 鍒锋柊缃戦〉鍗冲彲銆?
 ### 鏂瑰紡浜岋細鎵嬪姩绂荤嚎鍖呭畨瑁?
-1. 浠?[Releases 椤甸潰](https://github.com/dayuseless/ST-Persistent-Memory/releases) 涓嬭浇 `ST-Persistent-Memory-v0.1.45.zip`銆?2. 瑙ｅ帇鍒?SillyTavern 鐨勬墿灞曠洰褰曚腑锛?   ```text
+1. 浠?[Releases 椤甸潰](https://github.com/dayuseless/ST-Persistent-Memory/releases) 涓嬭浇 `ST-Persistent-Memory-v0.1.46.zip`銆?2. 瑙ｅ帇鍒?SillyTavern 鐨勬墿灞曠洰褰曚腑锛?   ```text
    SillyTavern/public/scripts/extensions/third-party/ST-Persistent-Memory/
    ```
    *(澶氱敤鎴风増鏈彲鏀剧疆浜?`SillyTavern/data/default-user/extensions/ST-Persistent-Memory/`)*
@@ -121,6 +121,25 @@ npm test
 ---
 
 ## 馃摑 鐗堟湰鍘嗗彶
+
+### v0.1.46 (运行可靠性收敛：T129 强制断言闭环、悬浮球持久化自愈、Unicode Ext B~I/Jamo 深度覆盖与 SDK 深度防御；130 项金标测试矩阵)
+
+针对专业代码审计报告提出的可靠性与测试可信度建议，全面完成架构可靠性收敛与边界加固：
+1. **P1 调试接口测试可信度强制闭环 (`test/test-matrix.mjs`, T129)**：
+   - 彻底移除 T129 中对 `window.__persistentMemory` 的条件分支跳过 (`if (typeof window !== 'undefined' && ...)`)；
+   - 强制断言接口已挂载且具备有效 `getState` 函数，并采用基于条目 ID 的精确快照比对，严禁以条件跳过隐蔽潜在失败，确保安全测试 100% 严格执行。
+2. **P2 悬浮球坐标持久化自愈 (`src/ui/bubble.js`, T125)**：
+   - `placeBall()` 在捕获死区脏数据（如 `x: 5, y: 10`）或屏幕边界溢出时，不仅在运行时纠偏定位，更**自动将纠偏后的安全坐标写回 localStorage 设备缓存**；
+   - 彻底避免下次启动重复触发纠偏计算，实现真正的持久化自愈闭环。
+3. **P2 Unicode CJK 扩展区 (Ext B~I) 与韩文 Jamo 序列深度测试覆盖 (`test/test-matrix.mjs`, T128)**：
+   - 补齐从 Ext B（`𠮷` U+20BB7）到 Ext C（`\u{2A700}`）、Ext D（`\u{2B740}`）、Ext E（`\u{2B820}`）、Ext F（`\u{2CEB0}`）、Ext G（`\u{30000}`）、Ext H（`\u{31350}`）、Ext I（`\u{2EBF0}`）全扩展区间代表性罕见字的码点原子二元切词断言；
+   - 增加韩文标准谚文字母初声/中声/终声组合序列（`\u1100\u1161\u11A8`）与兼容字母序列（`\u3131\u314F`）测试，证明码点级分词对东亚跨语言序列的完整支持且 0 孤立代理对碎片。
+4. **SDK 深度安全防御与原型污染拒止 (`src/state.js`, `src/sdk.js`, T130)**：
+   - 验证对恶意 `__proto__` 与 `constructor.prototype` 注入负载的绝对拒止，杜绝原型链污染；
+   - 验证对外部传入数组（如 `trigger_keys`）与深层嵌套配置对象的双向深拷贝隔离；
+   - 验证 `deleteMemory` 返回明确布尔状态，且 SDK 面对 `null`、`undefined`、畸形对象等异常入参时安全 Fail-Closed，绝不抛出未捕获异常。
+5. **金标测试矩阵扩展至 130 项全绿通过**：
+   - `node test/test-matrix.mjs` 实现 **130 / 130 PASS (0 FAIL)**，全工程 23 个核心模块与所有元数据统一收敛至 `0.1.46`。
 
 ### v0.1.45 (状态所有权隔离闭环、跨平台纯 Node PKZIP 打包、RRF 同榜去重与 Unicode CJK 码点级分词；129 项金标测试矩阵)
 

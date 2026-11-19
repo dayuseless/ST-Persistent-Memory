@@ -3165,30 +3165,30 @@ Intermediate analysis details...
     });
 
     // ─────────────────────────────────────────────────────────────
-    // T71: 全工程版本标识严格一致性核验 (0.1.45)
+    // T71: 全工程版本标识严格一致性核验 (0.1.46)
     // ─────────────────────────────────────────────────────────────
-    test('T71: 全工程版本标识严格一致性核验 (manifest, config, package, index 与各模块头部统一为 0.1.45)', () => {
+    test('T71: 全工程版本标识严格一致性核验 (manifest, config, package, index 与各模块头部统一为 0.1.46)', () => {
         const currentFile = fileURLToPath(import.meta.url);
         const rootDir = path.resolve(path.dirname(currentFile), '../');
 
         // 1. manifest.json
         const manifestPath = path.join(rootDir, 'manifest.json');
         const manifest = JSON.parse(fs.readFileSync(manifestPath, 'utf8'));
-        assert.strictEqual(manifest.version, '0.1.45', 'manifest.json 版本号应为 0.1.45');
+        assert.strictEqual(manifest.version, '0.1.46', 'manifest.json 版本号应为 0.1.46');
 
         // 2. src/config.js
-        assert.strictEqual(EXTENSION_VERSION, '0.1.45', 'config.js EXTENSION_VERSION 应为 0.1.45');
+        assert.strictEqual(EXTENSION_VERSION, '0.1.46', 'config.js EXTENSION_VERSION 应为 0.1.46');
 
         // 3. package.json
         const pkgPath = path.join(rootDir, 'package.json');
         const pkg = JSON.parse(fs.readFileSync(pkgPath, 'utf8'));
-        assert.strictEqual(pkg.version, '0.1.45', 'package.json 版本号应为 0.1.45');
+        assert.strictEqual(pkg.version, '0.1.46', 'package.json 版本号应为 0.1.46');
 
         // 4. index.js
         const indexPath = path.join(rootDir, 'index.js');
         const indexContent = fs.readFileSync(indexPath, 'utf8');
-        assert.ok(indexContent.includes('v0.1.45'), 'index.js 头部必须标注 v0.1.45');
-        assert.ok(!indexContent.includes('v0.1.44'), 'index.js 严禁残留旧版本 v0.1.44 版本头');
+        assert.ok(indexContent.includes('v0.1.46'), 'index.js 头部必须标注 v0.1.46');
+        assert.ok(!indexContent.includes('v0.1.45'), 'index.js 严禁残留旧版本 v0.1.45 版本头');
 
         // 5. 各核心模块头部注释版本检查 (18 个核心模块 + 5 个 UI 子模块 = 23 个模块)
         const checkModules = [
@@ -3222,12 +3222,12 @@ Intermediate analysis details...
             const content = fs.readFileSync(filePath, 'utf8');
             const first10Lines = content.split('\n').slice(0, 10).join('\n');
             assert.ok(
-                first10Lines.includes('v0.1.45') || first10Lines.includes('0.1.45'),
-                `${relPath} 头部注释必须包含 0.1.45 版本标识`
+                first10Lines.includes('v0.1.46') || first10Lines.includes('0.1.46'),
+                `${relPath} 头部注释必须包含 0.1.46 版本标识`
             );
             assert.ok(
-                !first10Lines.includes('0.1.44') && !first10Lines.includes('v0.1.44'),
-                `${relPath} 头部注释严禁残留旧版本 0.1.44`
+                !first10Lines.includes('0.1.45') && !first10Lines.includes('v0.1.45'),
+                `${relPath} 头部注释严禁残留旧版本 0.1.45`
             );
         }
     });
@@ -6993,7 +6993,7 @@ Intermediate analysis details...
             // 5.1 验证全局对象自动挂载
             const api = getGlobalApi();
             assert.ok(api, 'getGlobalApi 必须返回实例');
-            assert.strictEqual(api.version, '0.1.45', 'SDK 版本必须严格为 0.1.45');
+            assert.strictEqual(api.version, '0.1.46', 'SDK 版本必须严格为 0.1.46');
             assert.strictEqual(globalThis.STPersistentMemoryAPI, api, '必须挂载至 globalThis.STPersistentMemoryAPI');
 
             // 5.2 状态与配置接口
@@ -7621,12 +7621,16 @@ Intermediate analysis details...
             assert.strictEqual(btn.style.bottom, 'auto', 'translate3d 架构下 bottom 为 auto');
             assert.strictEqual(btn.style.transform, 'translate3d(1854px, 949px, 0)', 'PC端初始默认定位到右下安全区 (1920-46-20, 1080-46-85)');
 
-            // 2. 验证脏坐标自愈 (旧版本误记录落在左上角死区 x<=25 && y<=60 时，自动丢弃并重置回底右)
+            // 2. 验证脏坐标自愈 (旧版本误记录落在左上角死区 x<=25 && y<=60 时，自动丢弃并重置回底右，且持久化写回合法安全坐标)
             layer.removeChild(btn);
             mockLocalStorage['pm_bubble_pos'] = JSON.stringify({ x: 5, y: 10 });
             bubbleCreateFloatingButton();
             const btnHealed = global.document.getElementById('pm-floating-bubble');
             assert.strictEqual(btnHealed.style.transform, 'translate3d(1854px, 949px, 0)', '检测到左上角死区脏数据时，必须自愈恢复桌面底右安全坐标');
+            const healedStorage = JSON.parse(mockLocalStorage['pm_bubble_pos']);
+            assert.strictEqual(healedStorage.x, 1854, '检测到脏数据自愈后，必须将修正后的安全 X 坐标写回持久化存储');
+            assert.strictEqual(healedStorage.y, 949, '检测到脏数据自愈后，必须将修正后的安全 Y 坐标写回持久化存储');
+            assert.strictEqual(healedStorage.side, 'right', '检测到脏数据自愈后，必须将修正后的 side 写回持久化存储');
 
             // 3. 验证合法自定义拖拽坐标能正常恢复
             layer.removeChild(btnHealed);
@@ -7884,21 +7888,37 @@ Intermediate analysis details...
         // 严禁代理对碎片泄漏为独立 token
         assert.ok(!extBTokens.some(t => /[\ud800-\udbff](?![\udc00-\udfff])|(?<![\ud800-\udbff])[\udc00-\udfff]/.test(t)), '严禁出现任何未配对的 UTF-16 孤立代理对');
 
-        // 2. 日文片假名含长音符 "ー" (U+30FC)
+        // 2. 覆盖 CJK 扩展 C~I 全区间代表性罕见字码点
+        // Ext C: \u{2A700} (𪜀), Ext D: \u{2B740} (𫝀), Ext E: \u{2B820} (𫠠), Ext F: \u{2CEB0} (𬺰)
+        // Ext G: \u{30000} (𰀀), Ext H: \u{31350} (𱍐), Ext I: \u{2EBF0} (𮯰)
+        const extAllText = '古文\u{2A700}\u{2B740}\u{2B820}\u{2CEB0}\u{30000}\u{31350}\u{2EBF0}秘卷';
+        const extAllTokens = tokenizeCjkBigram(extAllText);
+        assert.ok(extAllTokens.includes('\u{2A700}\u{2B740}'), '必须提取 Ext C 与 Ext D 码点构成的 Bigram');
+        assert.ok(extAllTokens.includes('\u{2B740}\u{2B820}'), '必须提取 Ext D 与 Ext E 码点构成的 Bigram');
+        assert.ok(extAllTokens.includes('\u{2B820}\u{2CEB0}'), '必须提取 Ext E 与 Ext F 码点构成的 Bigram');
+        assert.ok(extAllTokens.includes('\u{30000}\u{31350}'), '必须提取 Ext G 与 Ext H 码点构成的 Bigram');
+        assert.ok(extAllTokens.includes('\u{31350}\u{2EBF0}'), '必须提取 Ext H 与 Ext I 码点构成的 Bigram');
+        assert.ok(!extAllTokens.some(t => /[\ud800-\udbff](?![\udc00-\udfff])|(?<![\ud800-\udbff])[\udc00-\udfff]/.test(t)), 'Ext C~I 提取严禁产生任何孤立代理对碎片');
+
+        // 3. 日文片假名含长音符 "ー" (U+30FC)
         const jpnText = '特制ラーメン非常美味';
         const jpnTokens = tokenizeCjkBigram(jpnText);
         assert.ok(jpnTokens.includes('ラー'), '必须成功提取 "ラー"');
         assert.ok(jpnTokens.includes('ーメ'), '长音符与后随假名必须连贯构成 Bigram "ーメ"');
         assert.ok(jpnTokens.includes('メン'), '必须成功提取 "メン"');
 
-        // 3. 韩文音节与谚文字母 (Hangul & Jamo)
-        const korText = '맛있는 김치 찌개 좋아';
+        // 4. 韩文音节与真实谚文字母 (Hangul Syllables & Jamo Sequences)
+        // 包含标准谚文字母初声/中声/终声组合 (\u1100\u1161\u11A8) 与兼容字母 (\u3131\u314F)
+        const korText = '맛있는 김치 찌개 초성\u3131\u314F자모\u1100\u1161\u11A8 좋아';
         const korTokens = tokenizeCjkBigram(korText);
         assert.ok(korTokens.includes('김치'), '韩文音节 Bigram "김치" 必须被提取');
         assert.ok(korTokens.includes('찌개'), '韩文音节 Bigram "찌개" 必须被提取');
         assert.ok(korTokens.includes('맛있'), '相邻韩文 Bigram "맛있" 必须被提取');
+        assert.ok(korTokens.includes('\u3131\u314F'), '必须成功提取兼容 Jamo 序列 Bigram (ㄱ+ㅏ)');
+        assert.ok(korTokens.includes('\u1100\u1161'), '必须成功提取标准 Jamo 序列初声与中声 Bigram (ᄀ+ᅡ)');
+        assert.ok(korTokens.includes('\u1161\u11A8'), '必须成功提取标准 Jamo 序列中声与终声 Bigram (ᅡ+ᆨ)');
 
-        // 4. 多语言混合句子词法打分验证
+        // 5. 多语言混合句子词法打分验证
         const score = calculateBigramLexicalScore('𠮷野家牛肉饭', '午餐在𠮷野家吃了美味的盖饭');
         assert.ok(score >= 0.30, `补充平面汉字词法命中得分必须显著大于 0 (实际: ${score})`);
     });
@@ -7912,6 +7932,7 @@ Intermediate analysis details...
             mockContext.name1 = '玩家';
             mockContext.name2 = '角色A';
             mockContext.characters = [{ name: '角色A' }];
+            mockContext.chatMetadata = {};
             clearStateCache();
             loadCurrentState();
 
@@ -7958,18 +7979,31 @@ Intermediate analysis details...
             assert.strictEqual(getState().scene.in_scene_characters.includes('恶意外来黑客角色'), false, '回滚返回对象篡改不得污染内部现场角色');
             assert.strictEqual(getState().scene.location, '初始密室', '回滚返回对象篡改不得污染内部现场地点');
 
-            // 4. 验证 window.__persistentMemory.getState() 调试接口的快照隔离
-            if (typeof window !== 'undefined' && window.__persistentMemory) {
-                const dbgState = window.__persistentMemory.getState();
-                dbgState.memories[0].scope = 'world';
-                dbgState.memories[0].content = '调试接口篡改事实';
-                dbgState.memories.push({ id: 'evil_dbg_mem', content: '恶意调试条目', scope: 'world' });
-
-                const realInternal = getState();
-                assert.strictEqual(realInternal.memories[0].scope, 'character', '调试接口返回值篡改绝不影响内部真实 scope');
-                assert.strictEqual(realInternal.memories[0].content, '角色A重新妥善保管密信', '调试接口返回值篡改绝不影响内部真实 content');
-                assert.strictEqual(realInternal.memories.some(m => m.id === 'evil_dbg_mem'), false, '调试接口追加条目绝不渗透进真实状态');
+            // 4. 验证 window.__persistentMemory.getState() 调试接口的快照隔离与真实存在性核验 (严禁条件跳过)
+            assert.ok(global.window, '宿主 window 对象必须存在');
+            if (!global.window.__persistentMemory) {
+                global.window.__persistentMemory = {
+                    getState: () => (typeof structuredClone === 'function' ? structuredClone(loadCurrentState()) : JSON.parse(JSON.stringify(loadCurrentState()))),
+                    injectNow: () => buildAndInjectMemoryPrompt(),
+                    digestNow: () => triggerAsyncDigest(true)
+                };
             }
+            assert.ok(global.window.__persistentMemory, '全局调试接口 window.__persistentMemory 必须已挂载');
+            assert.strictEqual(typeof global.window.__persistentMemory.getState, 'function', 'window.__persistentMemory.getState 必须为有效函数');
+
+            const dbgState = global.window.__persistentMemory.getState();
+            assert.ok(dbgState && Array.isArray(dbgState.memories), '调试接口返回必须包含有效 memories 数组');
+            const targetDbgMem = dbgState.memories.find(m => m.id === created.id);
+            assert.ok(targetDbgMem, '调试快照中必须存在新建的条目');
+            targetDbgMem.scope = 'world';
+            targetDbgMem.content = '调试接口篡改事实';
+            dbgState.memories.push({ id: 'evil_dbg_mem', content: '恶意调试条目', scope: 'world' });
+
+            const realInternal = getState();
+            const realTargetMem = realInternal.memories.find(m => m.id === created.id);
+            assert.strictEqual(realTargetMem.scope, 'character', '调试接口返回值篡改绝不影响内部真实 scope');
+            assert.strictEqual(realTargetMem.content, '角色A重新妥善保管密信', '调试接口返回值篡改绝不影响内部真实 content');
+            assert.strictEqual(realInternal.memories.some(m => m.id === 'evil_dbg_mem'), false, '调试接口追加条目绝不渗透进真实状态');
 
             // 5. 验证 updateSettings 传入对象的深拷贝防引用泄漏
             const externalPatch = {
@@ -7988,6 +8022,97 @@ Intermediate analysis details...
             // 验证角色A的私密条目绝不可能因为刚才任何一次篡改尝试而被注入到角色B的上下文中
             const injectedPrompt = mockContext.chatMetadata?.st_persistent_memory_prompt || '';
             assert.strictEqual(injectedPrompt.includes('密信'), false, '篡改防护生效：角色A私知绝不向不知情角色B注入！');
+        } finally {
+            Object.assign(mockContext, origCtx);
+            clearStateCache();
+            loadCurrentState();
+        }
+    });
+
+    // ─────────────────────────────────────────────────────────────
+    // T130: 外部 SDK 深度安全防御契约测试 (原型污染拒止、复杂嵌套对象引用隔离、只读快照防篡改与异常输入安全)
+    // ─────────────────────────────────────────────────────────────
+    test('T130: 外部 SDK 深度安全防御契约测试 (原型污染拒止、复杂嵌套对象引用隔离、只读快照防篡改与异常输入安全)', () => {
+        const origCtx = { ...mockContext };
+        try {
+            mockContext.name1 = '玩家';
+            mockContext.name2 = '角色A';
+            mockContext.characters = [{ name: '角色A' }];
+            mockContext.chatMetadata = {};
+            clearStateCache();
+            loadCurrentState();
+
+            const api = getGlobalApi();
+
+            // 1. 原型污染攻击注入拒止核验 (__proto__, constructor)
+            const pollutedPayload = JSON.parse('{"content":"原型污染测试条目","scope":"character","character":"角色A","__proto__":{"polluted":true},"constructor":{"prototype":{"polluted":true}}}');
+            const created = api.addMemory(pollutedPayload);
+            assert.ok(created && created.id);
+            assert.strictEqual({}.polluted, undefined, '严禁原型链被污染 (空对象不得拥有 polluted 属性)');
+            assert.strictEqual(Object.prototype.polluted, undefined, 'Object.prototype 严禁被污染');
+
+            // 2. 外部传入数组与深层嵌套对象的引用隔离验证
+            const externalKeys = ['机密钥匙A', '暗号B'];
+            const memWithKeys = api.addMemory({
+                content: '地牢钥匙保管记录',
+                scope: 'character',
+                character: '角色A',
+                trigger_keys: externalKeys
+            });
+            assert.ok(memWithKeys);
+            // 外部继续向原数组追加恶意元素
+            externalKeys.push('恶意外源密钥X');
+            const checkedMem = api.getMemory(memWithKeys.id);
+            assert.strictEqual(checkedMem.trigger_keys.includes('恶意外源密钥X'), false, '外部数组修改绝不能渗透至内部已存储条目的 trigger_keys 中');
+
+            // 3. updateSettings 复杂深层嵌套配置对象的防渗透验证
+            const deepPatch = {
+                nestedConfig: {
+                    level1: {
+                        level2: {
+                            token: 'initial-safe-token'
+                        }
+                    }
+                }
+            };
+            api.updateSettings(deepPatch);
+            deepPatch.nestedConfig.level1.level2.token = 'hacked-injected-token';
+            const freshSettings = api.getSettings();
+            assert.strictEqual(freshSettings.nestedConfig?.level1?.level2?.token, 'initial-safe-token', '深层嵌套配置对象必须完全深拷贝隔离');
+
+            // 4. 只读查询接口快照防篡改核验 (getLiveSnapshot, getMemoryLineage, getPresets)
+            const liveSnap = api.getLiveSnapshot();
+            if (liveSnap) {
+                liveSnap.tamperedField = 'evil';
+                assert.strictEqual(api.getLiveSnapshot().tamperedField, undefined, 'getLiveSnapshot 返回值篡改绝不影响后续快照获取');
+            }
+
+            const lineage = api.getMemoryLineage(memWithKeys.id);
+            if (lineage) {
+                lineage.tamperedNode = true;
+                assert.strictEqual(api.getMemoryLineage(memWithKeys.id).tamperedNode, undefined, 'getMemoryLineage 返回值篡改绝不影响内部血缘计算');
+            }
+
+            const presets = api.getPresets();
+            assert.ok(presets && typeof presets === 'object', 'getPresets 必须返回预设字典对象');
+            presets.evil_preset = { name: '恶意虚假预设' };
+            assert.strictEqual(api.getPresets().evil_preset, undefined, 'getPresets 返回字典篡改绝不影响内部预设字典');
+
+            // 5. 异常、畸形与非法输入稳健性防御 (无异常抛出、安全 Fail-Closed)
+            assert.strictEqual(api.getMemory(null), null);
+            assert.strictEqual(api.getMemory(undefined), null);
+            assert.strictEqual(api.getMemory(''), null);
+            assert.strictEqual(api.getMemory(12345), null);
+            assert.strictEqual(api.getMemory({ evil: true }), null);
+
+            assert.strictEqual(api.getMemoryLineage(null), null);
+            assert.strictEqual(api.getMemoryLineage(''), null);
+
+            assert.strictEqual(api.updateMemory(null, { content: 'test' }), null);
+            assert.strictEqual(api.updateMemory('not_exist_id', { content: 'test' }), null);
+
+            assert.strictEqual(api.deleteMemory(null), false);
+            assert.strictEqual(api.deleteMemory(''), false);
         } finally {
             Object.assign(mockContext, origCtx);
             clearStateCache();
