@@ -1,5 +1,5 @@
 /**
- * ST-Persistent-Memory - 全局开放 API 接口层 (Global SDK, v0.1.47)
+ * ST-Persistent-Memory - 全局开放 API 接口层 (Global SDK, v0.1.48)
  * 
  * 核心设计目标：
  * 1. 挂载 window.STPersistentMemoryAPI 与 globalThis.STPersistentMemoryAPI，

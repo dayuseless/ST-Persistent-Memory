@@ -5,7 +5,7 @@
  * 2. 提炼候选活跃记忆场景化过滤 (filterMemoriesForDigest)
  * 3. 提炼/伴随结构化数据原子写回与生命周期流转 (applyExtractedData)
  *
- * @version 0.1.47
+ * @version 0.1.48
  */
 
 import { MODULE_NAME, MEMORY_LIFECYCLE, MEMORY_SCOPE } from './config.js';
@@ -128,6 +128,7 @@ export function extractAndApplySyncTag(rawText) {
         state.last_sync_error = null;
         console.log(`[${MODULE_NAME}] [Sync] 伴生标签通过验证并成功入库: ${summary}`);
         window.toastr?.success?.(summary, '伴随标签提炼入库');
+        return cleanText;
     } else {
         // P2-05 修复：标签校验失败绝不静默丢弃，留存错误日志并提供 HUD 可观测性
         const failReason = !rawPayload ? 'JSON 解析失败 (标签格式畸形)' : 'Schema 校验未通过 (缺少必要核心字段或类型非法)';
@@ -142,7 +143,7 @@ export function extractAndApplySyncTag(rawText) {
         };
         saveCurrentState();
         window.toastr?.warning?.(`伴随记忆标签未通过验证: ${failReason} (已记录至状态面板，可展开查看)`, '伴随标签异常');
+        // P2-03 修复：伴生标签校验或解析失败时，必须完整保留原始文本，严禁破坏性擦除内容
+        return rawText;
     }
-
-    return cleanText;
 }

@@ -210,7 +210,9 @@ import {
     rollbackScene as scnRollback,
     restoreSceneSnapshot as scnRestoreSnapshot,
     getSceneHistory as scnGetHistory,
-    updateScene as scnUpdateScene
+    updateScene as scnUpdateScene,
+    normalizeSceneState,
+    normalizeSceneHistory
 } from '../src/scene.js';
 import {
     sanitizeMemoryId as migSanitizeId,
@@ -319,6 +321,9 @@ import {
     registerGlobalApi,
     getGlobalApi
 } from '../src/sdk.js';
+import {
+    calculateCrc32
+} from '../scripts/pack-zip.mjs';
 
 let passed = 0;
 let failed = 0;
@@ -674,7 +679,7 @@ async function runTests() {
         const malformedMsg = '好的，我知道了。\n<!--PERSISTENT_MEMORY { "scene": { location: unquoted_err } } -->';
         const cleaned = extractAndApplySyncTag(malformedMsg);
 
-        assert(!cleaned.includes('PERSISTENT_MEMORY'), '消息正文中标签必须被剥离');
+        assert.strictEqual(cleaned, malformedMsg, 'P2-03 规范：伴随标签解析失败时必须完整保留原始正文，严禁静默篡改');
         assert(state.last_sync_error !== null, '状态中必须记录 last_sync_error');
         assert(state.last_sync_error.error.includes('JSON 解析失败'), '必须记录具体解析失败原因');
         assert.strictEqual(state.last_sync_error.truncated, false, '短标签不应被标记为截断');
@@ -3174,32 +3179,32 @@ Intermediate analysis details...
     });
 
     // ─────────────────────────────────────────────────────────────
-    // T71: 全工程版本标识严格一致性核验 (0.1.47)
+    // T71: 全工程版本标识严格一致性核验 (0.1.48)
     // ─────────────────────────────────────────────────────────────
-    test('T71: 全工程版本标识严格一致性核验 (manifest, config, package, index 与各模块头部统一为 0.1.47)', () => {
+    test('T71: 全工程版本标识严格一致性核验 (manifest, config, package, index 与各模块头部统一为 0.1.48)', () => {
         const currentFile = fileURLToPath(import.meta.url);
         const rootDir = path.resolve(path.dirname(currentFile), '../');
 
         // 1. manifest.json
         const manifestPath = path.join(rootDir, 'manifest.json');
         const manifest = JSON.parse(fs.readFileSync(manifestPath, 'utf8'));
-        assert.strictEqual(manifest.version, '0.1.47', 'manifest.json 版本号应为 0.1.47');
+        assert.strictEqual(manifest.version, '0.1.48', 'manifest.json 版本号应为 0.1.48');
 
         // 2. src/config.js
-        assert.strictEqual(EXTENSION_VERSION, '0.1.47', 'config.js EXTENSION_VERSION 应为 0.1.47');
+        assert.strictEqual(EXTENSION_VERSION, '0.1.48', 'config.js EXTENSION_VERSION 应为 0.1.48');
 
         // 3. package.json
         const pkgPath = path.join(rootDir, 'package.json');
         const pkg = JSON.parse(fs.readFileSync(pkgPath, 'utf8'));
-        assert.strictEqual(pkg.version, '0.1.47', 'package.json 版本号应为 0.1.47');
+        assert.strictEqual(pkg.version, '0.1.48', 'package.json 版本号应为 0.1.48');
 
         // 4. index.js
         const indexPath = path.join(rootDir, 'index.js');
         const indexContent = fs.readFileSync(indexPath, 'utf8');
-        assert.ok(indexContent.includes('v0.1.47'), 'index.js 头部必须标注 v0.1.47');
-        assert.ok(!indexContent.includes('v0.1.45'), 'index.js 严禁残留旧版本 v0.1.45 版本头');
+        assert.ok(indexContent.includes('v0.1.48'), 'index.js 头部必须标注 v0.1.48');
+        assert.ok(!indexContent.includes('v0.1.46'), 'index.js 严禁残留旧版本 v0.1.46 版本头');
 
-        // 5. 各核心模块头部注释版本检查 (18 个核心模块 + 5 个 UI 子模块 = 23 个模块)
+        // 5. 各核心模块头部注释版本检查 (18 个核心模块 + 6 个 UI 子模块 = 24 个模块)
         const checkModules = [
             'src/acl.js',
             'src/api.js',
@@ -3223,7 +3228,8 @@ Intermediate analysis details...
             'src/ui/cards.js',
             'src/ui/modal.js',
             'src/ui/bubble.js',
-            'src/ui/drawer.js'
+            'src/ui/drawer.js',
+            'src/ui/statusbar.js'
         ];
 
         for (const relPath of checkModules) {
@@ -3231,12 +3237,12 @@ Intermediate analysis details...
             const content = fs.readFileSync(filePath, 'utf8');
             const first10Lines = content.split('\n').slice(0, 10).join('\n');
             assert.ok(
-                first10Lines.includes('v0.1.47') || first10Lines.includes('0.1.47'),
-                `${relPath} 头部注释必须包含 0.1.47 版本标识`
+                first10Lines.includes('v0.1.48') || first10Lines.includes('0.1.48'),
+                `${relPath} 头部注释必须包含 0.1.48 版本标识`
             );
             assert.ok(
-                !first10Lines.includes('0.1.45') && !first10Lines.includes('v0.1.45'),
-                `${relPath} 头部注释严禁残留旧版本 0.1.45`
+                !first10Lines.includes('0.1.46') && !first10Lines.includes('v0.1.46'),
+                `${relPath} 头部注释严禁残留旧版本 0.1.46`
             );
         }
     });
@@ -4603,10 +4609,10 @@ Intermediate analysis details...
         assert.ok(state.memories.some(m => m.content === '拾得刻有龙纹的青色玉佩'), '伴随标签中的新记忆必须成功入库');
         assert.strictEqual(state.last_sync_error, null, '成功入库后 last_sync_error 必须清空');
 
-        // 3.3 畸形 JSON 标签留痕与 HUD 排错支持
+        // 3.3 畸形 JSON 标签留痕与 HUD 排错支持 (P2-03 规范：解析失败保留原文本)
         const malformedTag = '前方凶险，速退！\n<!-- PERSISTENT_MEMORY: {bad_json: "missing quote} -->';
         const cleanedMalformed = extractAndApplySyncTag(malformedTag);
-        assert.strictEqual(cleanedMalformed, '前方凶险，速退！', '畸形标签必须干净剥离');
+        assert.strictEqual(cleanedMalformed, malformedTag, 'P2-03 规范：畸形标签解析失败时必须保留原始消息以供排错');
         assert.ok(state.last_sync_error, '畸形标签必须留存 last_sync_error');
         assert.ok(state.last_sync_error.error.includes('JSON 解析失败'), '错误原因必须准确识别为 JSON 解析失败');
         assert.ok(state.last_sync_error.rawSnippet.includes('bad_json'), '必须截取保留原始片段用于排错');
@@ -7002,7 +7008,7 @@ Intermediate analysis details...
             // 5.1 验证全局对象自动挂载
             const api = getGlobalApi();
             assert.ok(api, 'getGlobalApi 必须返回实例');
-            assert.strictEqual(api.version, '0.1.47', 'SDK 版本必须严格为 0.1.47');
+            assert.strictEqual(api.version, '0.1.48', 'SDK 版本必须严格为 0.1.48');
             assert.strictEqual(globalThis.STPersistentMemoryAPI, api, '必须挂载至 globalThis.STPersistentMemoryAPI');
 
             // 5.2 状态与配置接口
@@ -8318,6 +8324,243 @@ Intermediate analysis details...
             clearStateCache();
             loadCurrentState();
         }
+    });
+
+    // ─────────────────────────────────────────────────────────────
+    // T135: 备份导入缺少知情范围与角色字段时的保守封闭原则测试 (P1-01)
+    // ─────────────────────────────────────────────────────────────
+    test('T135: 备份导入缺少知情范围与角色字段时保守默认归属 CHARACTER，绝不擅自提权至 WORLD (P1-01)', () => {
+        const origCtx = { ...mockContext };
+        try {
+            clearStateCache();
+            const state = loadCurrentState();
+
+            // 1. normalizeAndValidateMemory 在 backup_import 来源下缺失 scope 时保守赋予 CHARACTER
+            const rawIncomplete = {
+                content: '这是一条没有任何知情范围声明的机密记忆',
+                type: 'fact'
+            };
+            const norm = normalizeAndValidateMemory(rawIncomplete, {
+                source: 'backup_import',
+                context: mockContext,
+                participants: new Set(['玩家', '角色A', '角色B'])
+            });
+            assert.strictEqual(norm.valid, true, '备份导入条目在补齐知情范围后应合法');
+            assert.strictEqual(norm.memory.scope, MEMORY_SCOPE.CHARACTER, '缺失 scope 时必须保守默认归属 CHARACTER');
+            assert.strictEqual(norm.memory.character, '角色A', '必须默认归属于当前主角色');
+            assert.notStrictEqual(norm.memory.scope, MEMORY_SCOPE.WORLD, '严禁提权至 WORLD 泄露给全员');
+
+            // 2. importMemoryDataPackage 全量覆盖 (replace) 导入旧版未标注记忆
+            const testPkgReplace = {
+                plugin: MODULE_NAME,
+                version: '0.1.0',
+                memories: [
+                    { content: '旧记忆A，无scope' },
+                    { content: '旧记忆B，显式世界', scope: 'world' }
+                ]
+            };
+            migImportPackage(testPkgReplace, 'replace', state, batchUpdate, mockContext);
+            const importedA = state.memories.find(m => m.content === '旧记忆A，无scope');
+            assert.ok(importedA, '旧记忆A必须成功导入');
+            assert.strictEqual(importedA.scope, MEMORY_SCOPE.CHARACTER, '旧版缺失 scope 记忆在 replace 下必须升级为 CHARACTER');
+            assert.strictEqual(importedA.character, '角色A', '必须归属于当前角色');
+
+            // 3. importMemoryDataPackage 合并去重 (merge) 导入
+            const testPkgMerge = {
+                plugin: MODULE_NAME,
+                version: '0.1.0',
+                memories: [
+                    { content: '合并新记忆C，无scope' }
+                ]
+            };
+            migImportPackage(testPkgMerge, 'merge', state, batchUpdate, mockContext);
+            const importedC = state.memories.find(m => m.content === '合并新记忆C，无scope');
+            assert.ok(importedC, '合并新记忆C必须成功导入');
+            assert.strictEqual(importedC.scope, MEMORY_SCOPE.CHARACTER, '旧版缺失 scope 记忆在 merge 下必须升级为 CHARACTER');
+        } finally {
+            Object.assign(mockContext, origCtx);
+            clearStateCache();
+            loadCurrentState();
+        }
+    });
+
+    // ─────────────────────────────────────────────────────────────
+    // T136: 现场名单非法类型时的 Fail-Closed 访问控制与场景规范化防注入测试 (P1-02)
+    // ─────────────────────────────────────────────────────────────
+    test('T136: 现场在场角色名单格式非法时 Fail-Closed 拒绝访问，normalizeSceneState 规范化清洗非法类型 (P1-02)', () => {
+        // 1. normalizeSceneState 针对非法类型的清洗过滤
+        const dirtySceneStr = { in_scene_characters: 'everyone_bypass', location: '地下避难所' };
+        const cleanScene1 = normalizeSceneState(dirtySceneStr);
+        assert.deepStrictEqual(cleanScene1.in_scene_characters, [], '非法非数组字符串名单必须清洗为 [] 明确无人，严禁伪装为未知放行');
+
+        const dirtySceneObj = { in_scene_characters: { hacker: true } };
+        const cleanScene2 = normalizeSceneState(dirtySceneObj);
+        assert.deepStrictEqual(cleanScene2.in_scene_characters, [], '非法对象名单必须清洗为 []');
+
+        const validScene = { in_scene_characters: ['角色A', ' 角色B ', '', 123] };
+        const cleanScene3 = normalizeSceneState(validScene);
+        assert.deepStrictEqual(cleanScene3.in_scene_characters, ['角色A', '角色B'], '合法数组需清洗非字符串并去除空白');
+
+        const nullScene = { in_scene_characters: null };
+        const cleanScene4 = normalizeSceneState(nullScene);
+        assert.strictEqual(cleanScene4.in_scene_characters, undefined, '显式 null 必须重置为 undefined 未知');
+
+        // 2. canRecipientAccessMemory 面对非法非数组类型时的 Fail-Closed 拒绝
+        const secretMem = { id: 'm-secret', content: '机密行动', scope: MEMORY_SCOPE.CHARACTER, character: '角色A' };
+        const checkStr = canRecipientAccessMemory(secretMem, '角色A', 'malicious_bypass_string');
+        assert.strictEqual(checkStr.allowed, false, '在场名单为非法字符串时必须 Fail-Closed 拒绝访问');
+        assert.ok(checkStr.reason.includes('Fail-Closed'), '拦截原因必须明确声明 Fail-Closed');
+
+        const checkObj = canRecipientAccessMemory(secretMem, '角色A', { injected: true });
+        assert.strictEqual(checkObj.allowed, false, '在场名单为非法对象时必须 Fail-Closed 拒绝访问');
+
+        // 3. 导入数据包中注入恶意场景名单
+        const state = getState();
+        const dirtyPkg = {
+            plugin: MODULE_NAME,
+            memories: [],
+            scene: { in_scene_characters: 'all_characters_injected' }
+        };
+        migImportPackage(dirtyPkg, 'replace', state, batchUpdate, mockContext);
+        assert.deepStrictEqual(state.scene.in_scene_characters, [], '导入恶意现场名单后必须清洗为 [] 明确无人');
+    });
+
+    // ─────────────────────────────────────────────────────────────
+    // T137: 宿主元数据与本地存储双重写入失败时的事务回滚机制测试 (P2-01)
+    // ─────────────────────────────────────────────────────────────
+    test('T137: 宿主元数据与本地存储双重写入彻底失败时触发 batchUpdate 完整回滚 (P2-01)', () => {
+        const origCtx = { ...mockContext };
+        const origLocalStorage = { ...mockLocalStorage };
+        const origSaveMetadata = mockContext.saveMetadata;
+        const origSetItem = global.localStorage.setItem;
+        try {
+            clearStateCache();
+            const state = loadCurrentState();
+            state.memories = [{ id: 'm-safe', content: '安全初始记忆', type: 'fact', scope: 'world' }];
+            updateScene({ location: '初始稳定地点' });
+            const beforeRevision = state.state_revision;
+
+            // 模拟双重持久化彻底故障：宿主 saveMetadata 抛错，localStorage.setItem 抛错
+            mockContext.saveMetadata = () => { throw new Error('宿主元数据 I/O 硬件损坏'); };
+            global.localStorage.setItem = () => { throw new Error('QuotaExceededError: 本地配额已耗尽'); };
+
+            let caughtError = null;
+            try {
+                batchUpdate(() => {
+                    state.scene.location = '半途中被篡改的脏地点';
+                    state.memories.push({ id: 'm-dirty', content: '未成功落盘的脏记忆', type: 'fact', scope: 'world' });
+                });
+            } catch (err) {
+                caughtError = err;
+            }
+
+            assert.ok(caughtError, '双重存储故障时 batchUpdate 必须向外抛出异常');
+            assert.ok(caughtError.message.includes('持久化存储彻底失败'), '错误信息需明确提示双重持久化彻底失败');
+
+            // 验证状态是否已完整回滚到事务开始前的快照
+            const stateAfter = getState();
+            assert.strictEqual(stateAfter.scene.location, '初始稳定地点', '现场地点必须完全回滚至事务前状态');
+            assert.strictEqual(stateAfter.memories.length, 1, '记忆数量必须回滚，脏记忆必须被移除');
+            assert.strictEqual(stateAfter.memories[0].id, 'm-safe', '仅保留事务开始前的安全记忆');
+            assert.strictEqual(stateAfter.state_revision, beforeRevision, '版本修订号不得虚假递增');
+        } finally {
+            Object.assign(mockContext, origCtx);
+            if (origSaveMetadata !== undefined) {
+                mockContext.saveMetadata = origSaveMetadata;
+            } else {
+                delete mockContext.saveMetadata;
+            }
+            global.localStorage.setItem = origSetItem;
+            mockLocalStorage = origLocalStorage;
+            clearStateCache();
+            loadCurrentState();
+        }
+    });
+
+    // ─────────────────────────────────────────────────────────────
+    // T138: 历史批次提炼时防当下现场名单过滤历史发言者记忆测试 (P2-02)
+    // ─────────────────────────────────────────────────────────────
+    test('T138: 历史批次提炼时优先采用该批次历史快照/发言者名单，防止被当下名单过滤活跃记忆 (P2-02)', () => {
+        const state = getState();
+        // 当前最新现场仅有角色A在场 (角色B不在当下现场)
+        state.scene.in_scene_characters = ['角色A'];
+
+        const historicalMemories = [
+            { id: 'm_char_a', lifecycle: 'active', scope: 'character', character: '角色A', content: '角色A的事实' },
+            { id: 'm_char_b', lifecycle: 'active', scope: 'character', character: '角色B', content: '角色B的昔日承诺' }
+        ];
+
+        // 若直接使用当下的 scene.in_scene_characters，角色B会被当场过滤
+        const liveFiltered = filterMemoriesForDigest(historicalMemories, {
+            sceneParticipants: state.scene.in_scene_characters,
+            conversationParticipants: ['角色B'],
+            fallbackParticipants: ['玩家', '角色A']
+        });
+        assert.strictEqual(liveFiltered.some(m => m.id === 'm_char_b'), false, '错误使用当下在场名单会导致历史发言者角色B被过滤');
+
+        // P2-02 修复机制：历史批次提炼若无该楼层现场快照，sceneParticipants 保持 undefined，
+        // 自动激活 conversationParticipants (该历史批次的发言者列表)
+        const historyFiltered = filterMemoriesForDigest(historicalMemories, {
+            sceneParticipants: undefined,
+            conversationParticipants: ['角色B'],
+            fallbackParticipants: ['玩家', '角色A']
+        });
+        assert.strictEqual(historyFiltered.some(m => m.id === 'm_char_b'), true, 'P2-02 修复：角色B作为历史发言者其活跃记忆必须被保留');
+    });
+
+    // ─────────────────────────────────────────────────────────────
+    // T139: 伴生标签解析或校验失败时保留原始正文防侵入篡改测试 (P2-03)
+    // ─────────────────────────────────────────────────────────────
+    test('T139: 伴生标签在 JSON 解析或 Schema 校验失败时完整保留原始正文，严禁篡改内容 (P2-03)', () => {
+        const state = getState();
+        state.last_sync_error = null;
+
+        // 1. JSON 格式畸形
+        const malformedText = '任务已完成，这是战利品列表。\n<!-- PERSISTENT_MEMORY: {bad_json: not_quoted} -->';
+        const res1 = extractAndApplySyncTag(malformedText);
+        assert.strictEqual(res1, malformedText, 'JSON 语法错误时必须完整保留原始消息，严禁静默抹除标签');
+        assert.ok(state.last_sync_error, '必须留存 last_sync_error 排错日志');
+        assert.ok(state.last_sync_error.error.includes('JSON 解析失败'), '必须记录具体解析失败原因');
+
+        // 2. Schema 校验未通过 (缺失核心字段)
+        const invalidSchemaText = '正在前往下一个目的地。\n<!-- PERSISTENT_MEMORY: {"invalid_field": 12345} -->';
+        const res2 = extractAndApplySyncTag(invalidSchemaText);
+        assert.strictEqual(res2, invalidSchemaText, 'Schema 校验未通过时必须完整保留原始消息');
+        assert.ok(state.last_sync_error.error.includes('Schema 校验未通过'), '必须记录 Schema 校验未通过');
+
+        // 3. 合法伴生标签正常剥离并入库
+        const validText = '我们在客栈安顿了下来。\n<!-- PERSISTENT_MEMORY: {"scene": {"location": "悦来客栈"}} -->';
+        const res3 = extractAndApplySyncTag(validText);
+        assert.strictEqual(res3, '我们在客栈安顿了下来。', '合法伴生标签必须被从正文中剥离');
+        assert.strictEqual(state.scene.location, '悦来客栈', '合法数据必须成功写入现场状态');
+    });
+
+    // ─────────────────────────────────────────────────────────────
+    // T140: 纯 JS CRC-32 回退查表算法与压缩包校验失败阻断测试 (P2-04)
+    // ─────────────────────────────────────────────────────────────
+    test('T140: 纯 JS CRC-32 回退查表算法与 zlib.crc32 完全全等，验证失败必须阻断 (P2-04)', () => {
+        // 1. 多种典型 Buffer 深度比对 calculateCrc32(buf, true) (纯 JS) 与 calculateCrc32(buf, false) (zlib.crc32)
+        const testCases = [
+            Buffer.alloc(0),
+            Buffer.from('Hello, SillyTavern Persistent Memory!'),
+            Buffer.from('持续记忆系统跨平台规范化打包归档与工业级解包验证矩阵测试'),
+            Buffer.from([0x00, 0xFF, 0x50, 0x4B, 0x03, 0x04, 0x12, 0x34, 0x56, 0x78]),
+            Buffer.from('Lorem ipsum dolor sit amet, consectetur adipiscing elit.'.repeat(20))
+        ];
+
+        for (const buf of testCases) {
+            const zlibVal = calculateCrc32(buf, false);
+            const fallbackVal = calculateCrc32(buf, true);
+            assert.strictEqual(typeof fallbackVal, 'number', 'CRC32 结果必须为数字');
+            assert.strictEqual(fallbackVal >= 0 && fallbackVal <= 0xFFFFFFFF, true, 'CRC32 结果必须在 32 位无符号整数区间');
+            assert.strictEqual(fallbackVal, zlibVal, `纯 JS CRC32 查表算法必须与 zlib.crc32 精确全等 (长度: ${buf.length})`);
+        }
+
+        // 2. 验证标准经典 ASCII 向量
+        const standardVector = Buffer.from('123456789');
+        // '123456789' 的标准 CRC-32 校验和为 0xCBF43926 (3421780262)
+        assert.strictEqual(calculateCrc32(standardVector, true), 3421780262, '标准测试向量 123456789 的 CRC-32 必须为 0xCBF43926');
+        assert.strictEqual(calculateCrc32(standardVector, false), 3421780262, 'zlib 标准向量测试必须为 0xCBF43926');
     });
 
     console.log(`\n======================================================`);

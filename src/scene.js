@@ -1,5 +1,5 @@
 /**
- * ST-Persistent-Memory - 现场状态管理与快照时光机服务 (Scene Management & Time-Machine, v0.1.47)
+ * ST-Persistent-Memory - 现场状态管理与快照时光机服务 (Scene Management & Time-Machine, v0.1.48)
  *
  * 核心职责：
  * 1. 领域解耦：将 L0 实时现场状态 (location, time, action, tension, unresolved, in_scene_characters)
@@ -192,4 +192,74 @@ export function updateScene(scenePatch, reason = '手动修改') {
     };
 
     saveCurrentState();
+}
+
+/**
+ * 严格校验并规范化现场状态对象 (防外部导入或脏数据注入，P1-02)
+ * @param {object} rawScene - 待校验的原始场景数据
+ * @param {object|null} fallbackScene - 继承底模
+ * @returns {object} 规范化后的纯净场景对象
+ */
+export function normalizeSceneState(rawScene, fallbackScene = null) {
+    if (!rawScene || typeof rawScene !== 'object' || Array.isArray(rawScene)) {
+        return fallbackScene ? safeClone(fallbackScene) : {
+            scene_id: 'scene_init',
+            location: '',
+            time: '',
+            action: '',
+            tension: '',
+            unresolved: '',
+            in_scene_characters: undefined,
+            updated_at: ''
+        };
+    }
+    const base = fallbackScene || {};
+    const cleanStr = (val, oldVal = '') => {
+        if (typeof val === 'string') return val.trim();
+        if (val === null || val === '') return '';
+        if (val === undefined) return typeof oldVal === 'string' ? oldVal : '';
+        return typeof oldVal === 'string' ? oldVal : '';
+    };
+
+    let cleanChars;
+    if (Array.isArray(rawScene.in_scene_characters)) {
+        cleanChars = Array.from(new Set(rawScene.in_scene_characters.filter(x => typeof x === 'string' && x.trim()).map(x => x.trim())));
+    } else if (rawScene.in_scene_characters === null) {
+        cleanChars = undefined; // 显式重置为未知
+    } else if (rawScene.in_scene_characters === undefined) {
+        cleanChars = base.in_scene_characters;
+    } else {
+        // P1-02 防御：外部传入非法类型 (如 string, object 等)，坚决拒绝伪装为未知放行，
+        // 强制设为 [] (明确无人) 实现 Fail-Closed
+        cleanChars = [];
+    }
+
+    return {
+        scene_id: cleanStr(rawScene.scene_id, base.scene_id || 'scene_init'),
+        location: cleanStr(rawScene.location, base.location),
+        time: cleanStr(rawScene.time, base.time),
+        action: cleanStr(rawScene.action, base.action),
+        tension: cleanStr(rawScene.tension, base.tension),
+        unresolved: cleanStr(rawScene.unresolved, base.unresolved),
+        in_scene_characters: cleanChars,
+        updated_at: typeof rawScene.updated_at === 'string' && rawScene.updated_at ? rawScene.updated_at : new Date().toISOString()
+    };
+}
+
+/**
+ * 校验并规范化现场快照历史时光机栈
+ * @param {Array} rawHistory - 待校验的原始历史数组
+ * @returns {Array} 规范化后的历史栈 (FIFO 限制最多 10 条)
+ */
+export function normalizeSceneHistory(rawHistory) {
+    if (!Array.isArray(rawHistory)) return [];
+    return rawHistory
+        .filter(h => h && typeof h === 'object' && h.scene && typeof h.scene === 'object')
+        .slice(-10)
+        .map(h => ({
+            timestamp: typeof h.timestamp === 'string' && h.timestamp ? h.timestamp : new Date().toISOString(),
+            floor: Number(h.floor) || 0,
+            reason: String(h.reason || '历史快照'),
+            scene: normalizeSceneState(h.scene)
+        }));
 }

@@ -7,7 +7,7 @@
  * 4. 会话隔离检查，防止中途会话切换导致的数据串线落盘
  * 5. 批次消化后自动触发未激活记忆沉睡巡检及链式长程宏观归并
  *
- * @version 0.1.47
+ * @version 0.1.48
  */
 
 import { MODULE_NAME, MEMORY_TYPES, MEMORY_STATUS, MEMORY_LIFECYCLE, MEMORY_SCOPE } from './config.js';
@@ -203,8 +203,24 @@ export async function triggerBacklogDigest(options = {}) {
             const batchStartRevision = curState.state_revision || 0;
             const currentScene = JSON.stringify(curState.scene, null, 2);
 
+            // P2-02 修复：历史批次提炼时，严禁直接使用当下的现场在场名单 (会导致历史批次发言者记忆被当下名单完全过滤)
+            // 优先查找落在该批次楼层范围内的历史现场快照；若无对应快照且非最新批次，sceneParticipants 保持 undefined
+            // 以便让 filterMemoriesForDigest 自动采用该历史批次的实际发言者 (conversationParticipants)
+            let historicalSceneParticipants = undefined;
+            const isLatestBatch = (i === batches.length - 1) || (batch.end >= chat.length);
+            if (isLatestBatch) {
+                historicalSceneParticipants = curState.scene?.in_scene_characters;
+            } else if (Array.isArray(curState.scene_history) && curState.scene_history.length > 0) {
+                const matchingSnapshots = curState.scene_history
+                    .filter(h => h && h.floor <= batch.end && h.scene && Array.isArray(h.scene.in_scene_characters));
+                if (matchingSnapshots.length > 0) {
+                    const latestMatch = matchingSnapshots[matchingSnapshots.length - 1];
+                    historicalSceneParticipants = latestMatch.scene.in_scene_characters;
+                }
+            }
+
             const activeMemList = filterMemoriesForDigest(curState.memories, {
-                sceneParticipants: curState.scene.in_scene_characters,
+                sceneParticipants: historicalSceneParticipants,
                 conversationParticipants: batchSlice.map(m => m.is_user ? (c.name1 || 'User') : (m.name || 'AI')),
                 fallbackParticipants: [c.name1, c.name2]
             })

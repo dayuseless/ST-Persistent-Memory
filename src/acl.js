@@ -1,5 +1,5 @@
 /**
- * 持续记忆访问控制与统一数据准入判定层 (Unified ACL & Ingestion Gate, v0.1.47)
+ * 持续记忆访问控制与统一数据准入判定层 (Unified ACL & Ingestion Gate, v0.1.48)
  *
  * 核心设计纪律：
  * 1. 权责解耦：AI 负责提出记忆变更建议，ACL 负责验证变更合法性，状态引擎负责执行状态落盘。
@@ -237,7 +237,21 @@ export function normalizeAndValidateMemory(raw, options = {}) {
     const type = VALID_TYPES.has(raw.type) ? raw.type : MEMORY_TYPES.FACT;
 
     // 3. 知情范围初步解析
-    const rawScope = raw.scope || (raw.character ? MEMORY_SCOPE.CHARACTER : (Array.isArray(raw.known_by) && raw.known_by.length > 0 ? MEMORY_SCOPE.SHARED : MEMORY_SCOPE.WORLD));
+    let rawScope = raw.scope;
+    if (!rawScope) {
+        if (raw.character) {
+            rawScope = MEMORY_SCOPE.CHARACTER;
+        } else if (Array.isArray(raw.known_by) && raw.known_by.length > 0) {
+            rawScope = MEMORY_SCOPE.SHARED;
+        } else if (options.defaultScope && VALID_SCOPES.has(options.defaultScope)) {
+            rawScope = options.defaultScope;
+        } else if (options.source === 'backup_import') {
+            // P1-01: 备份导入缺少知情范围与角色字段时，遵循保守封闭原则默认归属于当前角色私有，绝不擅自提权至 world
+            rawScope = MEMORY_SCOPE.CHARACTER;
+        } else {
+            rawScope = MEMORY_SCOPE.WORLD;
+        }
+    }
     if (!VALID_SCOPES.has(rawScope)) {
         return { valid: false, memory: null, reason: `记忆知情范围 "${raw.scope}" 非法，拒绝入库` };
     }
@@ -509,6 +523,7 @@ export function canRecipientAccessMemory(memory, recipient, inSceneCharacters = 
     }
 
     const trimmedRecipient = typeof recipient === 'string' && recipient.trim() ? recipient.trim() : null;
+    const isInvalidSceneType = inSceneCharacters !== undefined && inSceneCharacters !== null && !Array.isArray(inSceneCharacters);
     const sceneChars = Array.isArray(inSceneCharacters)
         ? inSceneCharacters.filter(c => typeof c === 'string' && c.trim()).map(c => c.trim())
         : null;
@@ -530,6 +545,15 @@ export function canRecipientAccessMemory(memory, recipient, inSceneCharacters = 
         return {
             allowed: false,
             reason: '生成接收主体 (POV) 未知或缺失，受限记忆拒绝注入',
+            scope
+        };
+    }
+
+    // P1-02 防御：若现场名单类型非法 (如外部导入字符串或对象污染)，Fail-Closed 坚决拒绝受限记忆访问，严禁伪装为未知放行
+    if (requireInScene && isInvalidSceneType) {
+        return {
+            allowed: false,
+            reason: '现场在场角色名单格式非法 (非数组)，Fail-Closed 拒绝受限记忆访问',
             scope
         };
     }

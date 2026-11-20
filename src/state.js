@@ -1,5 +1,5 @@
 /**
- * 记忆状态管理器 (v0.1.47)
+ * 记忆状态管理器 (v0.1.48)
  * 严格落实 state_revision 状态修订号、L0 三态 PATCH 语义、真正原子回滚事务、统一ACL判定层介入、数据准入流水线、世界书升格溯源、知情集合隔离、世界书解耦、现场状态时光机解耦 (src/scene.js) 与数据迁移/导入导出解耦 (src/migration.js)
  */
 
@@ -102,21 +102,47 @@ function persistCurrentStateInternal() {
     // 每次实际落盘增加修订版本号。
     stateCache.state_revision = (stateCache.state_revision || 0) + 1;
 
+    let hostSuccess = false;
+    let localSuccess = false;
+    const failureErrors = [];
+
     if (metadata) {
         metadata[MODULE_NAME] = stateCache;
         if (typeof c?.saveMetadata === 'function') {
-            try { c.saveMetadata(); } catch {}
+            try {
+                c.saveMetadata();
+                hostSuccess = true;
+            } catch (err) {
+                failureErrors.push(`saveMetadata: ${err.message || err}`);
+            }
         } else if (typeof c?.saveMetadataDebounced === 'function') {
-            try { c.saveMetadataDebounced(); } catch {}
+            try {
+                c.saveMetadataDebounced();
+                hostSuccess = true;
+            } catch (err) {
+                failureErrors.push(`saveMetadataDebounced: ${err.message || err}`);
+            }
+        } else {
+            hostSuccess = true;
         }
     }
 
     // 双重落盘保险：将会话快照同步备份至本地存储，防止未及时落盘导致编辑丢失
-    try {
-        if (typeof localStorage !== 'undefined') {
+    if (typeof localStorage !== 'undefined') {
+        try {
             localStorage.setItem('ST_PM_STATE_BACKUP_' + chatId, JSON.stringify(stateCache));
+            localSuccess = true;
+        } catch (err) {
+            failureErrors.push(`localStorage: ${err.message || err}`);
         }
-    } catch {}
+    }
+
+    // P2-01: 若宿主写入与本地存储均彻底失败，严禁吞噬异常，必须抛出错误触发 batchUpdate 事务回滚
+    const hasStorageMedium = Boolean(metadata || typeof localStorage !== 'undefined');
+    if (hasStorageMedium && !hostSuccess && !localSuccess) {
+        const detail = failureErrors.length > 0 ? ` (${failureErrors.join('; ')})` : '';
+        throw new Error(`[${MODULE_NAME}] 持久化存储彻底失败: 宿主元数据与本地存储均无法写入${detail}`);
+    }
 
     stateCacheMap.set(chatId, stateCache);
     currentLoadedChatId = chatId;

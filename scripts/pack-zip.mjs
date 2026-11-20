@@ -1,5 +1,5 @@
 /**
- * ST-Persistent-Memory 跨平台规范化打包脚本 (pack-zip.mjs, v0.1.47)
+ * ST-Persistent-Memory 跨平台规范化打包脚本 (pack-zip.mjs, v0.1.48)
  * 
  * 核心设计目标：
  * 1. 采用原生 Node.js 内置模块 (zlib, fs, path, crypto) 实现纯正 PKWARE ZIP 规范打包器；
@@ -21,17 +21,6 @@ const __dirname = path.dirname(__filename);
 const repoRoot = path.resolve(__dirname, '..');
 const parentDir = path.dirname(repoRoot);
 const folderName = path.basename(repoRoot);
-
-// 读取当前版本
-const pkg = JSON.parse(fs.readFileSync(path.join(repoRoot, 'package.json'), 'utf8'));
-const version = pkg.version || '0.1.47';
-
-// 目标 ZIP 输出路径
-const defaultOutDir = 'D:\\学习';
-const outDir = fs.existsSync(defaultOutDir) ? defaultOutDir : repoRoot;
-const outZipPath = path.join(outDir, `ST-Persistent-Memory-v${version}.zip`);
-
-console.log(`[Pack] 正在打包 ${folderName} (v${version}) -> ${outZipPath}...`);
 
 // MS-DOS 格式日期时间转换
 function dateToDosDateTime(date) {
@@ -76,8 +65,36 @@ function scanEntries(dirPath, baseZipPath) {
     return entries;
 }
 
+// 标准 IEEE 802.3 CRC-32 预计算查找表 (用于 zlib.crc32 不存在时的跨环境安全回退，P2-04)
+export const CRC32_TABLE = new Uint32Array(256);
+for (let i = 0; i < 256; i++) {
+    let c = i;
+    for (let k = 0; k < 8; k++) {
+        c = (c & 1) ? (0xEDB88320 ^ (c >>> 1)) : (c >>> 1);
+    }
+    CRC32_TABLE[i] = c >>> 0;
+}
+
+/**
+ * 计算 Buffer 的 CRC-32 校验和 (P2-04 修复)
+ * @param {Buffer|string} buf 
+ * @param {boolean} forceFallback 是否强制使用纯 JS 查表算法
+ * @returns {number} 32 位无符号整数
+ */
+export function calculateCrc32(buf, forceFallback = false) {
+    if (!forceFallback && typeof zlib.crc32 === 'function') {
+        return zlib.crc32(buf) >>> 0;
+    }
+    let crc = 0xFFFFFFFF;
+    const target = Buffer.isBuffer(buf) ? buf : Buffer.from(buf || '');
+    for (let i = 0; i < target.length; i++) {
+        crc = CRC32_TABLE[(crc ^ target[i]) & 0xFF] ^ (crc >>> 8);
+    }
+    return (crc ^ 0xFFFFFFFF) >>> 0;
+}
+
 // 纯 Node.js 标准 PKWARE ZIP 规范归档生成器
-function buildStandardZip(entries) {
+export function buildStandardZip(entries) {
     const localHeaders = [];
     const cdHeaders = [];
     let offset = 0;
@@ -90,7 +107,7 @@ function buildStandardZip(entries) {
         const isDir = Boolean(entry.isDir || normalizedName.endsWith('/'));
 
         const compressedBuf = isDir ? Buffer.alloc(0) : zlib.deflateRawSync(dataBuf);
-        const crc = isDir ? 0 : ((zlib.crc32 ? zlib.crc32(dataBuf) : 0) >>> 0);
+        const crc = isDir ? 0 : calculateCrc32(dataBuf);
         const method = isDir ? 0 : 8; // 8 = Deflated, 0 = Stored
         const size = dataBuf.length >>> 0;
         const compSize = compressedBuf.length >>> 0;
@@ -157,56 +174,89 @@ function buildStandardZip(entries) {
     return Buffer.concat([...localHeaders, ...cdHeaders, eocd]);
 }
 
-// 扫描所有源码条目并打包
-const rawEntries = scanEntries(repoRoot, folderName);
-const zipBuffer = buildStandardZip(rawEntries);
+export function runPack(customOutDir = null) {
+    // 读取当前版本
+    const pkg = JSON.parse(fs.readFileSync(path.join(repoRoot, 'package.json'), 'utf8'));
+    const version = pkg.version || '0.1.48';
 
-if (fs.existsSync(outZipPath)) {
-    fs.unlinkSync(outZipPath);
+    // 目标 ZIP 输出路径
+    const defaultOutDir = 'D:\\学习';
+    const outDir = customOutDir || (fs.existsSync(defaultOutDir) ? defaultOutDir : repoRoot);
+    const outZipPath = path.join(outDir, `ST-Persistent-Memory-v${version}.zip`);
+
+    console.log(`[Pack] 正在打包 ${folderName} (v${version}) -> ${outZipPath}...`);
+
+    // 扫描所有源码条目并打包
+    const rawEntries = scanEntries(repoRoot, folderName);
+    const zipBuffer = buildStandardZip(rawEntries);
+
+    if (fs.existsSync(outZipPath)) {
+        fs.unlinkSync(outZipPath);
+    }
+    fs.writeFileSync(outZipPath, zipBuffer);
+
+    // ─────────────────────────────────────────────
+    // 深度完整性与跨平台校验 (Verification)
+    // ─────────────────────────────────────────────
+    // 1. 中央目录与 EOCD 签名校验
+    if (zipBuffer.length < 22) {
+        console.error('[Pack 错误] ZIP 文件过小，损坏！');
+        process.exit(1);
+    }
+    const eocdSig = zipBuffer.readUInt32LE(zipBuffer.length - 22);
+    if (eocdSig !== 0x06054b50) {
+        console.error(`[Pack 错误] EOCD 签名校验失败: 期望 0x06054b50, 收到 0x${eocdSig.toString(16)}`);
+        process.exit(1);
+    }
+
+    // 2. POSIX 路径反斜杠扫描
+    const backslashEntries = rawEntries.filter(e => e.name.includes('\\'));
+    if (backslashEntries.length > 0) {
+        console.error(`[Pack 错误] 检测到 ${backslashEntries.length} 个包含反斜杠的非 POSIX 路径！`);
+        process.exit(1);
+    }
+
+    // 3. Python zipfile 工业级解包验证 (若可用，P2-04 修复)
+    let pythonAvailable = false;
+    try {
+        execSync('python --version', { stdio: 'ignore' });
+        pythonAvailable = true;
+    } catch {}
+
+    if (pythonAvailable) {
+        try {
+            const pyCheck = execSync(`python -m zipfile -t "${outZipPath}"`, { encoding: 'utf8', stdio: ['ignore', 'pipe', 'pipe'] });
+            console.log(`[Pack 校验] Python zipfile 完整性测试通过: ${pyCheck.trim() || 'Done testing'}`);
+        } catch (pyErr) {
+            console.error(`[Pack 错误] Python zipfile 校验失败 (压缩包损坏或校验和不匹配):`, pyErr.stderr || pyErr.message);
+            process.exit(1);
+        }
+    } else {
+        console.log(`[Pack 校验] 未检测到 Python 环境，跳过 python -m zipfile -t 深度校验`);
+    }
+
+    // 4. 计算 SHA-256 哈希值
+    const hashSum = crypto.createHash('sha256');
+    hashSum.update(zipBuffer);
+    const sha256 = hashSum.digest('hex');
+
+    // 5. 同步写入 .sha256 校验文件
+    const sha256FilePath = `${outZipPath}.sha256`;
+    fs.writeFileSync(sha256FilePath, `${sha256} *ST-Persistent-Memory-v${version}.zip\n`, 'utf8');
+
+    console.log(`[Pack 成功] 归档生成完成！`);
+    console.log(`  - 文件路径: ${outZipPath}`);
+    console.log(`  - 校验文件: ${sha256FilePath}`);
+    console.log(`  - 文件大小: ${(zipBuffer.length / 1024).toFixed(2)} KB`);
+    console.log(`  - 包含条目: ${rawEntries.length} 个 (全部为 POSIX 正斜杠 '/')`);
+    console.log(`  - SHA-256 : ${sha256}`);
+
+    return { outZipPath, sha256FilePath, sha256, zipBuffer, entriesCount: rawEntries.length };
 }
-fs.writeFileSync(outZipPath, zipBuffer);
 
-// ─────────────────────────────────────────────
-// 深度完整性与跨平台校验 (Verification)
-// ─────────────────────────────────────────────
-// 1. 中央目录与 EOCD 签名校验
-if (zipBuffer.length < 22) {
-    console.error('[Pack 错误] ZIP 文件过小，损坏！');
-    process.exit(1);
-}
-const eocdSig = zipBuffer.readUInt32LE(zipBuffer.length - 22);
-if (eocdSig !== 0x06054b50) {
-    console.error(`[Pack 错误] EOCD 签名校验失败: 期望 0x06054b50, 收到 0x${eocdSig.toString(16)}`);
-    process.exit(1);
+const isMain = process.argv[1] && path.resolve(process.argv[1]) === path.resolve(__filename);
+if (isMain) {
+    runPack();
 }
 
-// 2. POSIX 路径反斜杠扫描
-const backslashEntries = rawEntries.filter(e => e.name.includes('\\'));
-if (backslashEntries.length > 0) {
-    console.error(`[Pack 错误] 检测到 ${backslashEntries.length} 个包含反斜杠的非 POSIX 路径！`);
-    process.exit(1);
-}
 
-// 3. Python zipfile 工业级解包验证 (若可用)
-try {
-    const pyCheck = execSync(`python -m zipfile -t "${outZipPath}"`, { encoding: 'utf8' });
-    console.log(`[Pack 校验] Python zipfile 完整性测试通过: ${pyCheck.trim() || 'Done testing'}`);
-} catch (pyErr) {
-    console.warn(`[Pack 警告] Python zipfile 测试未执行或报错:`, pyErr.message);
-}
-
-// 4. 计算 SHA-256 哈希值
-const hashSum = crypto.createHash('sha256');
-hashSum.update(zipBuffer);
-const sha256 = hashSum.digest('hex');
-
-// 5. 同步写入 .sha256 校验文件
-const sha256FilePath = `${outZipPath}.sha256`;
-fs.writeFileSync(sha256FilePath, `${sha256} *ST-Persistent-Memory-v${version}.zip\n`, 'utf8');
-
-console.log(`[Pack 成功] 归档生成完成！`);
-console.log(`  - 文件路径: ${outZipPath}`);
-console.log(`  - 校验文件: ${sha256FilePath}`);
-console.log(`  - 文件大小: ${(zipBuffer.length / 1024).toFixed(2)} KB`);
-console.log(`  - 包含条目: ${rawEntries.length} 个 (全部为 POSIX 正斜杠 '/')`);
-console.log(`  - SHA-256 : ${sha256}`);

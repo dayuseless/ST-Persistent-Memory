@@ -1,6 +1,6 @@
 /**
 /**
- * ST-Persistent-Memory (v0.1.47) - 现场外挂状态栏与原生生态宏服务 (Scene Status Bar & Native Macro Exporter)
+ * ST-Persistent-Memory (v0.1.48) - 现场外挂状态栏与原生生态宏服务 (Scene Status Bar & Native Macro Exporter)
  * 职责：
  * 1. 现场快照响应式渲染 (Reactive HUD)：支持输入框上方、聊天区吸顶、屏幕悬浮胶囊三种停靠模式
  * 2. 自由模板格式引擎 (Template Engine)：支持占位符解析与 4 大玩法风格预设 (TRPG跑团、Galgame、悬疑侦探、极简)

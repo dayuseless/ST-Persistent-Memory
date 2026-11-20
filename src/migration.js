@@ -1,5 +1,5 @@
 /**
- * ST-Persistent-Memory - 数据迁移与导入导出服务 (Data Migration & Portability Service, v0.1.47)
+ * ST-Persistent-Memory - 数据迁移与导入导出服务 (Data Migration & Portability Service, v0.1.48)
  * 职责：
  * 1. 跨版本 Schema 迁移与平滑升级 (migrateLegacyState, migrateMemoryItems)
  * 2. 外部记忆/场景数据包导出与脱敏规范化 (exportMemoryData)
@@ -10,6 +10,7 @@ import { MODULE_NAME, EXTENSION_VERSION, MEMORY_STATUS, MEMORY_LIFECYCLE, MEMORY
 import { syncEnsureLocalEmbedding } from './semantic.js';
 import { getContextParticipants, normalizeAndValidateMemory, recordAclAudit } from './acl.js';
 import { sanitizeLorebookRef } from './lorebook.js';
+import { normalizeSceneState, normalizeSceneHistory } from './scene.js';
 
 function getContext() {
     return window.SillyTavern?.getContext?.() ?? null;
@@ -138,22 +139,8 @@ export function migrateLegacyState(stored, defaultState, context = null) {
     return {
         version: 3,
         state_revision: Number(stored.state_revision) || 0,
-        scene: {
-            scene_id: typeof rawScene.scene_id === 'string' && rawScene.scene_id.trim() ? rawScene.scene_id.trim() : 'scene_init',
-            location: typeof rawScene.location === 'string' ? rawScene.location : '',
-            time: typeof rawScene.time === 'string' ? rawScene.time : '',
-            action: typeof rawScene.action === 'string' ? rawScene.action : '',
-            tension: typeof rawScene.tension === 'string' ? rawScene.tension : '',
-            unresolved: typeof rawScene.unresolved === 'string' ? rawScene.unresolved : '',
-            // P0: 严格区分三态：若提供数组 (包括 []) 精确保留，若为 undefined 或 null 严格保持 undefined 未知
-            in_scene_characters: Array.isArray(rawScene.in_scene_characters)
-                ? rawScene.in_scene_characters.filter(x => typeof x === 'string').map(x => x.trim()).filter(Boolean)
-                : undefined,
-            updated_at: rawScene.updated_at || new Date().toISOString()
-        },
-        scene_history: Array.isArray(stored.scene_history)
-            ? stored.scene_history.filter(item => item && item.scene && typeof item.scene === 'object').slice(-10)
-            : [],
+        scene: normalizeSceneState(stored.scene),
+        scene_history: normalizeSceneHistory(stored.scene_history),
         memories: migratedMemories,
         turn_count: Number(stored.turn_count) || 0,
         last_digest_floor: Number(stored.last_digest_floor) || 0,
@@ -221,11 +208,16 @@ export function importMemoryDataPackage(data, strategy = 'merge', state, batchUp
     let skippedCount = 0;
     const validMemories = [];
 
-    for (const m of data.memories) {
+    // P1-01: 备份导入预处理——通过 migrateMemoryItems 统一处理旧版本缺失 scope/character 等字段，
+    // 确保未指定范围的记忆保守升级为当前角色私有 (CHARACTER)，严禁提权至 WORLD
+    const { migratedMemories } = migrateMemoryItems(data.memories, c);
+
+    for (const m of migratedMemories) {
         const norm = normalizeAndValidateMemory(m, {
             participants,
             source: 'backup_import',
-            context: c
+            context: c,
+            defaultScope: MEMORY_SCOPE.CHARACTER
         });
 
         if (!norm.valid) {
@@ -254,11 +246,12 @@ export function importMemoryDataPackage(data, strategy = 'merge', state, batchUp
             }
             s.memories = validMemories;
             importedCount = validMemories.length;
-            if (data.scene && typeof data.scene === 'object' && !Array.isArray(data.scene)) {
-                s.scene = { ...s.scene, ...data.scene };
+            // P1-02: 严格规范化场景与时光机栈，防原型污染或脏数据绕过 ACL
+            if (data.scene) {
+                s.scene = normalizeSceneState(data.scene, s.scene);
             }
-            if (Array.isArray(data.scene_history)) {
-                s.scene_history = data.scene_history.filter(h => h && h.scene).slice(-10);
+            if (data.scene_history) {
+                s.scene_history = normalizeSceneHistory(data.scene_history);
             }
         } else {
             // merge: 按内容与 ID 进行保守去重
@@ -279,11 +272,12 @@ export function importMemoryDataPackage(data, strategy = 'merge', state, batchUp
                 existingContents.add(item.content.trim().toLowerCase());
                 importedCount++;
             }
-            if (data.scene && typeof data.scene === 'object' && (!s.scene.location || s.scene.location === '现场未知')) {
-                s.scene = { ...s.scene, ...data.scene };
+            // P1-02: 合并时场景未初始化则安全注入规范化数据
+            if (data.scene && (!s.scene.location || s.scene.location === '现场未知')) {
+                s.scene = normalizeSceneState(data.scene, s.scene);
             }
             if (Array.isArray(data.scene_history) && (!s.scene_history || s.scene_history.length === 0)) {
-                s.scene_history = data.scene_history.filter(h => h && h.scene).slice(-10);
+                s.scene_history = normalizeSceneHistory(data.scene_history);
             }
         }
 

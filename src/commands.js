@@ -1,5 +1,5 @@
 /**
- * ST-Persistent-Memory - 聊天框原生快捷斜杠指令 (Slash Commands, v0.1.47)
+ * ST-Persistent-Memory - 聊天框原生快捷斜杠指令 (Slash Commands, v0.1.48)
  * 
  * 核心职责：
  * 1. 消除频繁切出 HUD 面板的交互阻力，支持用户直接在聊天输入框以自然快捷指令操作记忆系统。

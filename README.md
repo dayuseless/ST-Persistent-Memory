@@ -1,6 +1,6 @@
 # SillyTavern 持续记忆插件 (ST-Persistent-Memory)
 
-[![Version](https://img.shields.io/badge/version-v0.1.47-blue.svg)](https://github.com/dayuseless/ST-Persistent-Memory)
+[![Version](https://img.shields.io/badge/version-v0.1.48-blue.svg)](https://github.com/dayuseless/ST-Persistent-Memory)
 [![SillyTavern](https://img.shields.io/badge/SillyTavern-1.12.0+-purple.svg)](https://github.com/SillyTavern/SillyTavern)
 [![License](https://img.shields.io/badge/license-MIT-green.svg)](LICENSE)
 
@@ -119,7 +119,7 @@
 
 ### 方式二：手动离线包安装
 
-1. 从 [Releases 页面](https://github.com/dayuseless/ST-Persistent-Memory/releases) 下载 `ST-Persistent-Memory-v0.1.47.zip`。
+1. 从 [Releases 页面](https://github.com/dayuseless/ST-Persistent-Memory/releases) 下载 `ST-Persistent-Memory-v0.1.48.zip`。
 2. 解压到 SillyTavern 的扩展目录中：
    ```text
    SillyTavern/public/scripts/extensions/third-party/ST-Persistent-Memory/
@@ -236,7 +236,7 @@ node test/test-matrix.mjs
 
 ## 📝 版本历史
 
-### v0.1.47 (场景外挂状态栏 HUD、DIY 自由模板系统、行内即改交互与原生生态宏；134 项金标测试矩阵)
+### v0.1.48 (场景外挂状态栏 HUD、DIY 自由模板系统、行内即改交互与原生生态宏；134 项金标测试矩阵)
 
 全面实现“内置 HUD 开箱即用”与“生态原生宏自由手搓”双轨兼备的场景状态栏系统：
 1. **内置高颜值 HUD 状态栏 (`src/ui/statusbar.js`)**：
