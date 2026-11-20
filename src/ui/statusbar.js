@@ -666,7 +666,9 @@ export function registerSceneMacros() {
 
     definitions.forEach(({ name, description, handler }) => {
         try {
-            if (c.macros && typeof c.macros.register === 'function') {
+            if (typeof window !== 'undefined' && window.macros?.registry && typeof window.macros.registry.registerMacro === 'function') {
+                window.macros.registry.registerMacro(name, handler, description);
+            } else if (c.macros && typeof c.macros.register === 'function') {
                 c.macros.register(name, {
                     description,
                     handler

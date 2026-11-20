@@ -377,23 +377,13 @@ export async function registerSlashCommands(customParser = null, customCommandCl
 
     for (const def of SLASH_COMMAND_DEFINITIONS) {
         try {
-            // 防重防冲突守卫：若指令已被原生或其他插件占用，避免重复注册引发警告
+            // 防重防冲突守卫：若指令已在注册表中（无论原生、其他扩展还是已注册），直接跳过避免重复注册警告
             if (Object.hasOwn(commandsRegistry, def.name)) {
-                const existing = commandsRegistry[def.name];
-                if (existing?.source && !existing.source.includes('ST-Persistent-Memory')) {
-                    console.info(`[${MODULE_NAME}] 斜杠指令 /${def.name} 已被原生或外部模块占用，跳过主名注册`);
-                    continue;
-                }
+                continue;
             }
 
-            // 安全剔除已被其他扩展占用的别名
-            const safeAliases = (def.aliases || []).filter(a => {
-                if (Object.hasOwn(commandsRegistry, a)) {
-                    const existing = commandsRegistry[a];
-                    return !existing?.source || existing.source.includes('ST-Persistent-Memory');
-                }
-                return true;
-            });
+            // 安全剔除已在注册表中存在的别名
+            const safeAliases = (def.aliases || []).filter(a => !Object.hasOwn(commandsRegistry, a));
 
             const safeDef = {
                 ...def,
