@@ -1,5 +1,5 @@
 /**
- * 记忆状态管理器 (v0.1.48)
+ * 记忆状态管理器 (v0.1.49)
  * 严格落实 state_revision 状态修订号、L0 三态 PATCH 语义、真正原子回滚事务、统一ACL判定层介入、数据准入流水线、世界书升格溯源、知情集合隔离、世界书解耦、现场状态时光机解耦 (src/scene.js) 与数据迁移/导入导出解耦 (src/migration.js)
  */
 
@@ -105,6 +105,9 @@ function persistCurrentStateInternal() {
     let hostSuccess = false;
     let localSuccess = false;
     const failureErrors = [];
+    const prevMetadataSnapshot = (metadata && metadata[MODULE_NAME])
+        ? JSON.parse(JSON.stringify(metadata[MODULE_NAME]))
+        : (metadata ? metadata[MODULE_NAME] : undefined);
 
     if (metadata) {
         metadata[MODULE_NAME] = stateCache;
@@ -137,9 +140,16 @@ function persistCurrentStateInternal() {
         }
     }
 
-    // P2-01: 若宿主写入与本地存储均彻底失败，严禁吞噬异常，必须抛出错误触发 batchUpdate 事务回滚
+    // P2-01 & P1 修复: 若宿主写入与本地存储均彻底失败，严禁吞噬异常，且必须还原宿主元数据挂载，触发 batchUpdate 事务回滚
     const hasStorageMedium = Boolean(metadata || typeof localStorage !== 'undefined');
     if (hasStorageMedium && !hostSuccess && !localSuccess) {
+        if (metadata) {
+            if (prevMetadataSnapshot !== undefined) {
+                metadata[MODULE_NAME] = prevMetadataSnapshot;
+            } else {
+                delete metadata[MODULE_NAME];
+            }
+        }
         const detail = failureErrors.length > 0 ? ` (${failureErrors.join('; ')})` : '';
         throw new Error(`[${MODULE_NAME}] 持久化存储彻底失败: 宿主元数据与本地存储均无法写入${detail}`);
     }
@@ -162,8 +172,12 @@ export function batchUpdate(fn) {
     isBatchUpdating = true;
     const c = getContext();
     const activeChatId = getCurrentChatId(c);
-    // 事务开始前保留完整内存状态快照 (深拷贝)
+    const metadata = c?.chatMetadata ?? c?.chat_metadata;
+    // 事务开始前保留完整内存状态快照 (深拷贝) 与宿主元数据快照
     const snapshot = stateCache ? JSON.parse(JSON.stringify(stateCache)) : null;
+    const origHostMetadataEntry = (metadata && metadata[MODULE_NAME])
+        ? JSON.parse(JSON.stringify(metadata[MODULE_NAME]))
+        : (metadata ? metadata[MODULE_NAME] : undefined);
     try {
         const result = fn();
         // 仅在全部操作执行成功后才统一落盘
@@ -177,6 +191,18 @@ export function batchUpdate(fn) {
             stateCache = snapshot;
             stateCacheMap.set(activeChatId, stateCache);
             currentLoadedChatId = activeChatId;
+        }
+        // P1 修复：同步回滚宿主元数据引用与内容，确保之后无论通过内存还是通过 loadCurrentState() 重载均保持干净
+        if (metadata) {
+            if (origHostMetadataEntry !== undefined) {
+                metadata[MODULE_NAME] = JSON.parse(JSON.stringify(origHostMetadataEntry));
+            } else if (snapshot) {
+                metadata[MODULE_NAME] = JSON.parse(JSON.stringify(snapshot));
+            } else {
+                delete metadata[MODULE_NAME];
+            }
+        }
+        if (snapshot) {
             notifyChange();
         }
         throw err;

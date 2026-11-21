@@ -322,7 +322,8 @@ import {
     getGlobalApi
 } from '../src/sdk.js';
 import {
-    calculateCrc32
+    calculateCrc32,
+    buildStandardZip
 } from '../scripts/pack-zip.mjs';
 
 let passed = 0;
@@ -3179,30 +3180,30 @@ Intermediate analysis details...
     });
 
     // ─────────────────────────────────────────────────────────────
-    // T71: 全工程版本标识严格一致性核验 (0.1.48)
+    // T71: 全工程版本标识严格一致性核验 (0.1.49)
     // ─────────────────────────────────────────────────────────────
-    test('T71: 全工程版本标识严格一致性核验 (manifest, config, package, index 与各模块头部统一为 0.1.48)', () => {
+    test('T71: 全工程版本标识严格一致性核验 (manifest, config, package, index 与各模块头部统一为 0.1.49)', () => {
         const currentFile = fileURLToPath(import.meta.url);
         const rootDir = path.resolve(path.dirname(currentFile), '../');
 
         // 1. manifest.json
         const manifestPath = path.join(rootDir, 'manifest.json');
         const manifest = JSON.parse(fs.readFileSync(manifestPath, 'utf8'));
-        assert.strictEqual(manifest.version, '0.1.48', 'manifest.json 版本号应为 0.1.48');
+        assert.strictEqual(manifest.version, '0.1.49', 'manifest.json 版本号应为 0.1.49');
 
         // 2. src/config.js
-        assert.strictEqual(EXTENSION_VERSION, '0.1.48', 'config.js EXTENSION_VERSION 应为 0.1.48');
+        assert.strictEqual(EXTENSION_VERSION, '0.1.49', 'config.js EXTENSION_VERSION 应为 0.1.49');
 
         // 3. package.json
         const pkgPath = path.join(rootDir, 'package.json');
         const pkg = JSON.parse(fs.readFileSync(pkgPath, 'utf8'));
-        assert.strictEqual(pkg.version, '0.1.48', 'package.json 版本号应为 0.1.48');
+        assert.strictEqual(pkg.version, '0.1.49', 'package.json 版本号应为 0.1.49');
 
         // 4. index.js
         const indexPath = path.join(rootDir, 'index.js');
         const indexContent = fs.readFileSync(indexPath, 'utf8');
-        assert.ok(indexContent.includes('v0.1.48'), 'index.js 头部必须标注 v0.1.48');
-        assert.ok(!indexContent.includes('v0.1.46'), 'index.js 严禁残留旧版本 v0.1.46 版本头');
+        assert.ok(indexContent.includes('v0.1.49'), 'index.js 头部必须标注 v0.1.49');
+        assert.ok(!indexContent.includes('v0.1.47'), 'index.js 严禁残留旧版本 v0.1.47 版本头');
 
         // 5. 各核心模块头部注释版本检查 (18 个核心模块 + 6 个 UI 子模块 = 24 个模块)
         const checkModules = [
@@ -3237,12 +3238,12 @@ Intermediate analysis details...
             const content = fs.readFileSync(filePath, 'utf8');
             const first10Lines = content.split('\n').slice(0, 10).join('\n');
             assert.ok(
-                first10Lines.includes('v0.1.48') || first10Lines.includes('0.1.48'),
-                `${relPath} 头部注释必须包含 0.1.48 版本标识`
+                first10Lines.includes('v0.1.49') || first10Lines.includes('0.1.49'),
+                `${relPath} 头部注释必须包含 0.1.49 版本标识`
             );
             assert.ok(
-                !first10Lines.includes('0.1.46') && !first10Lines.includes('v0.1.46'),
-                `${relPath} 头部注释严禁残留旧版本 0.1.46`
+                !first10Lines.includes('0.1.47') && !first10Lines.includes('v0.1.47'),
+                `${relPath} 头部注释严禁残留旧版本 0.1.47`
             );
         }
     });
@@ -7008,7 +7009,7 @@ Intermediate analysis details...
             // 5.1 验证全局对象自动挂载
             const api = getGlobalApi();
             assert.ok(api, 'getGlobalApi 必须返回实例');
-            assert.strictEqual(api.version, '0.1.48', 'SDK 版本必须严格为 0.1.48');
+            assert.strictEqual(api.version, '0.1.49', 'SDK 版本必须严格为 0.1.49');
             assert.strictEqual(globalThis.STPersistentMemoryAPI, api, '必须挂载至 globalThis.STPersistentMemoryAPI');
 
             // 5.2 状态与配置接口
@@ -8561,6 +8562,121 @@ Intermediate analysis details...
         // '123456789' 的标准 CRC-32 校验和为 0xCBF43926 (3421780262)
         assert.strictEqual(calculateCrc32(standardVector, true), 3421780262, '标准测试向量 123456789 的 CRC-32 必须为 0xCBF43926');
         assert.strictEqual(calculateCrc32(standardVector, false), 3421780262, 'zlib 标准向量测试必须为 0xCBF43926');
+
+        // 3. 经典 ZIP 容量上限保护与符号链接拒绝 (P2 修复)
+        assert.throws(() => {
+            const fakeEntries = new Array(65536).fill({ name: 'test.txt', isDir: false, data: Buffer.alloc(1) });
+            buildStandardZip(fakeEntries);
+        }, /超出经典 ZIP 格式上限/, '超出 65535 个文件上限时必须主动拒绝');
+
+        assert.throws(() => {
+            buildStandardZip('invalid_entries');
+        }, /entries 必须为数组/);
+    });
+
+    // ─────────────────────────────────────────────────────────────
+    // T141: 宿主元数据与本地存储双重写入失败回滚后，重新加载验证脏数据不复活 (P1 闭环)
+    // ─────────────────────────────────────────────────────────────
+    test('T141: 双重持久化故障回滚后，重新调用 loadCurrentState() 验证宿主元数据中的脏数据不复活 (P1 闭环)', () => {
+        const origCtx = { ...mockContext };
+        const origLocalStorage = { ...mockLocalStorage };
+        const origSaveMetadata = mockContext.saveMetadata;
+        const origSetItem = global.localStorage.setItem;
+        try {
+            clearStateCache();
+            const state = loadCurrentState();
+            state.memories = [{ id: 'm-orig-safe', content: '绝对安全的原始记忆', type: 'fact', scope: 'world' }];
+            updateScene({ location: '风暴前的宁静营地' });
+            saveCurrentState(); // 确保安全初始状态已稳固写入 metadata[MODULE_NAME]
+
+            // 模拟双重持久化彻底故障：宿主 saveMetadata 抛错，localStorage.setItem 抛错
+            mockContext.saveMetadata = () => { throw new Error('宿主磁盘 I/O 严重故障'); };
+            global.localStorage.setItem = () => { throw new Error('QuotaExceededError: 配额溢出'); };
+
+            let caughtError = null;
+            try {
+                batchUpdate(() => {
+                    state.scene.location = '半途中篡改的污染地点';
+                    state.memories.push({ id: 'm-dirty-phantom', content: '未成功落盘的幽灵脏记忆', type: 'fact', scope: 'world' });
+                });
+            } catch (err) {
+                caughtError = err;
+            }
+
+            assert.ok(caughtError, '双重存储故障时 batchUpdate 必须抛出异常');
+
+            // 1. 验证当前内存状态已立即回滚
+            const currentState = getState();
+            assert.strictEqual(currentState.scene.location, '风暴前的宁静营地', '当前内存地点必须回滚');
+            assert.strictEqual(currentState.memories.length, 1, '当前内存记忆必须回滚');
+            assert.strictEqual(currentState.memories[0].id, 'm-orig-safe', '幽灵记忆不得残留在内存中');
+
+            // 2. 核心审计验证：彻底清空内存状态缓存，模拟用户切换会话或重新载入聊天
+            clearStateCache();
+
+            // 3. 重新从宿主元数据中加载状态
+            const reloaded = loadCurrentState();
+            assert.strictEqual(reloaded.scene.location, '风暴前的宁静营地', '重新从元数据加载后，地点必须为失败前的安全地点，脏地点不得复活');
+            assert.strictEqual(reloaded.memories.length, 1, '重新加载后记忆条目数量必须为 1');
+            assert.strictEqual(reloaded.memories[0].id, 'm-orig-safe', '重新加载后仅包含安全原始记忆');
+            assert.strictEqual(reloaded.memories.some(m => m.id === 'm-dirty-phantom'), false, '脏记忆绝对不得在重新加载后复活');
+            assert.strictEqual(mockContext.chatMetadata[MODULE_NAME].scene.location, '风暴前的宁静营地', '宿主元数据对象本身必须已同步回滚');
+        } finally {
+            Object.assign(mockContext, origCtx);
+            if (origSaveMetadata !== undefined) {
+                mockContext.saveMetadata = origSaveMetadata;
+            } else {
+                delete mockContext.saveMetadata;
+            }
+            global.localStorage.setItem = origSetItem;
+            mockLocalStorage = origLocalStorage;
+            clearStateCache();
+            loadCurrentState();
+        }
+    });
+
+    // ─────────────────────────────────────────────────────────────
+    // T142: 成功应用伴随标签后 last_sync_error 原子清除并落盘，重新加载验证错误不复活 (P2 闭环)
+    // ─────────────────────────────────────────────────────────────
+    test('T142: 成功应用伴随标签后 last_sync_error 在同一事务中原子清除并落盘，重载不复活 (P2 闭环)', () => {
+        const origCtx = { ...mockContext };
+        try {
+            clearStateCache();
+            const state = loadCurrentState();
+            state.last_sync_error = null;
+            saveCurrentState();
+
+            // 步骤 1: 制造一次伴随标签错误，确保 last_sync_error 被写入并持久化落盘
+            const badMsg = '任务汇报完毕。\n<!-- PERSISTENT_MEMORY: {bad_json: missing_quotes} -->';
+            const res1 = extractAndApplySyncTag(badMsg);
+            assert.strictEqual(res1, badMsg, '解析失败保留原文');
+            assert.ok(state.last_sync_error, '状态中必须留存 last_sync_error');
+            assert.ok(state.last_sync_error.error.includes('JSON 解析失败'));
+
+            // 验证错误已真正持久化到宿主元数据中
+            clearStateCache();
+            const reloadedWithErr = loadCurrentState();
+            assert.ok(reloadedWithErr.last_sync_error, '错误信息必须已持久化，重载后能够读出');
+
+            // 步骤 2: 发送一条包含合法伴生标签的消息
+            const goodMsg = '抵达据点。\n<!-- PERSISTENT_MEMORY: {"scene": {"location": "天霜要塞"}} -->';
+            const res2 = extractAndApplySyncTag(goodMsg);
+            assert.strictEqual(res2, '抵达据点。', '合法标签必须被干净剥离');
+
+            // 验证当前内存中的错误已清空且现场已更新
+            assert.strictEqual(reloadedWithErr.last_sync_error, null, '合法标签应用后内存中 last_sync_error 必须为 null');
+            assert.strictEqual(reloadedWithErr.scene.location, '天霜要塞', '现场地点必须已更新为天霜要塞');
+
+            // 步骤 3: 核心审计验证：清空内存缓存重新 loadCurrentState()，验证 last_sync_error = null 确实已落盘，旧错误绝不复活
+            clearStateCache();
+            const finalReloaded = loadCurrentState();
+            assert.strictEqual(finalReloaded.last_sync_error, null, 'P2 闭环：重新加载后 last_sync_error 必须仍然为 null，旧错误绝不得复活');
+            assert.strictEqual(finalReloaded.scene.location, '天霜要塞', '重新加载后现场状态保持最新');
+        } finally {
+            Object.assign(mockContext, origCtx);
+            clearStateCache();
+            loadCurrentState();
+        }
     });
 
     console.log(`\n======================================================`);

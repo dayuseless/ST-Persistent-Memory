@@ -5,7 +5,7 @@
  * 2. 提炼候选活跃记忆场景化过滤 (filterMemoriesForDigest)
  * 3. 提炼/伴随结构化数据原子写回与生命周期流转 (applyExtractedData)
  *
- * @version 0.1.48
+ * @version 0.1.49
  */
 
 import { MODULE_NAME, MEMORY_LIFECYCLE, MEMORY_SCOPE } from './config.js';
@@ -124,8 +124,12 @@ export function extractAndApplySyncTag(rawText) {
     const payload = validateExtractedPayload(rawPayload, state.memories || [], participants);
 
     if (payload) {
-        const summary = applyExtractedData(payload);
-        state.last_sync_error = null;
+        // P2 修复：将合法伴随数据入库与 last_sync_error 清除纳入同一原子事务，确保清除操作立即落盘并持久化
+        const summary = batchUpdate(() => {
+            const res = applyExtractedData(payload);
+            state.last_sync_error = null;
+            return res;
+        });
         console.log(`[${MODULE_NAME}] [Sync] 伴生标签通过验证并成功入库: ${summary}`);
         window.toastr?.success?.(summary, '伴随标签提炼入库');
         return cleanText;

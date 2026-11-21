@@ -1,6 +1,6 @@
 # SillyTavern 持续记忆插件 (ST-Persistent-Memory)
 
-[![Version](https://img.shields.io/badge/version-v0.1.48-blue.svg)](https://github.com/dayuseless/ST-Persistent-Memory)
+[![Version](https://img.shields.io/badge/version-v0.1.49-blue.svg)](https://github.com/dayuseless/ST-Persistent-Memory)
 [![SillyTavern](https://img.shields.io/badge/SillyTavern-1.12.0+-purple.svg)](https://github.com/SillyTavern/SillyTavern)
 [![License](https://img.shields.io/badge/license-MIT-green.svg)](LICENSE)
 
@@ -119,7 +119,7 @@
 
 ### 方式二：手动离线包安装
 
-1. 从 [Releases 页面](https://github.com/dayuseless/ST-Persistent-Memory/releases) 下载 `ST-Persistent-Memory-v0.1.48.zip`。
+1. 从 [Releases 页面](https://github.com/dayuseless/ST-Persistent-Memory/releases) 下载 `ST-Persistent-Memory-v0.1.49.zip`。
 2. 解压到 SillyTavern 的扩展目录中：
    ```text
    SillyTavern/public/scripts/extensions/third-party/ST-Persistent-Memory/
@@ -201,13 +201,13 @@ window.__persistentMemory.digestNow();
 
 ## 🧪 自动化测试与独立复现
 
-本插件随包提供完整的离线端到端测试工程（包含全部 107 项测试用例与微型运行环境 Mock）。任何审计人员或开发者均可在下载或解压本插件后直接独立运行核验：
+本插件随包提供完整的离线端到端测试工程（包含全部 142 项测试用例与微型运行环境 Mock）。任何审计人员或开发者均可在下载或解压本插件后直接独立运行核验：
 
 ```bash
 # 进入插件根目录
 cd ST-Persistent-Memory
 
-# 运行全量 107 项自动化回归测试矩阵
+# 运行全量 142 项自动化回归测试矩阵
 npm test
 # 或者使用 node 原生直接执行：
 node test/test-matrix.mjs
@@ -215,11 +215,11 @@ node test/test-matrix.mjs
 
 测试矩阵覆盖范围：
 - **T1 ~ T70**：核心记忆模型、POV 准出权限路由、Fail-Closed 判定、状态机事务与回滚；
-- **T71**：全工程 21 个源文件、manifest、package、config 与 index 版本标识一致性核验；
+- **T71**：全工程所有源文件、manifest、package、config 与 index 版本标识一致性核验；
 - **T72 ~ T95**：统一 ACL 门禁、API 传输层、长程归并、世界书协同、快照时光机与跨版本平滑迁移；
 - **T96 ~ T100**：思维链清洗、模式校验、提示词编排、提炼落盘流水线与端到端解耦总成集成验收；
 - **T101 ~ T102**：UI 组件化解耦契约、XSS 转义防御、傻瓜式默认全托管与详细参数模态框交互；
-- **T103 ~ T107 (v0.1.43 核心加固)**：归并原子性与失败回滚保护、归并并发修订号保护、历史回溯按批次修订号保护、空现场 `[]` 严格物理在场核验防御、Schema 拒绝型策略（非法类型/非法生命周期/非法状态拒绝入库）。
+- **T103 ~ T107 (v0.1.43 核心加固)**：归并原子性与失败回滚保护、归并并发修订号保护、历史回溯按批次修订号保护、空现场 `[]` 严格物理在场核验防御、Schema 拒绝型策略（非法类型/非法生命周期/非法状态拒绝入库）；
 - **T108 ~ T117 (v0.1.43 核心演进)**：
   - **T108**：沉睡记忆联想唤醒阈值弹性契约测试 (自定义门槛生效、超阈唤醒与低分压制)；
   - **T109**：多会话 stateCache 字典化与自动感知隔离契约测试 (跨会话切换自动按 chatId 寻址，杜绝陈旧状态污染)；
@@ -230,11 +230,40 @@ node test/test-matrix.mjs
   - **T114**：原生斜杠指令 (Slash Commands) 与 HUD 实时搜索过滤契约测试 (Phase 1)；
   - **T115**：四大玩法流派预设 (Gameplay Presets) 与悬浮球实时反馈状态契约测试 (Phase 2)；
   - **T116**：沉睡休眠与刚唤醒直观视觉标记 (Visual Lifecycle) 及增强型批量操作契约测试 (Phase 3)；
-  - **T117**：记忆演化血缘追溯 (Evolution Lineage) 与历史切片重放 (Historical Slice) 契约测试 (Phase 4)。
+  - **T117**：记忆演化血缘追溯 (Evolution Lineage) 与历史切片重放 (Historical Slice) 契约测试 (Phase 4)；
+- **T118 ~ T124 (v0.1.44 架构收敛与边界加固)**：状态所有权收敛、双路混合检索与生产 RRF 流水线、血缘墓碑与时光投影；
+- **T125 ~ T129 (v0.1.45 交互与算法隔离)**：悬浮球跨端独立坐标缓存与平滑拖曳、RRF 同榜重复去重、CJK Ext A~I / Jamo Unicode 码点分词、SDK 返回值深拷贝隔离；
+- **T130 (v0.1.46 运行可靠性收敛)**：CJK Ext B~I / Jamo 复杂码点严密覆盖与原型污染防御契约；
+- **T131 ~ T134 (v0.1.48 场景外挂状态栏)**：HUD 三大停靠与四套皮肤、行内即改 (In-line Quick Edit)、DIY 自由模板与 4 大流派预设、7 大原生动态宏与全局响应式事件广播；
+- **T135 ~ T140 (v0.1.48 审计加固)**：
+  - **T135**：备份导入缺省知情范围保守默认归属 CHARACTER，杜绝未授权提权至 WORLD (P1-01)；
+  - **T136**：现场在场角色非法类型 Fail-Closed 拒绝访问与规范化清洗 (P1-02)；
+  - **T137**：宿主元数据与本地存储双重写入失败触发 batchUpdate 完整回滚 (P2-01)；
+  - **T138**：历史批次提炼优先采用历史快照与发言者名单，防止活跃记忆遭过滤 (P2-02)；
+  - **T139**：伴生标签畸形容错非侵入正文保真，严禁正文篡改 (P2-03)；
+  - **T140**：纯 JS CRC-32 查表一致性与 PKZIP 经典 32 位规范容量边界契约 (P2-04)；
+- **T141 ~ T142 (v0.1.49 数据一致性闭环)**：
+  - **T141**：双重持久化失败事务回滚后，同步恢复宿主元数据 (`metadata[MODULE_NAME]`)，断言后续 `clearStateCache()` + `loadCurrentState()` 重载不复活脏数据 (P1 闭环)；
+  - **T142**：伴随同步标签错误清除 (`state.last_sync_error = null`) 纳入原子事务落盘，断言重载后错误不复活 (P2 闭环)。
 
 ---
 
 ## 📝 版本历史
+
+### v0.1.49 (事务回滚宿主元数据闭环、同步标签错误持久化、ZIP容量边界防御；142 项金标测试矩阵)
+
+针对第四轮代码审计报告提出的数据一致性与存储回滚建议，完成架构级闭环修复：
+1. **P1 事务回滚宿主元数据同步恢复闭环 (`src/state.js`, T141)**：
+   - 彻底解决 `batchUpdate` 与 `persistCurrentStateInternal` 在双重存储失败时仅回滚内部 `stateCache`、却将脏数据遗留在外部宿主 `chatMetadata[MODULE_NAME]` 的问题；
+   - 事务启动与持久化前先行创建宿主元数据深拷贝快照，一旦双重持久化失败或批处理异常，原子级恢复宿主元数据指针与内容，经 `clearStateCache()` 重载后 100% 验证无脏数据复活。
+2. **P2 伴生同步标签错误清除原子落盘闭环 (`src/apply.js`, T142)**：
+   - 将成功解析伴随标签后的 `state.last_sync_error = null` 纳入 `batchUpdate` 整体原子事务管道；
+   - 确保错误清理与状态快照在同一次持久化中写入宿主元数据与 localStorage，杜绝重载后陈旧错误状态复活。
+3. **P2 纯 Node PKZIP 打包器容量边界与安全防御 (`scripts/pack-zip.mjs`, T140)**：
+   - 引入经典 ZIP 32 位规范硬约束：条目数上限 65535（`MAX_CLASSIC_ZIP_ENTRIES`）、单文件及总尺寸上限 4 GiB（`MAX_CLASSIC_ZIP_SIZE`），超限立即安全阻断抛错，杜绝整型截断静默损坏；
+   - 使用 `fs.lstatSync` 严格跳过符号链接，防御目录穿越与边界溢出。
+4. **全量测试矩阵扩展至 142 项全绿金标通过**：
+   - 新增 **T141** 与 **T142** 闭环契约测试，全量 142 项自动化测试全部一次性通过 (`node test/test-matrix.mjs` 达成 **142/142 PASS, 0 FAIL**)。
 
 ### v0.1.48 (场景外挂状态栏 HUD、DIY 自由模板系统、行内即改交互与原生生态宏；134 项金标测试矩阵)
 

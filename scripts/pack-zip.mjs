@@ -1,5 +1,5 @@
 /**
- * ST-Persistent-Memory 跨平台规范化打包脚本 (pack-zip.mjs, v0.1.48)
+ * ST-Persistent-Memory 跨平台规范化打包脚本 (pack-zip.mjs, v0.1.49)
  * 
  * 核心设计目标：
  * 1. 采用原生 Node.js 内置模块 (zlib, fs, path, crypto) 实现纯正 PKWARE ZIP 规范打包器；
@@ -32,8 +32,8 @@ function dateToDosDateTime(date) {
     return { dosDate: dosDate >>> 0, dosTime: dosTime >>> 0 };
 }
 
-// 递归扫描目录条目
-function scanEntries(dirPath, baseZipPath) {
+// 递归扫描目录条目 (改用 lstatSync 防御符号链接逃逸，P2 修复)
+export function scanEntries(dirPath, baseZipPath) {
     const entries = [];
     const items = fs.readdirSync(dirPath);
 
@@ -43,8 +43,14 @@ function scanEntries(dirPath, baseZipPath) {
         }
 
         const fullPath = path.join(dirPath, item);
-        const stat = fs.statSync(fullPath);
+        const stat = fs.lstatSync(fullPath);
         const zipRelPath = baseZipPath ? `${baseZipPath}/${item}` : item;
+
+        // P2 防护：明确拒绝或跳过符号链接，避免仓库出现链接时打包非受信外部文件
+        if (stat.isSymbolicLink()) {
+            console.warn(`[Pack 忽略] 检测到符号链接，主动跳过以防外部越界引用: ${fullPath}`);
+            continue;
+        }
 
         if (stat.isDirectory()) {
             entries.push({
@@ -93,8 +99,19 @@ export function calculateCrc32(buf, forceFallback = false) {
     return (crc ^ 0xFFFFFFFF) >>> 0;
 }
 
+// 经典 PKWARE ZIP 规范容量与偏移量物理上限 (P2 边界安全防护)
+export const MAX_CLASSIC_ZIP_ENTRIES = 65535;
+export const MAX_CLASSIC_ZIP_SIZE = 0xFFFFFFFF; // 4 GiB - 1 字节 (4294967295)
+
 // 纯 Node.js 标准 PKWARE ZIP 规范归档生成器
 export function buildStandardZip(entries) {
+    if (!Array.isArray(entries)) {
+        throw new Error('[Pack 错误] entries 必须为数组');
+    }
+    if (entries.length > MAX_CLASSIC_ZIP_ENTRIES) {
+        throw new Error(`[Pack 错误] 归档条目总数 (${entries.length}) 超出经典 ZIP 格式上限 (${MAX_CLASSIC_ZIP_ENTRIES})，拒绝生成损坏归档`);
+    }
+
     const localHeaders = [];
     const cdHeaders = [];
     let offset = 0;
@@ -106,7 +123,19 @@ export function buildStandardZip(entries) {
         const dataBuf = entry.data || Buffer.alloc(0);
         const isDir = Boolean(entry.isDir || normalizedName.endsWith('/'));
 
+        if (dataBuf.length > MAX_CLASSIC_ZIP_SIZE) {
+            throw new Error(`[Pack 错误] 单文件 "${normalizedName}" 原始大小 (${dataBuf.length}) 超出经典 ZIP 4 GiB 上限`);
+        }
+
         const compressedBuf = isDir ? Buffer.alloc(0) : zlib.deflateRawSync(dataBuf);
+        if (compressedBuf.length > MAX_CLASSIC_ZIP_SIZE) {
+            throw new Error(`[Pack 错误] 单文件 "${normalizedName}" 压缩后大小 (${compressedBuf.length}) 超出经典 ZIP 4 GiB 上限`);
+        }
+
+        if (offset > MAX_CLASSIC_ZIP_SIZE) {
+            throw new Error(`[Pack 错误] 归档内部局部头偏移量 (${offset}) 超出经典 ZIP 4 GiB 上限`);
+        }
+
         const crc = isDir ? 0 : calculateCrc32(dataBuf);
         const method = isDir ? 0 : 8; // 8 = Deflated, 0 = Stored
         const size = dataBuf.length >>> 0;
@@ -160,6 +189,13 @@ export function buildStandardZip(entries) {
     const cdSize = cdHeaders.reduce((sum, b) => sum + b.length, 0) >>> 0;
     const count = entries.length;
 
+    if (offset > MAX_CLASSIC_ZIP_SIZE) {
+        throw new Error(`[Pack 错误] 中央目录起始偏移量 (${offset}) 超出经典 ZIP 4 GiB 上限`);
+    }
+    if (cdSize > MAX_CLASSIC_ZIP_SIZE) {
+        throw new Error(`[Pack 错误] 中央目录总大小 (${cdSize}) 超出经典 ZIP 4 GiB 上限`);
+    }
+
     // 3. End of Central Directory Record (22 字节)
     const eocd = Buffer.alloc(22);
     eocd.writeUInt32LE(0x06054b50, 0); // Signature: PK\x05\x06
@@ -177,7 +213,7 @@ export function buildStandardZip(entries) {
 export function runPack(customOutDir = null) {
     // 读取当前版本
     const pkg = JSON.parse(fs.readFileSync(path.join(repoRoot, 'package.json'), 'utf8'));
-    const version = pkg.version || '0.1.48';
+    const version = pkg.version || '0.1.49';
 
     // 目标 ZIP 输出路径
     const defaultOutDir = 'D:\\学习';
